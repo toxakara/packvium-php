@@ -1,0 +1,9 @@
+#!/usr/bin/env php
+<?php
+declare(strict_types=1);
+require dirname(__DIR__) . '/autoload.php';
+use Packvium\Serialization\ArrayCodec;
+$input = stream_get_contents(STDIN);
+if ($input === false || trim($input) === '') { fwrite(STDERR, "Expected packing JSON on stdin\n"); exit(2); }
+try { $data=json_decode($input,true,512,JSON_THROW_ON_ERROR); echo json_encode(ArrayCodec::pack($data),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES),"\n"; }
+catch(Throwable $e){ fwrite(STDERR,$e->getMessage()."\n"); exit(1); }

@@ -1,0 +1,35 @@
+{
+  "name": "packvium/packvium",
+  "description": "Deterministic, extensible 3D cartonization and container packing library with exact metric and imperial units.",
+  "type": "library",
+  "license": "MIT",
+  "keywords": [
+    "3d-bin-packing",
+    "cartonization",
+    "container-loading",
+    "packing",
+    "logistics"
+  ],
+  "require": {
+    "php": ">=8.2"
+  },
+  "autoload": {
+    "psr-4": {
+      "Packvium\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Packvium\\Tests\\": "tests/"
+    }
+  },
+  "bin": [
+    "bin/packvium"
+  ],
+  "scripts": {
+    "test": "php tests/run.php",
+    "lint": "find src tests examples -type f -name '*.php' -print0 | xargs -0 -n1 php -l && php -l bin/packvium"
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}

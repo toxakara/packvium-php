@@ -1,0 +1,47 @@
+name: release
+
+# Packagist does not take an upload. It reads tags from this repository, so a release is
+# a tag and nothing else. What this workflow does is refuse to let a *bad* tag stand:
+# it checks the tag against composer.json and re-runs the suite on the tagged tree, so
+# the failure is a red check on the tag rather than a broken version people can install.
+#
+# Before the first release, submit the repository once at
+# https://packagist.org/packages/submit and enable the GitHub service hook it offers, so
+# later tags are picked up without anyone pressing "Update".
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: "8.3"
+          coverage: none
+
+      # composer.json deliberately carries no `version` field -- Composer derives it from
+      # the tag, and a hand-maintained copy only ever drifts. The changelog is the file
+      # that does state a version, so that is what the tag is checked against: a tag with
+      # no matching changelog entry is a release nobody wrote down.
+      - name: The tag must have a changelog entry
+        run: |
+          tagged="${GITHUB_REF_NAME#v}"
+          if ! grep -q "^## \[${tagged}\]" CHANGELOG.md; then
+            echo "CHANGELOG.md has no '## [${tagged}]' section for tag $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+
+      - run: composer validate --strict --no-check-lock
+      - name: Lint every shipped file
+        run: |
+          for file in $(find src tests examples -name '*.php') bin/packvium; do
+            php -l "$file" > /dev/null
+          done
+      - run: php tests/run.php

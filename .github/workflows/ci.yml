@@ -1,0 +1,83 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege by default; jobs that need more request it explicitly.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.2", "8.3", "8.4", "8.5"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          tools: composer:v2
+      - run: composer validate --strict --no-check-lock
+      - run: composer install --no-interaction --prefer-dist --no-progress
+      - name: Syntax lint every PHP file
+        run: |
+          set -e
+          count=0
+          for file in $(find src tests examples -name '*.php') bin/packvium; do
+            php -l "$file" > /dev/null
+            count=$((count + 1))
+          done
+          echo "linted $count files"
+      - run: php tests/run.php
+      - name: CLI smoke test
+        run: |
+          echo '{"items":[{"id":"box","quantity":8,"dimensions":{"length":"50","width":"50","height":"50"}}],
+                 "containers":[{"id":"carton","inner_dimensions":{"length":"100","width":"100","height":"100"}}]}' \
+            | php bin/packvium > result.json
+          # The single-quoted expression is PHP, not shell.
+          # shellcheck disable=SC2016
+          php -r '$r = json_decode(file_get_contents("result.json"), true); exit($r["complete"] === true ? 0 : 1);'
+
+  install-smoke:
+    # Prove the package installs from a clean checkout the way a consumer gets it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: package
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: "8.3"
+          coverage: none
+          tools: composer:v2
+      - name: Require the package from a path repository
+        run: |
+          mkdir consumer && cd consumer
+          composer init --no-interaction --name=smoke/consumer --stability=dev
+          composer config repositories.local path ../package
+          composer require packvium/packvium:@dev --no-interaction
+          php -r 'require "vendor/autoload.php"; echo class_exists(Packvium\Packer::class) ? "ok\n" : exit(1);'
+
+  # Fails a pull request that introduces a dependency with a known vulnerability or a
+  # licence the project has not accepted. It reads GitHub's dependency graph, so it needs
+  # nothing committed here beyond this job -- and on a package with no runtime
+  # dependencies its usual answer is "nothing changed", which is the answer we want to
+  # keep true rather than assume.
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: low
+          comment-summary-in-pr: on-failure
