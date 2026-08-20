@@ -6,6 +6,7 @@ use Packvium\Config\PackingConfig;
 use Packvium\Constraint\{ConstraintSet,PlacementConstraint};
 use Packvium\Domain\Container;
 use Packvium\Extension\{CandidateScorer,DefaultCandidateScorer};
+use Packvium\Objective\LandedCostSolutionScorer;
 use Packvium\Support\BigInt;
 /**
  * Depth-first branch and bound over whole group batches.
@@ -53,6 +54,37 @@ final class ExactSmallSolver implements SingleContainerSolver
         );
     }
 
+    private static function landedCharge(ContainerState $state,PackingConfig $config):int
+    {
+        $container=$state->container;
+        $dimensions=$container->outerDimensions??$container->innerDimensions;
+        $dimensional=$dimensions->dimensionalWeight(
+            $config->dimensionalWeightDivisor,
+            $config->dimensionalWeightLengthUnit,
+            $config->dimensionalWeightWeightUnit,
+        )->ticks;
+        $billed=max($container->tareWeight->ticks+$state->payloadTicks,$dimensional);
+        return $container->rateTable?->chargeMinorOrNull(
+            LandedCostSolutionScorer::grams($billed),
+        )??LandedCostSolutionScorer::UNPRICEABLE_MINOR;
+    }
+
+    private static function isBetterForObjective(
+        ContainerState $candidate,string $candidateVolume,
+        ContainerState $incumbent,string $incumbentVolume,
+        PackingConfig $config,
+    ):bool {
+        $candidateCount=count($candidate->placements);
+        $incumbentCount=count($incumbent->placements);
+        if($candidateCount!==$incumbentCount)return $candidateCount>$incumbentCount;
+        if($config->objective==='lowest_landed_cost'){
+            $candidateCharge=self::landedCharge($candidate,$config);
+            $incumbentCharge=self::landedCharge($incumbent,$config);
+            if($candidateCharge!==$incumbentCharge)return $candidateCharge<$incumbentCharge;
+        }
+        return BigInt::compare($candidateVolume,$incumbentVolume)>0;
+    }
+
     public function packOne(Container $container,int $sequence,array $items,PackingConfig $config,SearchStats $stats,Deadline $deadline):SingleContainerSolution
     {
         if(count($items)>$config->exactItemLimit)throw new InvalidArgumentException('Exact-small item limit exceeded');
@@ -77,7 +109,7 @@ final class ExactSmallSolver implements SingleContainerSolver
             $stats->searchNodesExpanded++;
             $stateCount=count($state->placements);
             $bestCount=count($best->placements);
-            if(self::isBetterValues($stateCount,$stateVolume,$bestCount,$bestVolume)){
+            if(self::isBetterForObjective($state,$stateVolume,$best,$bestVolume,$config)){
                 $best=$state;
                 $bestVolume=$stateVolume;
             }
@@ -85,7 +117,7 @@ final class ExactSmallSolver implements SingleContainerSolver
             $potentialCount=$stateCount+$reachable;
             $bestCount=count($best->placements);
             if($potentialCount<$bestCount)return;
-            if($potentialCount===$bestCount&&BigInt::compare(BigInt::add($stateVolume,$suffixVolumes[$index]),$bestVolume)<=0)return;
+            if($config->objective!=='lowest_landed_cost'&&$potentialCount===$bestCount&&BigInt::compare(BigInt::add($stateVolume,$suffixVolumes[$index]),$bestVolume)<=0)return;
             $batch=$batches[$index];
             $remaining=$reachable-count($batch);
             foreach(BeamPacker::placeBatch($state,$batch,$config,$constraints,$stats,$deadline,$scorer,null) as $child){

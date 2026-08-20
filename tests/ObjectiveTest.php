@@ -3,8 +3,13 @@ declare(strict_types=1);
 
 namespace Packvium\Tests;
 
+use Packvium\Algorithm\ContainerState;
+use Packvium\Algorithm\Deadline;
+use Packvium\Algorithm\ExtremePointSolver;
 use Packvium\Algorithm\RawSolution;
 use Packvium\Algorithm\SearchStats;
+use Packvium\Algorithm\SingleContainerSolution;
+use Packvium\Algorithm\SingleContainerSolver;
 use Packvium\Config\PackingConfig;
 use Packvium\Config\SolverProfile;
 use Packvium\Domain\Container;
@@ -18,6 +23,7 @@ use Packvium\Domain\RateTable;
 use Packvium\Domain\Rotation;
 use Packvium\Domain\UnpackedItem;
 use Packvium\Domain\UnratedWeightException;
+use Packvium\Extension\ExtensionRegistry;
 use Packvium\Objective\DefaultSolutionScorer;
 use Packvium\Objective\LandedCostSolutionScorer;
 use Packvium\Objective\LowestCostSolutionScorer;
@@ -341,6 +347,10 @@ final class ObjectiveTest extends TestCase
     {
         $items = [Support::item('a', 40, 40, 40)];
         $containers = [Support::box('c', 100, 100, 100)];
+        self::assertThrows(
+            UnknownObjectiveException::class,
+            static fn() => ShippingCostSolutionScorer::fromConfig(null),
+        );
         self::assertThrows(UnknownObjectiveException::class, static fn() =>
             (new Packer(new PackingConfig(objective: 'shipping_cost')))->pack($items, $containers));
 
@@ -428,32 +438,243 @@ final class ObjectiveTest extends TestCase
         self::assertSame(300, self::landedScore($box, $light)[1]);
     }
 
-    public static function testAContainerWithoutARateTableIsRefusedRatherThanRankedFree(): void
+    public static function testAContainerWithoutARateTableIsRefusedAtAdmissionEvenIfUnused(): void
     {
         // Rating some containers and not others would compare a priced packing against
-        // an unpriced one as though the unpriced were free -- and the objective would
-        // then prefer exactly the answer nobody quoted.
+        // an unpriced one as though the unpriced were free. A missing tariff is a static
+        // property of the request -- unlike a billed weight past the last bracket, which
+        // depends on how the search filled the box -- so the refusal happens before any
+        // solver runs, exactly where Rust and the JavaScript fallback refuse it (
+        // review). The unrated box cannot even hold the item: a container no solution
+        // would ever touch is refused all the same.
         $cube = Item::create('cube', Dimensions::mm(100, 100, 100), weight: '1g');
-        $unrated = Container::create('unrated', Dimensions::mm(200, 200, 200));
-        self::assertThrows(UnknownObjectiveException::class, static fn() => self::landedScore($unrated, $cube));
+        $rated = Container::create('rated', Dimensions::mm(200, 200, 200),
+            rateTable: new RateTable([1_000, 2_000], [500, 900]));
+        $unrated = Container::create('unrated', Dimensions::mm(50, 50, 50));
         $message = '';
         try {
-            self::landedScore($unrated, $cube);
+            (new Packer(self::landedConfig()))->pack([$cube], [$rated, $unrated]);
         } catch (UnknownObjectiveException $error) {
             $message = $error->getMessage();
         }
         // Naming the container is the whole value of the refusal: a caller with thirty
         // containers needs to know which rate card is missing, not that one is.
-        self::assertTrue(str_contains($message, "'unrated'"), $message);
+        self::assertSame(
+            "the lowest_landed_cost objective requires a rate_table on every container; 'unrated' has none",
+            $message,
+        );
+        // A missing divisor is refused at admission too, and first: with both gaps in
+        // one request, every engine reports the divisor.
+        $noDivisor = new PackingConfig(objective: 'lowest_landed_cost');
+        $message = '';
+        try {
+            (new Packer($noDivisor))->pack([$cube], [$rated, $unrated]);
+        } catch (UnknownObjectiveException $error) {
+            $message = $error->getMessage();
+        }
+        self::assertSame('the lowest_landed_cost objective requires configuration.dimensional_weight_divisor', $message);
+        // The scorer's own refusal stays as defence in depth for a caller scoring a
+        // solution it assembled itself, without the packer's admission in front of it.
+        // (Sized to hold the cube: this one exercises the scorer, not the geometry.)
+        $assembled = Container::create('assembled_unrated', Dimensions::mm(200, 200, 200));
+        self::assertThrows(UnknownObjectiveException::class, static fn() => self::landedScore($assembled, $cube));
     }
 
     public static function testAWeightAboveTheLastBracketHasNoPriceAndSaysSo(): void
     {
         // Clamping to the top price would under-quote every oversize shipment silently.
+        self::assertThrows(
+            UnratedWeightException::class,
+            static fn() => (new RateTable([1], [100]))->chargeMinor(2),
+        );
+    }
+
+    public static function testUnpriceableContainerAnswersForAContainerWithNoTariffAtAll(): void
+    {
+        // `unpriceableContainer` is public API, so it cannot assume the packer's admission
+        // ran. `Packer` never reaches this branch -- a request with an untabled container
+        // is refused at admission, before any solver runs -- but a caller checking a
+        // result it assembled itself must get an answer rather than a call on
+        // null. 20 mm cube = 2 cm a side -> 8 cm^3 / 5000 rounds up to 2 g billed, which
+        // beats the item's own 1 g; no table means no bracket to name, hence 0.
+        $cube = Item::create('cube', Dimensions::mm(10, 10, 10), weight: '1g');
+        $box = Container::create('box', Dimensions::mm(20, 20, 20));
+        $packed = [self::filled($box, $cube->instances(), [[0, 0, 0]])];
+        self::assertSame(
+            ['box', 2, 0],
+            LandedCostSolutionScorer::unpriceableContainer($packed, self::landedConfig()),
+        );
+    }
+
+    public static function testTheScorerRanksAnUnpriceablePackingWorstRatherThanThrowing(): void
+    {
+        // The search has to *compare* an unpriceable candidate, not abort on one.
+        // Throwing here made a request with one short tariff and one perfectly good
+        // alternative fail outright instead of shipping. The sentinel is what
+        // lets the priceable container win the round; the packer is where the refusal
+        // belongs, once nothing priceable is left to prefer.
         $light = Item::create('cube', Dimensions::mm(10, 10, 10), weight: '1g');
         $box = Container::create('box', Dimensions::mm(20, 20, 20),
             rateTable: new RateTable([1], [100])); // 2g billed, one 1g bracket
-        self::assertThrows(UnratedWeightException::class, static fn() => self::landedScore($box, $light));
+        self::assertSame(
+            LandedCostSolutionScorer::UNPRICEABLE_MINOR,
+            self::landedScore($box, $light)[1],
+        );
+    }
+
+    public static function testPackingRefusesWhenNoContainerOnOfferCanPriceTheLoad(): void
+    {
+        // The sentinel is a search device; reaching a result with it still standing
+        // would quote a number the carrier never published.
+        $light = Item::create('cube', Dimensions::mm(10, 10, 10), weight: '1g');
+        $box = Container::create('box', Dimensions::mm(20, 20, 20),
+            rateTable: new RateTable([1], [100]));
+        $message = '';
+        try {
+            (new Packer(self::landedConfig()))->pack([$light], [$box]);
+        } catch (UnratedWeightException $error) {
+            $message = $error->getMessage();
+        }
+        self::assertTrue(str_contains($message, "'box' bills at"), $message);
+        self::assertTrue(str_contains($message, 'no published price'), $message);
+    }
+
+    public static function testAnUnpriceableContainerLosesToAPriceableOneInTheGreedyRound(): void
+    {
+        // The general per-round choice, not the closed-form path. Eight units is
+        // past the single-item shape the fast paths take. The round key ranked by billed
+        // weight, and alpha bills lighter (5400 g of dimensional weight against 12800 g)
+        // while its tariff stops at 2000 g -- so the objective chose the one shipment the
+        // caller cannot buy over one available at 1500. Ranking the round by the money
+        // the finished score will charge is the fix; Python, Rust and the JavaScript
+        // fallback reach the identical answer.
+        $box = Item::create('box', Dimensions::mm(100, 100, 100), weight: '500g', quantity: 8);
+        $alpha = Container::create('alpha_unpriceable', Dimensions::mm(300, 300, 300),
+            rateTable: new RateTable([2_000], [900]));
+        $beta = Container::create('beta_priceable', Dimensions::mm(400, 400, 400),
+            rateTable: new RateTable([20_000], [1_500]));
+        $result = (new Packer(self::landedConfig()))->pack([$box], [$alpha, $beta]);
+        self::assertSame(
+            ['beta_priceable'],
+            array_map(static fn($c): string => $c->container->id, $result->containers),
+        );
+        self::assertSame(1_500, $result->score[1]);
+        self::assertSame([], $result->unpacked);
+    }
+
+    public static function testAlternativesNeverSurfaceAnUnpriceablePacking(): void
+    {
+        // The winner is guarded, but a ranked runner-up carrying the sentinel could
+        // still surface through `alternatives` and quote the same unpublished number
+        // sideways ( review). Force such a runner-up deterministically: a custom
+        // solver that only ever fills the short-tariffed box completes a valid
+        // all-in-alpha packing (5,400 g of dimensional weight against a 2,000 g table),
+        // ranked behind the priceable all-in-beta winner the built-in solvers find. It
+        // must be dropped from the alternatives, not sliced in -- with top_k 3 it had
+        // room to surface.
+        $alphaOnly = new class implements SingleContainerSolver {
+            public function name(): string
+            {
+                return 'alpha_only';
+            }
+
+            public function packOne(Container $container, int $sequence, array $items,
+                                    PackingConfig $config, SearchStats $stats, Deadline $deadline): SingleContainerSolution
+            {
+                return $container->id === 'alpha_unpriceable'
+                    ? (new ExtremePointSolver())->packOne($container, $sequence, $items, $config, $stats, $deadline)
+                    : new SingleContainerSolution(new ContainerState($container, $sequence), $items);
+            }
+        };
+        $box = Item::create('box', Dimensions::mm(100, 100, 100), weight: '500g', quantity: 8);
+        $alpha = Container::create('alpha_unpriceable', Dimensions::mm(300, 300, 300),
+            rateTable: new RateTable([2_000], [900]));
+        $beta = Container::create('beta_priceable', Dimensions::mm(400, 400, 400),
+            rateTable: new RateTable([20_000], [1_500]));
+        $config = new PackingConfig(
+            multiStartOrders: 1,
+            objective: 'lowest_landed_cost',
+            dimensionalWeightDivisor: 5_000,
+            dimensionalWeightLengthUnit: 'cm',
+            dimensionalWeightWeightUnit: 'kg',
+        );
+        $result = (new Packer($config, new ExtensionRegistry(solvers: [$alphaOnly])))
+            ->pack([$box], [$alpha, $beta]);
+
+        self::assertSame(
+            ['beta_priceable'],
+            array_map(static fn($c): string => $c->container->id, $result->containers),
+        );
+        self::assertSame(1_500, $result->score[1]);
+        foreach ($result->alternatives as $alternative) {
+            self::assertNotSame(LandedCostSolutionScorer::UNPRICEABLE_MINOR, $alternative->score[1]);
+            self::assertNull(LandedCostSolutionScorer::unpriceableContainer($alternative->containers, $config));
+        }
+        // Nothing priceable ranked behind the winner here, so nothing may surface: the
+        // all-in-alpha runner-up is filtered out rather than returned.
+        self::assertSame([], $result->alternatives);
+    }
+
+    public static function testABracketStepMakesTheCheaperShipmentTheHeavierOne(): void
+    {
+        // Grams and money order candidates alike only while price rises smoothly with
+        // weight. Here the heavier container is the cheaper one, which is the whole
+        // reason this objective exists next to shipping_cost.
+        $box = Item::create('box', Dimensions::mm(100, 100, 100), weight: '500g', quantity: 8);
+        $dear = Container::create('light_but_dear', Dimensions::mm(300, 300, 300),
+            rateTable: new RateTable([20_000], [900]));
+        $cheap = Container::create('heavy_but_cheap', Dimensions::mm(400, 400, 400),
+            rateTable: new RateTable([20_000], [400]));
+        $result = (new Packer(self::landedConfig()))->pack([$box], [$dear, $cheap]);
+        self::assertSame(
+            ['heavy_but_cheap'],
+            array_map(static fn($c): string => $c->container->id, $result->containers),
+        );
+        self::assertSame(400, $result->score[1]);
+    }
+
+    private static function landedConfig(): PackingConfig
+    {
+        return new PackingConfig(
+            objective: 'lowest_landed_cost',
+            dimensionalWeightDivisor: 5_000,
+            dimensionalWeightLengthUnit: 'cm',
+            dimensionalWeightWeightUnit: 'kg',
+        );
+    }
+
+    public static function testExactSmallDoesNotPruneAHeavierPromotionalRateBand(): void
+    {
+        // Two 100 g parcels bill 100 minor units; replacing one with the 800 g parcel
+        // reaches the promotional 900 g band and bills 10. The exact solver used to
+        // keep the first equal-count subset solely by volume and never price this one.
+        $items = [
+            Item::create('a-light', Dimensions::mm(100, 100, 100), weight: '100g'),
+            Item::create('b-light', Dimensions::mm(100, 100, 100), weight: '100g'),
+            Item::create('z-heavy', Dimensions::mm(100, 100, 100), weight: '800g'),
+        ];
+        $bin = Container::create(
+            'bin',
+            Dimensions::mm(200, 100, 100),
+            quantity: 1,
+            rateTable: new RateTable([200, 900], [100, 10]),
+        );
+        $config = new PackingConfig(
+            profile: SolverProfile::ExactSmall,
+            solvers: ['exact_small'],
+            objective: 'lowest_landed_cost',
+            maxContainers: 1,
+            dimensionalWeightDivisor: 10_000,
+            dimensionalWeightLengthUnit: 'cm',
+            dimensionalWeightWeightUnit: 'kg',
+        );
+        $result = (new Packer($config))->pack($items, [$bin]);
+        self::assertSame([1, 10], array_slice($result->score, 0, 2));
+        $packedIds = array_map(
+            static fn($placement): string => $placement->instance->id(),
+            $result->containers[0]->placements,
+        );
+        self::assertTrue(in_array('z-heavy#1', $packedIds, true));
     }
 
     // ------------------------------------------------------ open-dimension objective

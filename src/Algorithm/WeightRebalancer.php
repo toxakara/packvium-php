@@ -5,8 +5,9 @@ namespace Packvium\Algorithm;
 
 use Packvium\Config\PackingConfig;
 use Packvium\Constraint\ConstraintSet;
-use Packvium\Domain\{PackedContainer, PackingRequest, Placement, UnpackedItem};
+use Packvium\Domain\{PackedContainer, PackingRequest, Placement, UnpackedItem, UnratedWeightException};
 use Packvium\Extension\DefaultCandidateScorer;
+use Packvium\Objective\{LandedCostSolutionScorer, UnknownObjectiveException};
 use Packvium\Validation\IndependentSolutionValidator;
 
 /**
@@ -54,6 +55,36 @@ final class WeightRebalancer
         int $timeLimitMs = 1000,
     ): RebalanceResult {
         $config ??= new PackingConfig();
+        if (($config->objective === 'shipping_cost' || $config->objective === 'lowest_landed_cost')
+            && $config->dimensionalWeightDivisor === null
+        ) {
+            throw new UnknownObjectiveException(
+                'the ' . $config->objective . ' objective requires configuration.dimensional_weight_divisor',
+            );
+        }
+        if ($config->objective === 'lowest_landed_cost') {
+            foreach ($request->containers as $container) {
+                if ($container->rateTable === null) {
+                    throw new UnknownObjectiveException(
+                        'the lowest_landed_cost objective requires a rate_table on every container; '
+                        . "'{$container->id}' has none",
+                    );
+                }
+            }
+        }
+        // Under lowest_landed_cost an input that already bills past a rate table's last
+        // bracket has no published price to preserve: refuse it outright, in the same
+        // words as `Packer::pack()`, rather than shuffle weight inside an answer the
+        // caller cannot ship ( review). A no-op for every other objective --
+        // `unpriceableContainer` is itself gated on the objective and divisor.
+        $unpriceable = LandedCostSolutionScorer::unpriceableContainer($containers, $config);
+        if ($unpriceable !== null) {
+            [$containerId, $grams, $bound] = $unpriceable;
+            throw new UnratedWeightException(
+                "container '{$containerId}' bills at {$grams} g, above its rate table's "
+                . "last bracket ({$bound} g); the shipment has no published price"
+            );
+        }
         $validator = new IndependentSolutionValidator();
         $deadline = Deadline::ofMilliseconds($timeLimitMs);
         $working = array_values($containers);
@@ -136,10 +167,11 @@ final class WeightRebalancer
      * ever replaced together, in the same returned array, so there is no observable
      * state in which the item belongs to neither its old container nor its new one,
      * and no path that "finishes" a move without the item landing exactly once. A move
-     * that fails geometrically (no room in the destination) or physically (the
+     * that fails geometrically (no room in the destination), physically (the
      * validator rejects the result -- for example because something was resting on the
-     * item that just moved) simply is not made; the caller's container list is
-     * untouched.
+     * item that just moved) or commercially (under lowest_landed_cost the destination
+     * would bill past its rate table's last bracket,  review) simply is not made;
+     * the caller's container list is untouched.
      *
      * @param list<PackedContainer> $containers
      * @param list<UnpackedItem> $unpacked
@@ -192,6 +224,13 @@ final class WeightRebalancer
 
         $report = $validator->validate($request, $trial, $config->minimumSupportRatio, $config->clearance, $unpacked);
         if (!$report->valid) {
+            return null;
+        }
+        // A move can be geometrically and physically sound yet lift the destination's
+        // billed weight past its rate table's last bracket. Under lowest_landed_cost
+        // that would trade a shippable packing for one with no published price, so the
+        // candidate is skipped and the search moves on ( review).
+        if (LandedCostSolutionScorer::unpriceableContainer($trial, $config) !== null) {
             return null;
         }
         return $trial;

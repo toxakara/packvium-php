@@ -16,7 +16,10 @@
   "autoload": {
     "psr-4": {
       "Packvium\\": "src/"
-    }
+    },
+    "files": [
+      "src/Commerce/functions.php"
+    ]
   },
   "autoload-dev": {
     "psr-4": {

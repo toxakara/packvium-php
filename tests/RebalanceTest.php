@@ -11,8 +11,11 @@ use Packvium\Domain\PackedContainer;
 use Packvium\Domain\PackingRequest;
 use Packvium\Domain\Placement;
 use Packvium\Domain\Point;
+use Packvium\Domain\RateTable;
 use Packvium\Domain\Rotation;
 use Packvium\Domain\UnpackedItem;
+use Packvium\Domain\UnratedWeightException;
+use Packvium\Objective\UnknownObjectiveException;
 use Packvium\Validation\IndependentSolutionValidator;
 
 /**
@@ -218,6 +221,148 @@ final class RebalanceTest extends TestCase
 
         self::assertSame([], $outcome->moves);
         self::assertSame($packed, $outcome->containers);
+    }
+
+    // ------------------------------------------------------ landed-cost pricing
+
+    private static function landedConfig(): PackingConfig
+    {
+        return new PackingConfig(
+            objective: 'lowest_landed_cost',
+            dimensionalWeightDivisor: 5_000,
+            dimensionalWeightLengthUnit: 'cm',
+            dimensionalWeightWeightUnit: 'kg',
+        );
+    }
+
+    public static function testAnUnpriceableInputPackingIsRefusedNotRebalanced(): void
+    {
+        // A 300 mm crate carries 27,000 cm^3 / 5,000 = 5.4 kg = 5,400 g of dimensional
+        // weight, past this tariff's 2,000 g last bracket: the input has no published
+        // price, so there is nothing a weight shuffle could preserve. Refused in the
+        // same words as `Packer::pack()` ( review).
+        $cube = Support::item('cube', 100, 100, 100, ['weight' => '500 g', 'quantity' => 8]);
+        $alpha = Support::box('alpha', 300, 300, 300, ['rateTable' => new RateTable([2_000], [900])]);
+        $request = new PackingRequest([$cube], [$alpha]);
+        $step = 100 * Support::MM;
+        $placements = [];
+        foreach ([[0, 0], [1, 0], [2, 0], [0, 1], [1, 1], [2, 1], [0, 2], [1, 2]] as $index => [$gx, $gy]) {
+            $placements[] = self::floorPlacement($cube, $index + 1, $gx * $step, $gy * $step);
+        }
+        $packed = [new PackedContainer($alpha, 1, $placements)];
+        $message = '';
+        try {
+            WeightRebalancer::rebalance($request, $packed, [], self::landedConfig());
+        } catch (UnratedWeightException $error) {
+            $message = $error->getMessage();
+        }
+        self::assertSame(
+            "container 'alpha' bills at 5400 g, above its rate table's last bracket "
+            . '(2000 g); the shipment has no published price',
+            $message,
+        );
+    }
+
+    public static function testRebalanceAppliesTheSameLandedCostAdmissionAsPack(): void
+    {
+        // Pricing admission belongs to the public operation, not only to the packer.
+        // An unused untabled container is still available to the request and therefore
+        // makes the landed-cost comparison undefined ( second review).
+        $parcel = Support::item('parcel', 100, 100, 100, ['weight' => '500 g']);
+        $rated = Support::box('rated', 200, 200, 200, [
+            'rateTable' => new RateTable([2_000], [500]),
+        ]);
+        $request = new PackingRequest([$parcel], [$rated]);
+        $packed = [new PackedContainer($rated, 1, [self::floorPlacement($parcel, 1, 0, 0)])];
+
+        self::assertThrows(
+            UnknownObjectiveException::class,
+            static fn() => WeightRebalancer::rebalance(
+                $request,
+                $packed,
+                [],
+                new PackingConfig(objective: 'lowest_landed_cost'),
+            ),
+        );
+
+        $untabled = Support::box('untabled', 300, 300, 300);
+        $message = '';
+        try {
+            WeightRebalancer::rebalance(
+                new PackingRequest([$parcel], [$rated, $untabled]),
+                $packed,
+                [],
+                self::landedConfig(),
+            );
+        } catch (UnknownObjectiveException $error) {
+            $message = $error->getMessage();
+        }
+        self::assertTrue(str_contains($message, "rate_table on every container; 'untabled'"));
+    }
+
+    /**
+     * A priceable two-crate scene where every spread-narrowing move would bill the
+     * destination past its bracket. Both crates are 300 mm (5,400 g of dimensional
+     * weight) and both start priceable: the light crate bills 6,000 g of gross against
+     * a 12,000 g table, the heavy crate 5,400 g dimensional against a 6,000 g table.
+     * Moving any 1,500 g brick narrows the 4,000 g payload spread to 1,000 g -- but the
+     * heavy crate's 3,000 g tare lifts its gross to 6,500 g, past its last bracket.
+     *
+     * @return array{0:PackingRequest,1:list<PackedContainer>}
+     */
+    private static function bracketEdgeScene(): array
+    {
+        $brick = Support::item('brick', 100, 100, 100, ['weight' => '1500 g', 'quantity' => 4]);
+        $ballast = Support::item('ballast', 100, 100, 100, ['weight' => '2000 g']);
+        $light = Support::box('light_crate', 300, 300, 300, ['rateTable' => new RateTable([12_000], [1_000])]);
+        $heavy = Support::box('heavy_crate', 300, 300, 300, [
+            'tareWeight' => '3000 g',
+            'rateTable' => new RateTable([6_000], [800]),
+        ]);
+        $request = new PackingRequest([$brick, $ballast], [$light, $heavy]);
+        $step = 100 * Support::MM;
+        $packed = [
+            new PackedContainer($light, 1, [
+                self::floorPlacement($brick, 1, 0, 0),
+                self::floorPlacement($brick, 2, $step, 0),
+                self::floorPlacement($brick, 3, 2 * $step, 0),
+                self::floorPlacement($brick, 4, 0, $step),
+            ]),
+            new PackedContainer($heavy, 1, [self::floorPlacement($ballast, 1, 0, 0)]),
+        ];
+        return [$request, $packed];
+    }
+
+    public static function testAMoveThatWouldBillPastTheLastBracketIsNotCommitted(): void
+    {
+        // The move fits, validates, and strictly narrows the payload spread -- and must
+        // still not be made: committing it would turn a shippable packing into one with
+        // no published price, the exact trade `Packer::pack()` refuses ( review).
+        [$request, $packed] = self::bracketEdgeScene();
+
+        $outcome = WeightRebalancer::rebalance($request, $packed, [], self::landedConfig());
+
+        self::assertSame([], $outcome->moves);
+        self::assertSame($packed, $outcome->containers);
+    }
+
+    public static function testTheBracketVetoIsANoOpOutsideLandedCost(): void
+    {
+        // The same scene under the default objective: no tariff is being preserved, so
+        // the spread-narrowing move must commit exactly as it did before the veto.
+        [$request, $packed] = self::bracketEdgeScene();
+        $config = new PackingConfig();
+
+        $outcome = WeightRebalancer::rebalance($request, $packed, [], $config);
+
+        self::assertCount(1, $outcome->moves);
+        self::assertSame('light_crate#1', $outcome->moves[0]->fromContainerId);
+        self::assertSame('heavy_crate#1', $outcome->moves[0]->toContainerId);
+        $after = self::weights($outcome->containers);
+        sort($after);
+        self::assertSame([3500 * 8_000_000, 4500 * 8_000_000], $after);
+        self::assertAccountingHolds($request, $outcome->containers, []);
+        self::assertValid($request, $outcome->containers, [], $config);
     }
 
     // --------------------------------------------------------------- randomised property
