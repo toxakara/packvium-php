@@ -59,13 +59,15 @@ final class RateTable
     }
 
     /**
-     * The exact landed cost of one shipment at this billed weight, in minor units.
+     * The exact landed cost of one shipment at this billed weight, or null when the tariff
+     * does not price it.
      *
-     * Throws above the last bracket rather than clamping to the top price. Clamping would
-     * quietly under-price every oversize shipment and, worse, make the objective prefer a
-     * packing the caller cannot actually ship at that price.
+     * The search needs to *compare* an unpriceable candidate rather than abort on one: a
+     * container whose tariff runs out at this weight must lose to one that can price the
+     * load, which it cannot do if asking the question throws. `chargeMinor` is the same
+     * walk for callers who want the refusal.
      */
-    public function chargeMinor(int $billedWeightG): int
+    public function chargeMinorOrNull(int $billedWeightG): ?int
     {
         foreach ($this->weightBracketsG as $index => $bound) {
             if ($billedWeightG <= $bound) {
@@ -76,10 +78,33 @@ final class RateTable
                 return $base + $surcharge;
             }
         }
-        $last = $this->weightBracketsG[count($this->weightBracketsG) - 1];
-        throw new UnratedWeightException(
-            "billed weight {$billedWeightG} g is above the rate table's last bracket "
-            . "({$last} g); the shipment has no published price"
-        );
+        return null;
+    }
+
+    /**
+     * The exact landed cost of one shipment at this billed weight, in minor units.
+     *
+     * Throws above the last bracket rather than clamping to the top price. Clamping would
+     * quietly under-price every oversize shipment and, worse, make the objective prefer a
+     * packing the caller cannot actually ship at that price.
+     */
+    public function chargeMinor(int $billedWeightG): int
+    {
+        $charge = $this->chargeMinorOrNull($billedWeightG);
+        if ($charge === null) {
+            $last = $this->weightBracketsG[count($this->weightBracketsG) - 1];
+            throw new UnratedWeightException(
+                "billed weight {$billedWeightG} g is above the rate table's last bracket "
+                . "({$last} g); the shipment has no published price"
+            );
+        }
+
+        return $charge;
+    }
+
+    /** The highest billed weight this table prices, in grams. */
+    public function lastBracketG(): int
+    {
+        return $this->weightBracketsG[count($this->weightBracketsG) - 1];
     }
 }

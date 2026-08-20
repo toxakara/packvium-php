@@ -76,4 +76,53 @@ final class ArithmeticTest extends TestCase
         self::assertThrows(InvalidArgumentException::class, static fn() => Arithmetic::mulDiv(1, 1, 0));
         self::assertThrows(InvalidArgumentException::class, static fn() => Arithmetic::mulDiv(1, 1, -1));
     }
+
+    // ---------------------------------------------------------------------- mulDivCeil
+
+    /**
+     * `mulDivCeil` is `mulDiv`'s rounding-up twin, and the direction is the contract:
+     * carrier rating divides by a dimensional-weight divisor and by 1000 for permille
+     * rates, and a quote that rounded down would undercharge by a minor unit.
+     */
+    public static function testCeilRoundsUpOnAnyRemainder(): void
+    {
+        self::assertSame(1, Arithmetic::mulDivCeil(1, 1, 7));
+        self::assertSame(1, Arithmetic::mulDivCeil(7, 1, 7));
+        self::assertSame(2, Arithmetic::mulDivCeil(8, 1, 7));
+        self::assertSame(2, Arithmetic::mulDivCeil(14, 1, 7));
+        self::assertSame(143, Arithmetic::mulDivCeil(1_000, 1, 7));
+    }
+
+    public static function testCeilLeavesAnExactDivisionAlone(): void
+    {
+        self::assertSame(1_000, Arithmetic::mulDivCeil(1_000, 3, 3));
+        self::assertSame(500, Arithmetic::mulDivCeil(1_000, 1, 2));
+    }
+
+    public static function testCeilShortCircuitsOnAZeroOperand(): void
+    {
+        self::assertSame(0, Arithmetic::mulDivCeil(0, 12_345, 7));
+        self::assertSame(0, Arithmetic::mulDivCeil(12_345, 0, 7));
+    }
+
+    /**
+     * The overflow path. A direct product here would wrap silently, so the
+     * implementation falls back to decimal-string arithmetic -- and it must still round
+     * up, which a floor-then-add-one shortcut would get wrong on an exact division.
+     */
+    public static function testCeilStaysExactWhenTheProductOverflowsAnInteger(): void
+    {
+        $inexact = Arithmetic::mulDivCeil(PHP_INT_MAX - 1, 3, 7);
+        $floored = (int)BigInt::divide(BigInt::multiply((string)(PHP_INT_MAX - 1), '3'), '7');
+        self::assertSame($floored + 1, $inexact, 'an inexact big division rounds up');
+
+        $exact = Arithmetic::mulDivCeil(PHP_INT_MAX - 1, 3, 3);
+        self::assertSame(PHP_INT_MAX - 1, $exact, 'an exact big division adds nothing');
+    }
+
+    public static function testCeilRejectsANonPositiveDivisor(): void
+    {
+        self::assertThrows(InvalidArgumentException::class, static fn() => Arithmetic::mulDivCeil(1, 1, 0));
+        self::assertThrows(InvalidArgumentException::class, static fn() => Arithmetic::mulDivCeil(1, 1, -1));
+    }
 }

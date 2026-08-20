@@ -3,7 +3,7 @@
 Deterministic 3D cartonization and rectangular bin packing. Pure PHP, **no runtime
 dependencies**, exact integer geometry.
 
-> **Version 0.1.0 — early release.** The public API is not frozen; pin an exact version.
+> **Version 0.1.1 — early release.** The public API is not frozen; pin an exact version.
 > Read [docs/GUARANTEES.md](docs/GUARANTEES.md) before relying on a result.
 
 ```bash
@@ -47,6 +47,25 @@ echo '{"items":[{"id":"box","quantity":8,"dimensions":{"length":"50","width":"50
 
 The library is framework-independent: no facades, no static state, no container bindings.
 Construct a `Packer` and call it.
+
+## Examples
+
+Runnable, in [`examples/`](examples). Each one is a single file you can read top to bottom
+and execute without a project around it.
+
+| File | What it shows |
+| --- | --- |
+| [`basic.php`](examples/basic.php) | The smallest useful call: items in, placements out. |
+| [`constraints.php`](examples/constraints.php) | Upright-only, floor-only, non-stackable, top-load limits, and tags that keep two items out of the same box — plus how to read the reason an item was refused. |
+| [`nested.php`](examples/nested.php) | Units into cartons, cartons onto a pallet, in one call. |
+| [`commerce.php`](examples/commerce.php) | Rate a shipment, apply an eligibility rule, and pin a catalog version. |
+
+```bash
+php examples/constraints.php
+```
+
+`constraints.php` and `nested.php` print byte-for-byte what their Python counterparts
+print, which is the cross-language contract this port is held to, not a coincidence.
 
 ## What it does
 

@@ -7,7 +7,7 @@ use Packvium\Domain\{Container,ItemInstance,PackedContainer,Rotation,UnpackedIte
 use Packvium\Extension\{CandidateScorer,ContainerSelector,DefaultCandidateScorer,DefaultContainerSelector,ItemOrderStrategy};
 use Packvium\Result\StartRecord;
 use Packvium\Support\{BigInt,StableSorter};
-use Packvium\Objective\ObjectiveRegistry;
+use Packvium\Objective\{LandedCostSolutionScorer,ObjectiveRegistry};
 final class SolverOrchestrator
 {
     public function __construct(private array $customConstraints=[],private array $customOrders=[],private array $customSolvers=[],private ?CandidateScorer $candidateScorer=null,private ?ContainerSelector $containerSelector=null){}
@@ -495,7 +495,7 @@ final class SolverOrchestrator
                 catch(TimeLimitReached){$reached=true;break;}
                 if($one->timeLimitReached)$reached=true;
                 if($one->state->placementCount()===0){if($reached)break;continue;}
-                if($config->objective==='shipping_cost'&&$config->dimensionalWeightDivisor!==null){
+                if(($config->objective==='shipping_cost'||$config->objective==='lowest_landed_cost')&&$config->dimensionalWeightDivisor!==null){
                     $dimensions=$container->outerDimensions??$container->innerDimensions;
                     $dimensional=$dimensions->dimensionalWeight(
                         $config->dimensionalWeightDivisor,
@@ -503,7 +503,27 @@ final class SolverOrchestrator
                         $config->dimensionalWeightWeightUnit,
                     )->ticks;
                     $gross=$container->tareWeight->ticks+$one->state->payloadTicks;
-                    $candidateScore=[-$one->state->placementCount(),max($gross,$dimensional),$container->id];
+                    $billed=max($gross,$dimensional);
+                    $placed=$one->state->placementCount();
+                    if($config->objective==='shipping_cost'){
+                        $candidateScore=[-$placed,$billed,$container->id];
+                    }else{
+                        // Landed cost ranks the round by the money the finished score will
+                        // charge, not by the grams it is derived from. This loop commits the
+                        // trial verbatim, so its billed weight is already final and the tariff
+                        // can be read now; a bracket step or a minimum charge makes the cheaper
+                        // shipment the heavier one, and a trial the tariff cannot price is
+                        // unshippable rather than merely dear, so it sorts behind every
+                        // priceable alternative. Keys after the charge mirror Rust's
+                        // and Python's, so the three engines pick the same container.
+                        $charge=$container->rateTable?->chargeMinorOrNull(LandedCostSolutionScorer::grams($billed));
+                        $candidateScore=[
+                            $charge??LandedCostSolutionScorer::UNPRICEABLE_MINOR,
+                            intdiv(count($remaining)+max($placed,1)-1,max($placed,1)),
+                            -$placed,
+                            $container->id,
+                        ];
+                    }
                 }else{
                     $candidateScore=$selector->score($container,$one);
                 }
