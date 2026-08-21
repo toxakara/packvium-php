@@ -3,7 +3,7 @@
 Deterministic 3D cartonization and rectangular bin packing. Pure PHP, **no runtime
 dependencies**, exact integer geometry.
 
-> **Version 0.1.1 — early release.** The public API is not frozen; pin an exact version.
+> **Version 0.1.2 — early release.** The public API is not frozen; pin an exact version.
 > Read [docs/GUARANTEES.md](docs/GUARANTEES.md) before relying on a result.
 
 ```bash
@@ -51,17 +51,25 @@ Construct a `Packer` and call it.
 ## Examples
 
 Runnable, in [`examples/`](examples). Each one is a single file you can read top to bottom
-and execute without a project around it.
+and execute without a project around it. Every one of them is executed by the test suite
+on each release, so none of them can quietly stop working.
+
+New here? Read `basic.php`, then `objectives.php` — between them they cover what most
+callers need. `units.php` and `serialization.php` explain the two design choices that
+surprise people.
 
 | File | What it shows |
 | --- | --- |
-| [`basic.php`](examples/basic.php) | The smallest useful call: items in, placements out. |
+| [`basic.php`](examples/basic.php) | The smallest useful call: items in, placements out — and the three details in it that are easy to miss. |
+| [`objectives.php`](examples/objectives.php) | All six objectives on scenes where they genuinely disagree, including the rate card that makes the heavier shipment the cheaper one. |
 | [`constraints.php`](examples/constraints.php) | Upright-only, floor-only, non-stackable, top-load limits, and tags that keep two items out of the same box — plus how to read the reason an item was refused. |
+| [`units.php`](examples/units.php) | Why there are no floats anywhere: fractional inches, exact ticks, and the one-tick difference between a fit and a refusal. |
+| [`serialization.php`](examples/serialization.php) | The same request as JSON, the result in full, and exactly which mistakes are refused and which are silently ignored. |
 | [`nested.php`](examples/nested.php) | Units into cartons, cartons onto a pallet, in one call. |
 | [`commerce.php`](examples/commerce.php) | Rate a shipment, apply an eligibility rule, and pin a catalog version. |
 
 ```bash
-php examples/constraints.php
+php examples/objectives.php
 ```
 
 `constraints.php` and `nested.php` print byte-for-byte what their Python counterparts
@@ -99,11 +107,21 @@ print, which is the cross-language contract this port is held to, not a coincide
 PHP 8.2 or newer. No extensions required — `bcmath` and `gmp` are deliberately not
 depended upon.
 
-## Other ports exist
+## The Packvium family
 
-The same request and result contract is implemented independently in Python and Rust, and
-all three are held to producing identical placements on a shared fixture set. If your
-stack spans languages, you can compute a packing on any of them and get the same answer.
+One request and result contract, implemented independently in four engines (Rust,
+Python, PHP, JavaScript) and held to identical placements on a shared fixture set.
+Pick the package for your stack; mixing them in one system is safe.
+
+| Package | Install | Source |
+| --- | --- | --- |
+| Python — [`packvium`](https://pypi.org/project/packvium/) | `pip install packvium` | [packvium-python](https://github.com/toxakara/packvium-python) |
+| PHP — [`packvium/packvium`](https://packagist.org/packages/packvium/packvium) | `composer require packvium/packvium` | [packvium-php](https://github.com/toxakara/packvium-php) |
+| Rust — [`packvium`](https://crates.io/crates/packvium) | `packvium = "0.1"` | [packvium-rust](https://github.com/toxakara/packvium-rust) |
+| Node.js — [`@packvium/engine`](https://www.npmjs.com/package/@packvium/engine) | `npm install @packvium/engine` | [packvium-node](https://github.com/toxakara/packvium-node) |
+| Browser / WebAssembly — [`@packvium/browser`](https://www.npmjs.com/package/@packvium/browser) | `npm install @packvium/browser` | [packvium-wasm](https://github.com/toxakara/packvium-wasm) |
+| PHP FFI bridge — [`packvium/native-bridge`](https://packagist.org/packages/packvium/native-bridge) | `composer require packvium/native-bridge` | [packvium-php-bridge](https://github.com/toxakara/packvium-php-bridge) |
+| Python native selector — `packvium-native` | from source until the native wheels ship | [packvium-python-adapter](https://github.com/toxakara/packvium-python-adapter) |
 
 ## Contributing
 
