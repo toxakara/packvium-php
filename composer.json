@@ -10,6 +10,12 @@
     "packing",
     "logistics"
   ],
+  "homepage": "https://github.com/toxakara/packvium-php",
+  "support": {
+    "issues": "https://github.com/toxakara/packvium-php/issues",
+    "source": "https://github.com/toxakara/packvium-php",
+    "security": "https://github.com/toxakara/packvium-php/blob/main/SECURITY.md"
+  },
   "require": {
     "php": ">=8.2"
   },

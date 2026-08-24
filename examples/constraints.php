@@ -118,3 +118,92 @@ if ($result->unpacked !== []) {
         printf("  %-12s %s\n", $unpacked->instance->item->id, Explain::unpackedItem($unpacked));
     }
 }
+
+// ------------------------------------------------------------- one rule at a time
+//
+// The four rules below are each shown twice: the same items, the same container, once
+// without the rule and once with it. A constraint you cannot watch change the answer is
+// one the reader has to take on faith, and the pair makes the rule -- rather than the
+// geometry -- provably the reason.
+//
+// Note what "the rule bit" looks like. Only sometimes is it a refusal; more often the
+// solver satisfies the rule by opening another container, which costs money and is the
+// answer you actually wanted to see coming. So both numbers are printed.
+
+$compare = static function (string $rule, array $without, array $withRule, array $containers): void {
+    printf("\n%s\n", $rule);
+    foreach ([['without the rule', $without], ['with the rule   ', $withRule]] as [$label, $variant]) {
+        $outcome = (new Packer(PackingConfig::balanced()))->pack($variant, $containers);
+        $placed = 0;
+        foreach ($outcome->containers as $packed) {
+            $placed += count($packed->placements);
+        }
+        printf(
+            "  %s: %d container(s), %d placed, %d refused\n",
+            $label, count($outcome->containers), $placed, count($outcome->unpacked),
+        );
+        foreach ($outcome->unpacked as $unpacked) {
+            printf("      %s\n", Explain::unpackedItem($unpacked));
+        }
+    }
+};
+
+$shelf = [Container::create('shelf', Dimensions::mm('800', '400', '500'), maxPayload: '40 kg')];
+
+// `allowedRotations` narrows the six orientations to the ones you permit, and
+// `[Rotation::LWH, Rotation::WLH]` is the pair that keeps the item's own height vertical
+// -- what you want for anything with a printed face or an open top. The pole is 700 mm
+// tall and the shelf is 500 mm deep, so it fits only by being laid down, which is what
+// this forbids.
+$pole = Dimensions::mm('90', '90', '700');
+$compare(
+    'allowedRotations -- a pole that only fits lying down, forbidden from lying down',
+    [Item::create('pole', $pole, '1 kg', allowedRotations: $anyOrientation)],
+    [Item::create('pole', $pole, '1 kg', allowedRotations: [Rotation::LWH, Rotation::WLH])],
+    $shelf,
+);
+
+// `maxStackedItems` caps how many units may sit above one item -- a pallet-pattern rule
+// ("three high, no more"), not a weight limit. The column below is one tin wide, so
+// height is the only way to fit more, and the second container is the price of the cap.
+$column = [Container::create('column', Dimensions::mm('160', '160', '600'), maxPayload: '40 kg')];
+$tin = Dimensions::mm('150', '150', '120');
+$compare(
+    'maxStackedItems -- five tins fit in one column; three-high needs two columns',
+    [Item::create('tin', $tin, '800 g', quantity: 5, allowedRotations: $anyOrientation)],
+    [Item::create('tin', $tin, '800 g', quantity: 5, allowedRotations: $anyOrientation, maxStackedItems: 3)],
+    $column,
+);
+
+// `minimumSupportRatio` is how much of an item's base must rest on something solid. The
+// plinth stands on the floor and covers a quarter of the ledge, and the ledge is too
+// shallow for the slab to stand on edge -- so the only place the slab fits is perched on
+// the plinth, on a quarter of its base. At 0.9 that is refused and a second ledge opens.
+$ledge = [Container::create('ledge', Dimensions::mm('400', '400', '350'), maxPayload: '40 kg')];
+$plinth = Item::create('plinth', Dimensions::mm('200', '200', '300'), '5 kg', allowedRotations: $anyOrientation, mustBeOnFloor: true);
+$slab = Dimensions::mm('400', '400', '60');
+$compare(
+    'minimumSupportRatio -- a slab perched on a quarter of its base',
+    [$plinth, Item::create('slab', $slab, '9 kg', allowedRotations: $anyOrientation)],
+    [$plinth, Item::create('slab', $slab, '9 kg', allowedRotations: $anyOrientation, minimumSupportRatio: 0.9)],
+    $ledge,
+);
+
+// `group` is atomic: every member ships in one container or none of them does. The third
+// part is deliberately too long for the shelf, so it takes the other two down with it
+// rather than shipping two thirds of an assembly nobody can use.
+$parts = [
+    Dimensions::mm('200', '200', '100'),
+    Dimensions::mm('200', '200', '100'),
+    Dimensions::mm('900', '100', '100'),
+];
+$loose = $grouped = [];
+foreach ($parts as $index => $dimensions) {
+    $id = 'kit-' . ($index + 1);
+    $loose[] = Item::create($id, $dimensions, '2 kg', allowedRotations: $anyOrientation);
+    $grouped[] = Item::create($id, $dimensions, '2 kg', allowedRotations: $anyOrientation, group: 'assembly');
+}
+$compare('group -- one member cannot be placed, so none of them is', $loose, $grouped, $shelf);
+
+// Every reason code above is a fact about the request, not a solver failure -- which is
+// why `Explain::unpackedItem` can turn it into a sentence a customer is allowed to read.
