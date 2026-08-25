@@ -1,44 +1,61 @@
 {
-  "name": "packvium/packvium",
-  "description": "Deterministic, extensible 3D cartonization and container packing library with exact metric and imperial units.",
-  "type": "library",
-  "license": "MIT",
-  "keywords": [
-    "3d-bin-packing",
-    "cartonization",
-    "container-loading",
-    "packing",
-    "logistics"
-  ],
-  "homepage": "https://github.com/toxakara/packvium-php",
-  "support": {
-    "issues": "https://github.com/toxakara/packvium-php/issues",
-    "source": "https://github.com/toxakara/packvium-php",
-    "security": "https://github.com/toxakara/packvium-php/blob/main/SECURITY.md"
-  },
-  "require": {
-    "php": ">=8.2"
-  },
-  "autoload": {
-    "psr-4": {
-      "Packvium\\": "src/"
+    "name": "packvium/packvium",
+    "description": "Deterministic, extensible 3D cartonization and container packing library with exact metric and imperial units.",
+    "type": "library",
+    "suggest": {
+        "packvium/native-bridge": "Routes solves through the Rust core over FFI when a shared library is available, with identical results."
     },
-    "files": [
-      "src/Commerce/functions.php"
-    ]
-  },
-  "autoload-dev": {
-    "psr-4": {
-      "Packvium\\Tests\\": "tests/"
-    }
-  },
-  "bin": [
-    "bin/packvium"
-  ],
-  "scripts": {
-    "test": "php tests/run.php",
-    "lint": "find src tests examples -type f -name '*.php' -print0 | xargs -0 -n1 php -l && php -l bin/packvium"
-  },
-  "minimum-stability": "stable",
-  "prefer-stable": true
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Packvium contributors",
+            "homepage": "https://packvium.com"
+        }
+    ],
+    "keywords": [
+        "3d-bin-packing",
+        "cartonization",
+        "container-loading",
+        "packing",
+        "logistics"
+    ],
+    "homepage": "https://packvium.com",
+    "support": {
+        "issues": "https://github.com/toxakara/packvium-php/issues",
+        "source": "https://github.com/toxakara/packvium-php",
+        "security": "https://github.com/toxakara/packvium-php/blob/main/SECURITY.md"
+    },
+    "require": {
+        "php": ">=7.3"
+    },
+    "archive": {
+        "exclude": [
+            "/vendor",
+            "/COVERAGE.md",
+            "/coverage-baseline.json",
+            "/.phpunit.cache"
+        ]
+    },
+    "autoload": {
+        "psr-4": {
+            "Packvium\\": "src/"
+        },
+        "files": [
+            "autoload.php"
+        ]
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Packvium\\Tests\\": "tests/"
+        }
+    },
+    "bin": [
+        "bin/packvium"
+    ],
+    "scripts": {
+        "test": "php tests/run.php",
+        "lint": "find src tests examples -type f -name '*.php' -print0 | xargs -0 -n1 php -l && php -l bin/packvium"
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
 }

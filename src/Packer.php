@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Packvium;
 
 use Packvium\Algorithm\{Deadline, SolverOrchestrator};
+use Packvium\Support\StableSorter;
 use Packvium\Config\PackingConfig;
 use Packvium\Domain\{Container, Item, PackingRequest, UnratedWeightException};
 use Packvium\Extension\ExtensionRegistry;
@@ -147,18 +148,11 @@ final class Packer
             );
         }
 
-        usort(
-            $ranked,
-            static fn($left, $right): int => [
-                $left->status === PackingStatus::InvalidResult ? 1 : 0,
-                $left->score,
-                $left->algorithm->solver,
-            ] <=> [
-                $right->status === PackingStatus::InvalidResult ? 1 : 0,
-                $right->score,
-                $right->algorithm->solver,
-            ],
-        );
+        $ranked = StableSorter::sortBy($ranked, static fn($result): array => [
+            $result->status === PackingStatus::InvalidResult ? 1 : 0,
+            $result->score,
+            $result->algorithm->solver,
+        ]);
         $valid = array_values(array_filter(
             $ranked,
             static fn($result): bool => $result->status !== PackingStatus::InvalidResult,

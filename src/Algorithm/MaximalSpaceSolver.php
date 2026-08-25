@@ -5,6 +5,7 @@ use Packvium\Config\PackingConfig;
 use Packvium\Constraint\{ConstraintSet,PlacementConstraint};
 use Packvium\Domain\{AxisAlignedBox,Container,Dimensions,ItemInstance,Point};
 use Packvium\Extension\{CandidateScorer,DefaultCandidateScorer};
+use Packvium\Support\StableSorter;
 use Packvium\Unit\Length;
 /**
  * Maximal free spaces plus the common feasibility engine.
@@ -52,7 +53,7 @@ final class MaximalSpaceSolver implements SingleContainerSolver
             }catch(TimeLimitReached){
                 $state=$snapshot;
                 $pending=GroupBatcher::flatten(array_slice($batches,$position));
-                return new SingleContainerSolution($state,[...$unplaced,...$pending],false,true);
+                return new SingleContainerSolution($state,array_merge($unplaced,$pending),false,true);
             }
             if(!$placed){$state=$snapshot;$spaces=$saved;foreach($batch as $item)$unplaced[]=$item;}
         }
@@ -118,9 +119,7 @@ final class MaximalSpaceSolver implements SingleContainerSolver
         }
         // descendingVolumeKey parses BigInt chunks; one key per space instead of one
         // per stable-usort comparison, with the ordering unchanged.
-        $decorated=array_map(static fn(array $pair):array=>[[$pair[0]->origin->z,$pair[0]->origin->y,$pair[0]->origin->x,...$pair[0]->dimensions->descendingVolumeKey()],$pair],array_values($unique));
-        usort($decorated,static fn(array $a,array $b):int=>$a[0]<=>$b[0]);
-        $kept=array_column($decorated,1);
+        $kept=StableSorter::sortBy(array_values($unique),static fn(array $pair):array=>array_merge([$pair[0]->origin->z,$pair[0]->origin->y,$pair[0]->origin->x],$pair[0]->dimensions->descendingVolumeKey()));
         // Without this filter every placement multiplies the space list and the solver
         // degenerates into an exponential scan of overlapping duplicates.
         $extents=array_map(static fn(array $pair):array=>[
@@ -143,10 +142,11 @@ final class MaximalSpaceSolver implements SingleContainerSolver
             $result[]=$space;
         }
         if(count($result)>self::MAX_MAXIMAL_SPACES){
-            $byVolume=array_map(static fn(Space $space):array=>[$space->dimensions->descendingVolumeKey(),$space],$result);
-            usort($byVolume,static fn(array $a,array $b):int=>$a[0]<=>$b[0]);
-            $result=array_column(array_slice($byVolume,0,self::MAX_MAXIMAL_SPACES),1);
-            usort($result,static fn(Space $a,Space $b):int=>[$a->origin->z,$a->origin->y,$a->origin->x]<=>[$b->origin->z,$b->origin->y,$b->origin->x]);
+            $byVolume=StableSorter::sortBy($result,static fn(Space $space):array=>$space->dimensions->descendingVolumeKey());
+            $result=StableSorter::sortBy(
+                array_slice($byVolume,0,self::MAX_MAXIMAL_SPACES),
+                static fn(Space $space):array=>[$space->origin->z,$space->origin->y,$space->origin->x],
+            );
         }
         return $result;
     }

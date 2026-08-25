@@ -531,7 +531,7 @@ final class SolverOrchestrator
                 if($reached)break;
             }
             if($candidates===[])break;
-            usort($candidates,static fn(array $a,array $b):int=>$a[0]<=>$b[0]);
+            $candidates=StableSorter::sortBy($candidates,static fn(array $candidate):array=>$candidate[0]);
             $best=$candidates[0][1];$c=$best->state->container;$seq[$c->id]++;
             $exhaustive=$exhaustive&&$best->exhaustive;
             $dominantLattice=$dominantLattice&&$best->dominantLattice;
@@ -641,9 +641,10 @@ final class SolverOrchestrator
             // planBound re-derives the additive volume/payload relaxation with BigInt
             // string math; one evaluation per plan instead of one per stable-usort
             // comparison leaves the ordering untouched.
-            $decorated=array_map(static fn(array $plan):array=>[self::planBound($plan,$containers,$config),$plan],array_values($dominant));
-            usort($decorated,static fn(array $a,array $b):int=>$a[0]<=>$b[0]);
-            $beam=array_column(array_slice($decorated,0,$config->containerPlanBeamWidth),1);
+            $beam=array_slice(
+                StableSorter::sortBy(array_values($dominant),static fn(array $plan):array=>self::planBound($plan,$containers,$config)),
+                0,$config->containerPlanBeamWidth,
+            );
         }
         $unpacked=[];foreach($incumbent['remaining'] as $item){[$reason,$details]=$this->unpackedReason($item,$containers,$reached);if($reason==='no_feasible_placement'&&$this->supportIsTheBlocker($item,$incumbent['packed'],$config))$reason='insufficient_support';$unpacked[]=new UnpackedItem($item,$reason,$details);}
         $proven=$incumbent['exhaustive']&&!$reached&&$unpacked===[]&&count($incumbent['packed'])===1;

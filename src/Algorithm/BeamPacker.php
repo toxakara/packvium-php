@@ -5,7 +5,7 @@ use Packvium\Config\PackingConfig;
 use Packvium\Constraint\PlacementConstraint;
 use Packvium\Domain\{Container,ItemInstance,Placement};
 use Packvium\Extension\CandidateScorer;
-use Packvium\Support\BigInt;
+use Packvium\Support\{BigInt,StableSorter};
 final class BeamPacker
 {
     /**
@@ -29,8 +29,8 @@ final class BeamPacker
         $greedy=new ContainerState($container,$sequence);$greedyUnplaced=[];
         foreach($batches as $greedyPosition=>$batch){
             try{$children=self::placeBatch($greedy,$batch,$config,$constraints,$stats,$deadline,$scorer,1);}
-            catch(TimeLimitReached){$greedyUnplaced=[...$greedyUnplaced,...GroupBatcher::flatten(array_slice($batches,$greedyPosition))];break;}
-            if($children!==[])$greedy=$children[0];else $greedyUnplaced=[...$greedyUnplaced,...$batch];
+            catch(TimeLimitReached){$greedyUnplaced=array_merge($greedyUnplaced,GroupBatcher::flatten(array_slice($batches,$greedyPosition)));break;}
+            if($children!==[])$greedy=$children[0];else $greedyUnplaced=array_merge($greedyUnplaced,$batch);
         }
         $incumbent=[$greedy,$greedyUnplaced];
         // nodeKey builds an O(m) placement signature, BigInt chunks and the knapsack
@@ -46,28 +46,25 @@ final class BeamPacker
                 $stats->searchNodesExpanded++;
                 try{$children=self::placeBatch($state,$batch,$config,$constraints,$stats,$deadline,$scorer,$branchWidth);}
                 catch(TimeLimitReached){$exhausted=true;$children=[];}
-                if($children!==[]){foreach($children as $child)$expansions[]=[$child,$unplaced];$expansions[]=[$state,[...$unplaced,...$batch]];}
-                else $expansions[]=[$state,[...$unplaced,...$batch]];
+                if($children!==[]){foreach($children as $child)$expansions[]=[$child,$unplaced];$expansions[]=[$state,array_merge($unplaced,$batch)];}
+                else $expansions[]=[$state,array_merge($unplaced,$batch)];
             }
             $future=GroupBatcher::flatten(array_slice($batches,$position+1));
             foreach($expansions as [$state,$unplaced]){
-                $candidate=[$state,[...$unplaced,...$future]];
+                $candidate=[$state,array_merge($unplaced,$future)];
                 $candidateKey=self::nodeKey($candidate);
                 if($candidateKey<$incumbentKey){$incumbent=$candidate;$incumbentKey=$candidateKey;}
             }
             if($expansions===[])break;
-            $decorated=array_map(static fn(array $node):array=>[self::nodeKey($node,$future),$node],$expansions);
-            usort($decorated,static fn(array $a,array $b):int=>$a[0]<=>$b[0]);
-            $beam=array_column(array_slice($decorated,0,$width),1);
+            $beam=array_slice(StableSorter::sortBy($expansions,static fn(array $node):array=>self::nodeKey($node,$future)),0,$width);
             if($exhausted){
                 [$state,$unplaced]=$incumbent;
                 return new SingleContainerSolution($state,$unplaced,false,$deadline->expired());
             }
         }
-        $decorated=array_map(static fn(array $node):array=>[self::nodeKey($node),$node],$beam);
-        usort($decorated,static fn(array $a,array $b):int=>$a[0]<=>$b[0]);
-        $completed=$decorated[0]??null;
-        [$state,$unplaced]=$completed!==null&&$completed[0]<$incumbentKey?$completed[1]:$incumbent;
+        $ordered=StableSorter::sortBy($beam,static fn(array $node):array=>self::nodeKey($node));
+        $completed=$ordered[0]??null;
+        [$state,$unplaced]=$completed!==null&&self::nodeKey($completed)<$incumbentKey?$completed:$incumbent;
         return new SingleContainerSolution($state,$unplaced);
     }
 
@@ -89,14 +86,13 @@ final class BeamPacker
                 try{$children=self::placeBatch($state,$batch,$config,$constraints,$stats,$deadline,$scorer,$width);}
                 catch(TimeLimitReached){$exhausted=true;$children=[];}
                 if($children!==[]){foreach($children as $child)$expansions[]=[$child,$unplaced];}
-                else $expansions[]=[$state,[...$unplaced,...$batch]];
+                else $expansions[]=[$state,array_merge($unplaced,$batch)];
             }
-            usort($expansions,static fn(array $a,array $b):int=>self::nodeKey($a)<=>self::nodeKey($b));
-            $beam=array_slice($expansions,0,$width);
+            $beam=array_slice(StableSorter::sortBy($expansions,static fn(array $node):array=>self::nodeKey($node)),0,$width);
             if($exhausted){
                 [$state,$unplaced]=$beam[0];
                 $pending=GroupBatcher::flatten(array_slice($batches,$position+1));
-                return new SingleContainerSolution($state,[...$unplaced,...$pending],false,true);
+                return new SingleContainerSolution($state,array_merge($unplaced,$pending),false,true);
             }
         }
         [$state,$unplaced]=$beam[0];
@@ -168,6 +164,6 @@ final class BeamPacker
             $signature[]=$p->instance->id().'@'.$p->envelopeOrigin->x.','.$p->envelopeOrigin->y.','.$p->envelopeOrigin->z;
         }
         $descendingUsed=array_map(static fn(int $c):int=>-$c,\Packvium\Support\BigInt::chunks($used));
-        return [self::unpackedLowerBound($state,$unplaced,$future),count($unplaced),-count($state->placements),$state->maxZ,...$descendingUsed,implode('|',$signature)];
+        return array_merge([self::unpackedLowerBound($state,$unplaced,$future),count($unplaced),-count($state->placements),$state->maxZ],$descendingUsed,[implode('|',$signature)]);
     }
 }

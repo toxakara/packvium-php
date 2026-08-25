@@ -113,7 +113,7 @@ final class GridSolver implements SingleContainerSolver
             if($container->maxItems!==null)$capacity=min($capacity,$container->maxItems);
             if($container->maxPayload!==null&&$prototype->weight->ticks>0)$capacity=min($capacity,intdiv($container->maxPayload->ticks,$prototype->weight->ticks));
             foreach(array_intersect($prototype->tags,array_keys($container->tagLimits)) as $tag)$capacity=min($capacity,$container->tagLimits[$tag]);
-            $score=[-$capacity,...$envelope->volumeKey(),$rotation->value];
+            $score=array_merge([-$capacity],$envelope->volumeKey(),[$rotation->value]);
             if($best===null||$score<$best[0])$best=[$score,$rotation,$physical,$envelope,$nx,$ny,$layerStep,$capacity];
         }
         [,$rotation,$physical,$envelope,$nx,$ny,$layerStep,$capacity]=$best;

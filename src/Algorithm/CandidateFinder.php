@@ -3,7 +3,7 @@ declare(strict_types=1);
 namespace Packvium\Algorithm;
 use Packvium\Config\PackingConfig;
 use Packvium\Constraint\{AxleLoad,ConstraintContext,LoadCalculator,PlacementConstraint,SupportConstraint};
-use Packvium\Support\BigInt;
+use Packvium\Support\{BigInt,StableSorter};
 use Packvium\Domain\{ItemInstance,Nesting,Placement,Point};
 use Packvium\Extension\CandidateScorer;
 final class CandidateFinder
@@ -96,7 +96,7 @@ final class CandidateFinder
             }
         }
         if($max===1)return $best===null?[]:[$best];
-        usort($out,static fn(Candidate $a,Candidate $b):int=>$a->score<=>$b->score);
+        $out=StableSorter::sortBy($out,static fn(Candidate $candidate):array=>$candidate->score);
         return $max===null?$out:array_slice($out,0,$max);
     }
 
