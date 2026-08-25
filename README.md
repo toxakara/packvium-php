@@ -3,7 +3,7 @@
 Deterministic 3D cartonization and rectangular bin packing. Pure PHP, **no runtime
 dependencies**, exact integer geometry.
 
-> **Version 0.1.2 — early release.** The public API is not frozen; pin an exact version.
+> **Version 0.1.3 — early release.** The public API is not frozen; pin an exact version.
 > Read [docs/GUARANTEES.md](docs/GUARANTEES.md) before relying on a result.
 
 ```bash
@@ -104,14 +104,29 @@ print, which is the cross-language contract this port is held to, not a coincide
 
 ## Requirements
 
-PHP 8.2 or newer. No extensions required — `bcmath` and `gmp` are deliberately not
+PHP 7.3 or newer. No extensions required — `bcmath` and `gmp` are deliberately not
 depended upon.
+
+One package name covers the whole range. It carries two source trees — the canonical
+PHP 8.2+ `src/` and `src-legacy/`, generated from it by a pinned AST downgrade — and
+`autoload.php` selects one by `PHP_VERSION_ID` before Composer's PSR-4 map gets a chance
+to load the wrong one. PHP parses only what it loads. There is no wrapper, no second
+package and nothing to configure; namespaces, classes and results are identical either
+way, and both trees are held to the same committed placement results on every supported
+version.
+
+PHP 7.3, 7.4, 8.0 and 8.1 are end-of-life and receive no upstream security fixes. Packvium
+runs there so that an upgrade does not have to block your project — not so that it can be
+postponed.
 
 ## The Packvium family
 
 One request and result contract, implemented independently in four engines (Rust,
 Python, PHP, JavaScript) and held to identical placements on a shared fixture set.
 Pick the package for your stack; mixing them in one system is safe.
+
+Documentation, the constraint reference and the benchmarks are at
+[packvium.com](https://packvium.com).
 
 | Package | Install | Source |
 | --- | --- | --- |

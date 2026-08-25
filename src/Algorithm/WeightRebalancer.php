@@ -104,13 +104,14 @@ final class WeightRebalancer
 
             $rankedItems = range(0, count($source->placements) - 1);
             usort($rankedItems, static fn(int $a, int $b): int =>
-                $source->placements[$b]->instance->weight()->ticks <=> $source->placements[$a]->instance->weight()->ticks);
+                ($source->placements[$b]->instance->weight()->ticks <=> $source->placements[$a]->instance->weight()->ticks)
+                ?: ($a <=> $b));
 
             $destinations = array_values(array_filter(
                 range(0, count($working) - 1),
                 static fn(int $i): bool => $i !== $sourceIndex,
             ));
-            usort($destinations, static fn(int $a, int $b): int => $weights[$a] <=> $weights[$b]);
+            usort($destinations, static fn(int $a, int $b): int => ($weights[$a] <=> $weights[$b]) ?: ($a <=> $b));
 
             $committed = null;
             foreach ($rankedItems as $placementIndex) {

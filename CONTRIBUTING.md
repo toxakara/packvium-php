@@ -59,7 +59,9 @@ whether any placement moves.
 - One logical change per pull request.
 - Commit messages in imperative mood, under 72 characters:
   `type(scope): description` with `feat`, `fix`, `refactor`, `chore`, `docs` or `test`.
-- Add or update tests. The suite must pass on PHP 8.2 through 8.4.
+- Add or update tests. The suite must pass on PHP 8.2 through 8.5.
+- `src-legacy/` is generated, never edited. Fix the canonical file under `src/`; the
+  downgrade regenerates the other tree at release time.
 - `composer validate --strict` must stay clean. Do **not** add a `version` field —
   Packagist infers it from Git tags.
 - Update the relevant document under `docs/` when you change behaviour. Complexity,

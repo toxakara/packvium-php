@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 namespace Packvium\Domain;
-use Packvium\Support\BigInt;
+use Packvium\Support\{BigInt,StableSorter};
 
 /**
  * Nesting overlap accounting.
@@ -54,7 +54,7 @@ final class Nesting
         $overlap = '0';
         foreach ($groups as $group) {
             if (count($group) < 2) { continue; }
-            usort($group, static fn(Placement $a, Placement $b): int => $a->envelopeBox()->origin->z <=> $b->envelopeBox()->origin->z);
+            $group = StableSorter::sortBy($group, static fn(Placement $p): array => [$p->envelopeBox()->origin->z]);
             for ($i = 0; $i < count($group) - 1; $i++) {
                 $lower = $group[$i]; $upper = $group[$i + 1];
                 if (self::isValidNesting($lower, $upper)) {

@@ -44,6 +44,69 @@ jobs:
           # shellcheck disable=SC2016
           php -r '$r = json_decode(file_get_contents("result.json"), true); exit($r["complete"] === true ? 0 : 1);'
 
+  # The package advertises `php: >=7.3`. The job above proves the canonical tree on
+  # 8.2+; this proves the other half of the claim, on every runtime that gets the
+  # generated tree instead. Until 0.1.3 that tree was a release download with no Packagist
+  # name, so nothing below 8.2 could install the package at all -- the floor lived in
+  # metadata and in no pipeline.
+  legacy:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["7.3", "7.4", "8.0", "8.1"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: package
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          tools: composer:v2
+      - run: composer validate --strict --no-check-lock
+        working-directory: package
+      - name: Parse the entry point and the tree this runtime loads
+        working-directory: package
+        # `php -l` writes its diagnosis to stdout. Discarding it and relying on the exit
+        # status turns a named parse error into a job that stops with no reason printed,
+        # which is how the 8.0/8.1 breakage stayed invisible for one debugging round.
+        # Report every offender, not just the first.
+        run: |
+          failed=0
+          for file in autoload.php $(find src-legacy -name '*.php'); do
+            if ! diagnosis=$(php -l "$file" 2>&1); then
+              echo "$diagnosis"
+              failed=1
+            fi
+          done
+          [ "$failed" -eq 0 ]
+          echo "parsed autoload.php and $(find src-legacy -name '*.php' | wc -l) generated files"
+      - name: Require the package the way a consumer does
+        run: |
+          mkdir consumer && cd consumer
+          composer init --no-interaction --name=smoke/consumer --stability=dev
+          composer config repositories.local path ../package
+          composer require packvium/packvium:@dev --no-interaction
+      - name: Pack a request, and check which tree answered
+        working-directory: consumer
+        run: |
+          cat > request.json <<'JSON'
+          {"items":[{"id":"box","quantity":8,"dimensions":{"length":"50","width":"50","height":"50"}}],
+           "containers":[{"id":"carton","inner_dimensions":{"length":"100","width":"100","height":"100"}}]}
+          JSON
+          # Single-quoted below is PHP, not shell. A wrong-tree load is the failure this
+          # job exists to catch: Composer's PSR-4 map points at `src/` on every runtime,
+          # so if `autoload.php` did not get in front of it, 7.3 would parse an 8.2 file.
+          # shellcheck disable=SC2016
+          php -r 'require "vendor/autoload.php";
+                  $f=(new ReflectionClass(Packvium\Packer::class))->getFileName();
+                  $want=PHP_VERSION_ID<80200?"/src-legacy/":"/src/";
+                  if(strpos($f,$want)===false){fwrite(STDERR,"loaded $f, expected the $want tree\n");exit(1);}
+                  $r=Packvium\Serialization\ArrayCodec::pack(json_decode(file_get_contents("request.json"),true));
+                  fwrite(STDOUT,PHP_VERSION." -> ".$want." packed ".$r["summary"]["packed_item_count"]."\n");
+                  exit($r["summary"]["packed_item_count"]===8?0:1);'
+
   install-smoke:
     # Prove the package installs from a clean checkout the way a consumer gets it.
     runs-on: ubuntu-latest
