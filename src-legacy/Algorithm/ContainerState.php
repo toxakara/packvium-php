@@ -2,7 +2,7 @@
 declare(strict_types=1);
 namespace Packvium\Algorithm;
 use Packvium\Constraint\VolumeReserve;
-use Packvium\Domain\{AxisAlignedBox,Container,ItemInstance,LatticeSummary,Nesting,Placement,Point};
+use Packvium\Domain\{AxisAlignedBox,Container,ItemInstance,LatticeSummary,Nesting,Placement,Point,ShapeType};
 use Packvium\Support\BigInt;
 /**
  * Placed boxes plus the candidate points they expose.
@@ -37,6 +37,13 @@ final class ContainerState
      */
     public $bounds=[];
     /**
+     * Parallel to `$bounds`: the rotated hull of that solid, or null where it is an ordinary
+     * box. Obstacles are always boxes, so a cuboid-only request never allocates past this
+     * list of nulls.
+     * @var list<?\Packvium\Domain\HullShape>
+     */
+    public $hullShapes=[];
+    /**
      * @var int
      */
     public $payloadTicks=0;
@@ -51,6 +58,10 @@ final class ContainerState
      * @var bool
      */
     public $routeSensitive=false;
+    /**
+     * @var bool
+     */
+    public $compressionSensitive=false;
     /**
      * @var int
      */
@@ -82,6 +93,9 @@ final class ContainerState
             $bound=$box->extent();
             $this->index->add(count($this->bounds),$bound);
             $this->bounds[]=$bound;
+            // An obstacle is always a box, so its slot stays null and the parallel arrays
+            // start life the same length.
+            $this->hullShapes[]=null;
         }
         $this->absorb([new Point(0,0,0)]);
         foreach($this->occupied as $box)$this->absorb($this->exposedPoints($box));
@@ -108,19 +122,33 @@ final class ContainerState
     public function add(Placement $placement):void
     {
         $box=$placement->envelopeBox();
-        $this->usedVolume=BigInt::add($this->usedVolume,Nesting::usedVolumeDelta($this->placements,$placement));
+        $compressionSensitive=$this->compressionSensitive
+            ||$placement->instance->item->shapeType===ShapeType::COMPRESSIBLE;
+        if($compressionSensitive)
+            $this->usedVolume=Nesting::usedVolume(TopLoadAssigner::assign(array_merge($this->placements, [$placement])));
+        else
+            $this->usedVolume=BigInt::add($this->usedVolume,Nesting::usedVolumeDelta($this->placements,$placement));
         $this->placements[]=$placement;
         $this->payloadTicks+=$placement->instance->weight()->ticks;
         $item=$placement->instance->item;
-        $this->stackSensitive=$this->stackSensitive||!$item->stackable||$item->maxTopLoad!==null||$item->maxStackedItems!==null;
+        $this->stackSensitive=$this->stackSensitive||$item->isStackSensitive();
         $this->routeSensitive=$this->routeSensitive||$item->stopIndex!==null;
+        $this->compressionSensitive=$compressionSensitive;
         if($box->z2()>$this->maxZ)$this->maxZ=$box->z2();
         $this->occupied[]=$box;
         $bound=$box->extent();
         $this->index->add(count($this->bounds),$bound);
         $this->bounds[]=$bound;
+        $shape=$placement->hullShape();
+        $this->hullShapes[]=$shape;
+        // Retiring a point because it falls inside a solid's box assumes the box *is* the
+        // solid. For a hull it is not: a placement origin is a corner of a bounding box, and a
+        // hull leaves most of that box -- including, for a wedge, the origin itself --
+        // available to the next item. Pruning them first would mean the engine could describe
+        // an interlocking pack it could never propose.
         $retired=[];
-        foreach($this->points as $key=>$point)if($box->containsPoint($point)){$retired[$key]=true;unset($this->points[$key]);}
+        if($shape===null)
+            foreach($this->points as $key=>$point)if($box->containsPoint($point)){$retired[$key]=true;unset($this->points[$key]);}
         if($retired!==[])$this->orderedPoints=array_values(array_filter(
             $this->orderedPoints,
             static function (Point $point) use ($retired): bool {
@@ -139,11 +167,14 @@ final class ContainerState
     public function addDirect(Placement $placement):void
     {
         $box=$placement->envelopeBox();
+        // GridSolver admits only rigid cuboids and never reaches the non-local compression
+        // path. Keeping a second unreachable implementation here would be speculative and
+        // could drift from `add`, so the direct lattice path remains the proven O(1) delta.
         $this->usedVolume=BigInt::add($this->usedVolume,Nesting::usedVolumeDelta($this->placements,$placement));
         $this->placements[]=$placement;
         $this->payloadTicks+=$placement->instance->weight()->ticks;
         $item=$placement->instance->item;
-        $this->stackSensitive=$this->stackSensitive||!$item->stackable||$item->maxTopLoad!==null||$item->maxStackedItems!==null;
+        $this->stackSensitive=$this->stackSensitive||$item->isStackSensitive();
         $this->routeSensitive=$this->routeSensitive||$item->stopIndex!==null;
         if($box->z2()>$this->maxZ)$this->maxZ=$box->z2();
     }
@@ -171,7 +202,7 @@ final class ContainerState
         $this->usedVolume=BigInt::add($this->usedVolume,$summary->usedVolumeString());
         foreach($items as $instance){
             $item=$instance->item;
-            $this->stackSensitive=$this->stackSensitive||!$item->stackable||$item->maxTopLoad!==null||$item->maxStackedItems!==null;
+            $this->stackSensitive=$this->stackSensitive||$item->isStackSensitive();
             $this->routeSensitive=$this->routeSensitive||$item->stopIndex!==null;
         }
         if($summary->maxZTicks()>$this->maxZ)$this->maxZ=$summary->maxZTicks();

@@ -31,6 +31,6 @@ final class LayerSolver implements SingleContainerSolver
         $ordered=StableSorter::sortBy($items,static function (ItemInstance $i) use ($config): array {
             return array_merge(ItemOrdering::lead($i,$config), [-$i->dimensions()->baseAreaTicks()], $i->dimensions()->descendingVolumeKey(), [-$i->weight()->ticks, $i->id()]);
         });
-        return BeamPacker::pack($container,$sequence,$ordered,$config,ConstraintSet::defaults($config->minimumSupportRatio,$this->constraints),$stats,$deadline,$this->scorer??new DefaultCandidateScorer());
+        return BeamPacker::pack($container,$sequence,$ordered,$config,ConstraintSet::defaults($config->minimumSupportRatio,$this->constraints,$config->accessDirections),$stats,$deadline,$this->scorer??new DefaultCandidateScorer());
     }
 }

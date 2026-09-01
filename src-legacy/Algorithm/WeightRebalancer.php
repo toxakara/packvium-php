@@ -204,7 +204,7 @@ final class WeightRebalancer
         foreach ($dest->placements as $placement) {
             $destState->add($placement);
         }
-        $constraints = ConstraintSet::defaults($config->minimumSupportRatio);
+        $constraints = ConstraintSet::defaults($config->minimumSupportRatio,[],$config->accessDirections);
         $stats = new SearchStats();
         $candidates = CandidateFinder::find(
             $destState, $moving->instance, $config, $constraints, $stats, $deadline,

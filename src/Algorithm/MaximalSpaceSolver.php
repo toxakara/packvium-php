@@ -33,7 +33,7 @@ final class MaximalSpaceSolver implements SingleContainerSolver
 
     public function packOne(Container $container,int $sequence,array $items,PackingConfig $config,SearchStats $stats,Deadline $deadline):SingleContainerSolution
     {
-        $constraints=ConstraintSet::defaults($config->minimumSupportRatio,$this->constraints);
+        $constraints=ConstraintSet::defaults($config->minimumSupportRatio,$this->constraints,$config->accessDirections);
         $scorer=$this->scorer??new DefaultCandidateScorer();
         $state=new ContainerState($container,$sequence);
         $obstacleBoxes=array_merge([],...array_map(static fn($o)=>$o->boxes(),$container->obstacles));

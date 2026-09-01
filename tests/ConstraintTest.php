@@ -10,9 +10,10 @@ use Packvium\Constraint\ContactGraph;
 use Packvium\Constraint\ContainerEligibilityConstraint;
 use Packvium\Constraint\FloorConstraint;
 use Packvium\Constraint\LoadCalculator;
-use Packvium\Constraint\Internal\LoadSupportGraph;
+use Packvium\Constraint\Internal\{LoadAnalysis,LoadSupportGraph};
 use Packvium\Constraint\LoadUnit;
 use Packvium\Constraint\RouteOrderConstraint;
+use Packvium\Constraint\StopAccessibilityConstraint;
 use Packvium\Constraint\SupportConstraint;
 use Packvium\Constraint\TagCountConstraint;
 use Packvium\Constraint\TopLoadConstraint;
@@ -25,6 +26,7 @@ use Packvium\Domain\ItemInstance;
 use Packvium\Domain\Placement;
 use Packvium\Domain\Point;
 use Packvium\Domain\Rotation;
+use Packvium\Domain\SweptRegion;
 use Packvium\Unit\Length;
 use Packvium\Unit\Weight;
 
@@ -73,6 +75,162 @@ final class ConstraintTest extends TestCase
         $dims = $instance->item->dimensions;
         return new ConstraintContext($container ?? self::box(), $placements, $instance, new Point($x, 0, $z),
             Rotation::LWH, $dims, $dims, $stackSensitive, $routeSensitive);
+    }
+
+    // ------------------------------------------- stop accessibility
+    //
+    // The worked examples in docs/STOP-ACCESSIBILITY.md live in
+    // `conformance/scene/stop-accessibility-fixtures.json` and are read from there below,
+    // so this suite and the other three assert one table rather than four transcriptions.
+    // The helpers here serve the direction-canonicalisation test, which has no
+    // cross-language counterpart because each engine canonicalises in its own idiom.
+
+    private const DOOR_AT_MINUS_X = ['-x'];
+
+    /** A full-width, full-height box, so a corridor it stands in is completely filled. */
+    private static function wide(string $id, int $length, ?int $stop): ItemInstance
+    {
+        return Item::create($id, Dimensions::mm($length, 100, 100), stopIndex: $stop)->instances()[0];
+    }
+
+    /** @param list<string> $directions */
+    private static function scene(ItemInstance $placedItem, int $placedX, ItemInstance $candidate,
+                                  int $candidateX, array $directions = self::DOOR_AT_MINUS_X)
+    {
+        return (new StopAccessibilityConstraint($directions))->evaluate(self::context(
+            $candidate, placements: [self::placed($placedItem, $placedX * self::MM)],
+            x: $candidateX * self::MM,
+        ));
+    }
+
+    /**
+     * The worked examples, held once for all four engines instead of transcribed into each.
+     *
+     * A published copy of the package does not carry the corpus, so the test that reads it
+     * skips rather than failing for everyone who installed the package.
+     */
+    private const STOP_SCENES = __DIR__ . '/../../conformance/scene/stop-accessibility-fixtures.json';
+
+    /**
+     * The corpus is in ticks, so it is read straight rather than through `Dimensions::mm`:
+     * all four engines assert the same integers instead of each scaling by its own factor.
+     *
+     * @param array{length:int,width:int,height:int} $raw
+     */
+    private static function fixtureDimensions(array $raw): Dimensions
+    {
+        return new Dimensions(new Length($raw['length']), new Length($raw['width']), new Length($raw['height']));
+    }
+
+    /** @param array<string,mixed> $raw */
+    private static function fixtureInstance(array $raw): ItemInstance
+    {
+        return Item::create($raw['id'], self::fixtureDimensions($raw['dimensions']),
+            stopIndex: $raw['stop_index'])->instances()[0];
+    }
+
+    /**
+     * Every scene in the shared corpus, with the verdict every engine must reach.
+     *
+     * `accessible` is asserted by all four engines. `code` is asserted here and in Python,
+     * whose constraint returns a reason rather than a boolean, and `route_order_allowed`
+     * here, in Python and in Rust -- the corpus records that asymmetry so it is not
+     * rediscovered.
+     */
+    public static function testSharedFourLanguageStopAccessibilityScenes(): void
+    {
+        if (!is_file(self::STOP_SCENES)) {
+            self::skip('the shared cross-language scene corpus is not part of this package');
+        }
+        $payload = json_decode((string) file_get_contents(self::STOP_SCENES), true, flags: JSON_THROW_ON_ERROR);
+        self::assertNotSame([], $payload['scenes'],
+            'an empty corpus would pass this loop without asserting anything');
+
+        foreach ($payload['scenes'] as $scene) {
+            $raw = $scene['candidate'];
+            $placements = array_map(
+                static fn(array $each): Placement => new Placement(
+                    self::fixtureInstance($each),
+                    new Point($each['origin']['x'], $each['origin']['y'], $each['origin']['z']),
+                    Rotation::LWH,
+                    self::fixtureDimensions($each['dimensions']),
+                    new Point($each['origin']['x'], $each['origin']['y'], $each['origin']['z']),
+                    self::fixtureDimensions($each['dimensions']),
+                ),
+                $scene['placements'],
+            );
+            $candidate = self::fixtureInstance($raw);
+            $dimensions = self::fixtureDimensions($raw['dimensions']);
+            $evaluated = new ConstraintContext(
+                Container::create('fixture', self::fixtureDimensions($scene['container'])),
+                $placements,
+                $candidate,
+                new Point($raw['origin']['x'], $raw['origin']['y'], $raw['origin']['z']),
+                Rotation::LWH,
+                $dimensions,
+                $dimensions,
+                true,
+                true,
+            );
+            $result = (new StopAccessibilityConstraint($scene['directions']))->evaluate($evaluated);
+
+            self::assertSame($scene['accessible'], $result->allowed, $scene['id']);
+            if (isset($scene['code'])) {
+                self::assertSame($scene['code'], $result->code, $scene['id']);
+            }
+            if (array_key_exists('route_order_allowed', $scene)) {
+                self::assertSame($scene['route_order_allowed'],
+                    (new RouteOrderConstraint())->evaluate($evaluated)->allowed, $scene['id']);
+            }
+        }
+    }
+
+    public static function testDirectionsAreCanonicalisedSoTwoCallersSearchIdentically(): void
+    {
+        // Order and duplicates must not reach the search: which door is tried first decides
+        // which of several legal answers comes back.
+        $one = self::scene(self::wide('early', 40, 0), 60, self::wide('late', 60, 1), 0, ['+x', '-x', '-x']);
+        $two = self::scene(self::wide('early', 40, 0), 60, self::wide('late', 60, 1), 0, ['-x', '+x']);
+        self::assertSame($one->allowed, $two->allowed);
+    }
+
+    public static function testSweptVolumeRefusesAnUnknownDirectionAtThePrimitive(): void
+    {
+        // The constraint validates its doors at construction, but the primitive is public
+        // and `Packvium\Sequence` calls it directly, so it owes the same refusal. Python's
+        // `swept_volume` is held to this too.
+        $box = new AxisAlignedBox(new Point(0, 0, 0), Dimensions::mm(10, 10, 10));
+        try {
+            SweptRegion::volume($box, Dimensions::mm(100, 100, 100), 'sideways');
+            self::fail('an unknown direction must be refused, not treated as one of the six');
+        } catch (\InvalidArgumentException $error) {
+            self::assertTrue(str_contains($error->getMessage(), 'sideways'),
+                'the refusal must name the direction it refused');
+        }
+    }
+
+    public static function testAPlacedFixtureNeedsNoDoorOfItsOwn(): void
+    {
+        // The other side of worked example D. There the permanent item was the *candidate*
+        // and took someone's last door; here it is already placed, and the corridor base
+        // must not spend a sweep looking for an exit it will never use -- an item that
+        // never leaves needs no door, it only ever blocks.
+        $fixture = self::wide('fixture', 40, null);
+        $late = self::wide('late', 60, 1);
+        $result = self::scene($fixture, 60, $late, 0);
+        // Nothing is due before the candidate, so the corridor rule has no complaint.
+        self::assertTrue($result->allowed);
+    }
+
+    public static function testAnUnknownDirectionIsRefusedRatherThanGuessed(): void
+    {
+        try {
+            new StopAccessibilityConstraint(['north']);
+            self::fail('an unknown direction must be refused, not silently treated as one of the six');
+        } catch (\InvalidArgumentException $error) {
+            self::assertTrue(str_contains($error->getMessage(), 'north'),
+                'the refusal must name the direction it refused');
+        }
     }
 
     // --------------------------------------------------- scaled ratio arithmetic
@@ -437,6 +595,272 @@ final class ConstraintTest extends TestCase
         $graph = new ContactGraph([$beam, ...$below]);
         $indexes = array_map(static fn($edge) => $edge->index, $graph->supporters(0));
         self::assertSame([1, 2, 3], $indexes);
+    }
+
+    // ------------------------------------------------- incremental append
+
+    /**
+     * A scene whose boxes actually touch each other.
+     *
+     * `randomBox` draws from a range wide enough that most of its scenes have no contact
+     * at all, which is fine for the brute-force agreement property above -- an empty edge
+     * set is still an edge set both implementations must agree on. It is not fine here:
+     * what is under test is that a delta reproduces edges, so a corpus where most scenes
+     * have no edges would pass with the delta returning nothing. Snapping every
+     * coordinate and extent to one coarse lattice makes shared planes the norm.
+     *
+     * @return list<AxisAlignedBox>
+     */
+    private static function touchingScene(int $count): array
+    {
+        $extents = [10, 20, 30];
+        $levels = [0, 10, 20, 30];
+        $boxes = [];
+        for ($i = 0; $i < $count; $i++) {
+            $boxes[] = new AxisAlignedBox(
+                new Point(mt_rand(0, 5) * 10, mt_rand(0, 5) * 10, $levels[mt_rand(0, 3)]),
+                new Dimensions(
+                    new Length($extents[mt_rand(0, 2)]),
+                    new Length($extents[mt_rand(0, 2)]),
+                    new Length($extents[mt_rand(0, 2)]),
+                ),
+            );
+        }
+        return $boxes;
+    }
+
+    /** @param list<AxisAlignedBox> $boxes */
+    private static function widestFootprint(array $boxes): int
+    {
+        $widest = 1;
+        foreach ($boxes as $box) {
+            $widest = max($widest, $box->x2() - $box->origin->x, $box->y2() - $box->origin->y);
+        }
+        return $widest;
+    }
+
+    /**
+     * Both edge directions as ordered lists.
+     *
+     * Compared as sequences, never as sets: `topLoads` hands the integer rounding
+     * remainder to whichever supporter is *last*, so two graphs holding the same edges in
+     * a different order are two different answers.
+     *
+     * @param ContactGraph|LoadSupportGraph $graph
+     * @return array{0:list<list<array{0:int,1:int}>>,1:list<list<int>>}
+     */
+    private static function edges(object $graph, int $count): array
+    {
+        $supporters = [];
+        $children = [];
+        for ($index = 0; $index < $count; $index++) {
+            $own = [];
+            foreach ($graph->supporters($index) as $edge) { $own[] = [$edge->index, $edge->area]; }
+            $supporters[] = $own;
+            $children[] = $graph->children($index);
+        }
+        return [$supporters, $children];
+    }
+
+    public static function testAppendingABoxMatchesBuildingTheWholeSceneAtOnce(): void
+    {
+        // The base is built with the widest footprint in the scene as its hint, which is
+        // what a solver knows before it starts placing: the candidate about to be
+        // appended may be larger than anything already placed, and sizing the spatial
+        // hash from the placed boxes alone would send every append into the fallback.
+        for ($seed = 0; $seed < 40; $seed++) {
+            mt_srand(2000 + $seed);
+            $boxes = self::touchingScene(mt_rand(2, 14));
+            $split = max(1, intdiv(count($boxes), 2));
+            $hint = self::widestFootprint($boxes);
+            $graph = new ContactGraph(array_slice($boxes, 0, $split), $hint);
+            foreach (array_slice($boxes, $split) as $box) { $graph = $graph->withBox($box); }
+            self::assertSame(
+                self::edges(new ContactGraph($boxes), count($boxes)),
+                self::edges($graph, count($boxes)),
+                "seed {$seed}",
+            );
+        }
+    }
+
+    public static function testAppendingReusesTheBaseEdgesRatherThanRebuildingThem(): void
+    {
+        // Equality alone is satisfied by a `withBox` that quietly rebuilds everything --
+        // correct, and none of the point. The delta shares the base's edge objects, and
+        // a rebuild cannot: it constructs its own. So identity is what separates the two.
+        $stack = [
+            new AxisAlignedBox(new Point(0, 0, 0), new Dimensions(new Length(10), new Length(10), new Length(10))),
+            new AxisAlignedBox(new Point(0, 0, 10), new Dimensions(new Length(10), new Length(10), new Length(10))),
+        ];
+        $base = new ContactGraph($stack, 10);
+        $appended = $base->withBox(
+            new AxisAlignedBox(new Point(40, 40, 0), new Dimensions(new Length(10), new Length(10), new Length(10))),
+        );
+        self::assertSame($base->supporters(1)[0], $appended->supporters(1)[0]);
+    }
+
+    public static function testLoadCalculationsUseTheSuppliedIncrementalGraph(): void
+    {
+        // A mismatched graph is not a supported production input, but it is a precise
+        // Dependency-injection probe: if the internal analysis quietly rebuilt from `$stack`,
+        // all three results below would describe a two-box tower. Zero/zero/null prove
+        // that the supplied graph is the graph each calculation actually traversed.
+        $stack = [
+            self::unit(0, 0, 0, 10, 10, 10, 100, 50, 0, 'base'),
+            self::unit(0, 0, 10, 10, 10, 10, 100, null, null, 'top'),
+        ];
+        $sideBySide = [
+            self::unit(0, 0, 0, 10, 10, 10, 100, 50, 0, 'base'),
+            self::unit(10, 0, 0, 10, 10, 10, 100, null, null, 'top'),
+        ];
+        $graph = new LoadSupportGraph($sideBySide);
+
+        $analysis = new LoadAnalysis($stack, $graph);
+        self::assertSame([0, 0], $analysis->topLoads());
+        self::assertNull($analysis->overloaded());
+        self::assertNull($analysis->stackLimitExceeded());
+    }
+
+    /**
+     * The delta matches a rebuild across scene shapes the property test above excludes.
+     *
+     * That test asserts the base's ContactEdge objects are reused, which proves the delta
+     * ran rather than quietly rebuilding -- and therefore never exercises a run where the
+     * fallback and the delta interleave. A cell hint of one produces exactly that, several
+     * times per scene.
+     *
+     * Three axes vary independently. Tight coordinates make shared planes and zero-area
+     * edge contacts the norm; coordinates at 10^9 push the spatial hash's cell arithmetic
+     * somewhere a lattice never goes; a huge hint collapses every box into one cell, which
+     * is the degenerate case the hash exists to avoid and therefore the one most likely to
+     * be wrong.
+     */
+    public static function testTheDeltaMatchesARebuildAcrossSceneShapes(): void
+    {
+        $tight = [0, 1, 2, 5, 10];
+        $wide = [0, 10, 100, 1000000000];
+        $tiny = [1, 2, 3];
+        $mixed = [1, 5, 10, 40];
+        $shapes = [
+            'tight/tiny/exact' => [$tight, $tiny, 'exact'],
+            'tight/tiny/one' => [$tight, $tiny, 'one'],
+            'tight/mixed/one' => [$tight, $mixed, 'one'],
+            'tight/mixed/huge' => [$tight, $mixed, 'huge'],
+            'wide/mixed/exact' => [$wide, $mixed, 'exact'],
+            'wide/mixed/one' => [$wide, $mixed, 'one'],
+            'wide/tiny/huge' => [$wide, $tiny, 'huge'],
+        ];
+
+        foreach ($shapes as $name => [$coordinates, $extents, $hintMode]) {
+            mt_srand(crc32($name));
+            for ($trial = 0; $trial < 60; $trial++) {
+                $count = mt_rand(1, 10);
+                $boxes = [];
+                for ($index = 0; $index < $count; $index++) {
+                    $boxes[] = new AxisAlignedBox(
+                        new Point(
+                            $coordinates[mt_rand(0, count($coordinates) - 1)],
+                            $coordinates[mt_rand(0, count($coordinates) - 1)],
+                            $coordinates[mt_rand(0, count($coordinates) - 1)],
+                        ),
+                        new Dimensions(
+                            new Length($extents[mt_rand(0, count($extents) - 1)]),
+                            new Length($extents[mt_rand(0, count($extents) - 1)]),
+                            new Length($extents[mt_rand(0, count($extents) - 1)]),
+                        ),
+                    );
+                }
+                $widest = self::widestFootprint($boxes);
+                $hint = $hintMode === 'exact' ? $widest : ($hintMode === 'one' ? 1 : $widest * 100);
+                $split = max(1, intdiv($count, 2));
+                $graph = new ContactGraph(array_slice($boxes, 0, $split), $hint);
+                foreach (array_slice($boxes, $split) as $box) {
+                    $graph = $graph->withBox($box);
+                }
+                self::assertSame(
+                    self::edges(new ContactGraph($boxes), $count),
+                    self::edges($graph, $count),
+                    "{$name} trial {$trial}",
+                );
+            }
+        }
+    }
+
+    public static function testABoxWiderThanTheHintRebuildsAndIsStillCorrect(): void
+    {
+        // The hint is an optimisation; being wrong about it may cost time, never an
+        // answer. ContactLevelIndex is only sound while its cell is at least the largest
+        // footprint it indexes or is queried with, so a box exceeding the cell has to be
+        // met with a rebuild -- this asserts both halves: that the rebuild happens, and
+        // that the result is the one the full build gives.
+        $small = [
+            new AxisAlignedBox(new Point(0, 0, 0), new Dimensions(new Length(10), new Length(10), new Length(10))),
+            new AxisAlignedBox(new Point(10, 0, 0), new Dimensions(new Length(10), new Length(10), new Length(10))),
+        ];
+        $wide = new AxisAlignedBox(new Point(0, 0, 10), new Dimensions(new Length(40), new Length(10), new Length(10)));
+        $base = new ContactGraph($small);
+        $graph = $base->withBox($wide);
+        $indexes = array_map(static fn($edge) => $edge->index, $graph->supporters(2));
+        self::assertSame([0, 1], $indexes);
+        $whole = $small;
+        $whole[] = $wide;
+        self::assertSame(self::edges(new ContactGraph($whole), 3), self::edges($graph, 3));
+    }
+
+    public static function testAnAppendedBoxLandsLastInTheListsItJoins(): void
+    {
+        // The new box always takes the highest index, so appending it to an existing
+        // supporter list keeps that list ascending -- but only because it is appended and
+        // not inserted, which is the kind of detail a from-scratch comparison on random
+        // scenes can miss when no scene happens to produce the collision.
+        $scene = [
+            new AxisAlignedBox(new Point(0, 0, 0), new Dimensions(new Length(10), new Length(10), new Length(10))),
+            new AxisAlignedBox(new Point(0, 0, 10), new Dimensions(new Length(20), new Length(10), new Length(10))),
+            new AxisAlignedBox(new Point(10, 0, 0), new Dimensions(new Length(10), new Length(10), new Length(10))),
+        ];
+        $graph = (new ContactGraph($scene, 20))->withBox(
+            new AxisAlignedBox(new Point(0, 0, 20), new Dimensions(new Length(10), new Length(10), new Length(10))),
+        );
+        $indexes = array_map(static fn($edge) => $edge->index, $graph->supporters(1));
+        self::assertSame([0, 2], $indexes);
+        self::assertSame([3], $graph->children(1));
+    }
+
+    public static function testAppendingAUnitMatchesBuildingTheSupportGraphAtOnce(): void
+    {
+        for ($seed = 0; $seed < 40; $seed++) {
+            mt_srand(4000 + $seed);
+            $boxes = self::touchingScene(mt_rand(2, 12));
+            $units = [];
+            foreach ($boxes as $i => $box) { $units[] = new LoadUnit($box, 100, null, null, "u{$i}"); }
+            $hint = self::widestFootprint($boxes);
+            $graph = new LoadSupportGraph(array_slice($units, 0, 1), $hint);
+            foreach (array_slice($units, 1) as $unit) { $graph = $graph->withUnit($unit, $hint); }
+            self::assertSame(
+                self::edges(new LoadSupportGraph($units), count($units)),
+                self::edges($graph, count($units)),
+                "seed {$seed}",
+            );
+        }
+    }
+
+    public static function testANestingUnitIsMetWithAFullRebuild(): void
+    {
+        // Nesting is deliberately excluded from the delta, and the exclusion is
+        // load-bearing: a nesting predecessor replaces the face edges of its whole
+        // column, so one new unit can rewrite edges arbitrarily far from itself and the
+        // locality the delta rests on is simply not there. The rebuild is the correct
+        // answer, so assert it is taken -- fresh edge objects, not the base's.
+        $lower = self::unit(0, 0, 0, 10, 10, 10, label: 'a', nestingItemId: 'tray', nestingHeightTicks: 4);
+        $upper = self::unit(0, 0, 6, 10, 10, 10, label: 'b', nestingItemId: 'tray', nestingHeightTicks: 4);
+        $arriving = self::unit(0, 0, 12, 10, 10, 10, label: 'c', nestingItemId: 'tray', nestingHeightTicks: 4);
+        $base = new LoadSupportGraph([$lower, $upper]);
+        $graph = $base->withUnit($arriving);
+        self::assertNotSame($base->supporters(1)[0], $graph->supporters(1)[0]);
+        self::assertSame(
+            self::edges(new LoadSupportGraph([$lower, $upper, $arriving]), 3),
+            self::edges($graph, 3),
+        );
     }
 
     // --------------------------------------------------------- stacked-item counting

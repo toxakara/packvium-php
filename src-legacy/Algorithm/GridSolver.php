@@ -2,7 +2,7 @@
 declare(strict_types=1);
 namespace Packvium\Algorithm;
 use Packvium\Config\PackingConfig;
-use Packvium\Domain\{Container,LatticeSummary,Placement,Point};
+use Packvium\Domain\{Container,LatticeSummary,Placement,Point,ShapeType};
 /**
  * Regular lattice for a single item type.
  *
@@ -77,6 +77,13 @@ final class GridSolver implements SingleContainerSolver
             // Lattice capacity does not carry the changing longitudinal moment.
             // Delegate to the candidate engine, which enforces exact gross reactions
             // before accepting every placement.
+            return (new ExtremePointSolver())->packOne($container,$sequence,$items,$config,$stats,$deadline);
+        if($prototype->shapeType!==ShapeType::RIGID_CUBOID)
+            // The lattice is closed-form over boxes: it counts cells from envelope extents and
+            // caps a column from `max_top_load` arithmetic alone. Neither step can see a hull
+            // -- it would tile bounding boxes and call the result exact -- and neither can see
+            // pressure, so a compressible column would be sized without ever asking whether
+            // its bottom item survives. The general solver checks both per candidate.
             return (new ExtremePointSolver())->packOne($container,$sequence,$items,$config,$stats,$deadline);
         $state=new ContainerState($container,$sequence);
         // Every non-floor lattice cell has one full-area direct supporter, including

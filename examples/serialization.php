@@ -17,7 +17,9 @@
  * - lengths and weights travel as *decimal strings*, never as floats, so "12 3/8 in"
  *   survives the trip intact (see units.php for why that matters);
  * - a field this engine has deliberately not implemented is refused by name, but a key
- *   the parser simply does not recognise is ignored. The last section shows both.
+ *   the parser simply does not recognise is ignored. The last section shows both -- the
+ *   refusal through the guard's own test hook, because this engine has caught up and now
+ *   refuses nothing of its own.
  */
 declare(strict_types=1);
 
@@ -130,13 +132,26 @@ try {
 }
 
 // And a field this engine names as not-yet-implemented is refused explicitly, so a
-// request written for a newer engine fails loudly instead of being half-honoured.
-$fromTheFuture = $request;
-$fromTheFuture['items'][0]['shape_type'] = 'convex_hull';
+// request written for a newer engine fails loudly instead of being half-honoured. The
+// list below is the engine's own constant, and it is empty:  implemented
+// `convex_hull` and `compressible`, the last reserved names left on it, so this engine
+// now serves every field and every `shape_type` value the schema defines.
+$refused = array_filter(ArrayCodec::UNSUPPORTED_FIELDS);
+printf("fields this engine refuses by name: %s\n",
+    $refused === [] ? 'none' : json_encode($refused));
+
+// Caught up is the right state and a poor demonstration, so the guard takes its lists as
+// parameters -- the same hook its own tests use. Passing the value  retired shows
+// the refusal a caller still gets from an engine that is behind, and shows it naming the
+// *value* rather than the field: `rigid_cuboid` is the default and is implemented, so a
+// caller who spells the default out must be served, not refused.
+$behind = $request;
+$behind['items'][0]['shape_type'] = 'convex_hull';
 try {
-    ArrayCodec::rejectUnsupported($fromTheFuture, ['item' => ['shape_type'], 'request' => [], 'configuration' => [], 'container' => []]);
+    ArrayCodec::rejectUnsupported($behind, null, ['convex_hull']);
 } catch (UnsupportedFeatureException $refusal) {
-    printf("named unsupported field: %s\n", substr($refusal->getMessage(), 0, 110));
+    printf("  what one looks like, from an engine that is not: %s\n",
+        substr($refusal->getMessage(), 0, 110));
 }
 
 // -----------------------------------------------------------------------------------

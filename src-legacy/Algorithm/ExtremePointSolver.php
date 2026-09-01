@@ -24,6 +24,6 @@ final class ExtremePointSolver implements SingleContainerSolver
     public function name():string{return 'extreme_points';}
     public function packOne(Container $container,int $sequence,array $items,PackingConfig $config,SearchStats $stats,Deadline $deadline):SingleContainerSolution
     {
-        return BeamPacker::pack($container,$sequence,$items,$config,ConstraintSet::defaults($config->minimumSupportRatio,$this->constraints),$stats,$deadline,$this->scorer??new DefaultCandidateScorer());
+        return BeamPacker::pack($container,$sequence,$items,$config,ConstraintSet::defaults($config->minimumSupportRatio,$this->constraints,$config->accessDirections),$stats,$deadline,$this->scorer??new DefaultCandidateScorer());
     }
 }

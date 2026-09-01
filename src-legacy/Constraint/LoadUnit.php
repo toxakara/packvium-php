@@ -40,7 +40,17 @@ final class LoadUnit
      * @var int|null
      */
     public $nestingHeightTicks;
-    public function __construct(AxisAlignedBox $box, int $weightTicks, ?int $maxTopLoadTicks, ?int $maxStackedItems, string $label, ?string $nestingItemId=null, ?int $nestingHeightTicks=null)
+    /**
+     * @readonly
+     * @var int|null
+     */
+    public $compressionRatioPpm;
+    /**
+     * @readonly
+     * @var int|null
+     */
+    public $maxCompressionPressureKpa;
+    public function __construct(AxisAlignedBox $box, int $weightTicks, ?int $maxTopLoadTicks, ?int $maxStackedItems, string $label, ?string $nestingItemId=null, ?int $nestingHeightTicks=null, ?int $compressionRatioPpm=null, ?int $maxCompressionPressureKpa=null)
     {
         $this->box = $box;
         $this->weightTicks = $weightTicks;
@@ -49,5 +59,10 @@ final class LoadUnit
         $this->label = $label;
         $this->nestingItemId = $nestingItemId;
         $this->nestingHeightTicks = $nestingHeightTicks;
+        // Set only for a `compressible` item. Load propagation already computes the
+        // cumulative mass above every unit, which is exactly the numerator the pressure model
+        // needs, so the crush check rides the graph that is built anyway.
+        $this->compressionRatioPpm = $compressionRatioPpm;
+        $this->maxCompressionPressureKpa = $maxCompressionPressureKpa;
     }
 }

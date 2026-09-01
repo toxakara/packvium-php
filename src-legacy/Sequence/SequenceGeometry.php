@@ -4,6 +4,7 @@ namespace Packvium\Sequence;
 
 use Packvium\Domain\AxisAlignedBox;
 use Packvium\Domain\Dimensions;
+use Packvium\Domain\SweptRegion;
 
 /**
  * Accessibility primitives shared by `UnloadingDependencyGraph` and
@@ -20,7 +21,9 @@ use Packvium\Domain\Dimensions;
  */
 final class SequenceGeometry
 {
-    public const ALL_DIRECTIONS = ['+x', '-x', '+y', '-y', '+z', '-z'];
+    /** Re-exported: the vocabulary now lives in `Domain` so the constraint layer can
+     * share it without `Sequence` having to be imported downwards. */
+    public const ALL_DIRECTIONS = SweptRegion::ALL_DIRECTIONS;
 
     /** @param list<string> $directions */
     public static function validated(array $directions): array
@@ -36,31 +39,17 @@ final class SequenceGeometry
     /** The region between `$box`'s own face and the matching container wall along `$direction`. @return array{0:int,1:int,2:int,3:int,4:int,5:int} */
     public static function sweptVolume(AxisAlignedBox $box, Dimensions $container, string $direction): array
     {
-        $x1 = $box->origin->x; $y1 = $box->origin->y; $z1 = $box->origin->z;
-        $x2 = $box->x2(); $y2 = $box->y2(); $z2 = $box->z2();
-        switch ($direction) {
-            case '+x': $x1 = $x2; $x2 = $container->length->ticks; break;
-            case '-x': $x2 = $x1; $x1 = 0; break;
-            case '+y': $y1 = $y2; $y2 = $container->width->ticks; break;
-            case '-y': $y2 = $y1; $y1 = 0; break;
-            case '+z': $z1 = $z2; $z2 = $container->height->ticks; break;
-            case '-z': $z2 = $z1; $z1 = 0; break;
-            default: throw new InvalidDirectionError($direction);
-        }
-        return [$x1, $y1, $z1, $x2, $y2, $z2];
+        self::validated([$direction]);
+        return SweptRegion::volume($box, $container, $direction);
     }
 
     /** Every other currently-present box whose envelope intersects `$box`'s `$direction` sweep -- the evidence `blocked` reduces to a bare boolean. @param list<AxisAlignedBox> $boxes @param array<int,true> $present @return array<int,true> */
     public static function blockingIndices(int $index, AxisAlignedBox $box, array $boxes, array $present, Dimensions $container, string $direction): array
     {
-        [$sx1, $sy1, $sz1, $sx2, $sy2, $sz2] = self::sweptVolume($box, $container, $direction);
+        $sweep = self::sweptVolume($box, $container, $direction);
         $blocking = [];
         foreach (array_keys($present) as $otherIndex) {
-            if ($otherIndex === $index) { continue; }
-            $other = $boxes[$otherIndex];
-            if ($sx1 < $other->x2() && $other->origin->x < $sx2
-                && $sy1 < $other->y2() && $other->origin->y < $sy2
-                && $sz1 < $other->z2() && $other->origin->z < $sz2) {
+            if ($otherIndex !== $index && SweptRegion::intersects($sweep, $boxes[$otherIndex])) {
                 $blocking[$otherIndex] = true;
             }
         }
@@ -78,13 +67,9 @@ final class SequenceGeometry
      */
     public static function blocked(int $index, AxisAlignedBox $box, array $boxes, array $present, Dimensions $container, string $direction): bool
     {
-        [$sx1, $sy1, $sz1, $sx2, $sy2, $sz2] = self::sweptVolume($box, $container, $direction);
+        $sweep = self::sweptVolume($box, $container, $direction);
         foreach (array_keys($present) as $otherIndex) {
-            if ($otherIndex === $index) { continue; }
-            $other = $boxes[$otherIndex];
-            if ($sx1 < $other->x2() && $other->origin->x < $sx2
-                && $sy1 < $other->y2() && $other->origin->y < $sy2
-                && $sz1 < $other->z2() && $other->origin->z < $sz2) {
+            if ($otherIndex !== $index && SweptRegion::intersects($sweep, $boxes[$otherIndex])) {
                 return true;
             }
         }

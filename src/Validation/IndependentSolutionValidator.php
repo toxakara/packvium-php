@@ -48,7 +48,7 @@ final class IndependentSolutionValidator
                 if(!self::envelopeMatches($p,$clearanceTicks))$issues[]=new ValidationIssue('clearance_mismatch',$id);
                 foreach($packed->container->obstacles as $o)
                     foreach($o->boxes() as $box)
-                        if($p->envelopeBox()->intersects($box))$issues[]=new ValidationIssue('obstacle_collision',$id);
+                        if(Placement::hitsBox($p,$box))$issues[]=new ValidationIssue('obstacle_collision',$id);
                 if($p->instance->item->mustBeOnFloor&&$p->envelopeOrigin->z!==0)
                     $issues[]=new ValidationIssue('must_be_on_floor',$id.': ');
                 $eligibleTags=$p->instance->item->eligibleContainerTags;
@@ -77,7 +77,7 @@ final class IndependentSolutionValidator
             // reports the first offender it meets, this one is anchored on the container.
             $units=LoadCalculator::units($packed->placements);
             $densityLimit=$packed->container->maxStackDensity?->ticks;
-            $failure=LoadCalculator::overloaded($units)??LoadCalculator::stackLimitExceeded($units)??LoadCalculator::stackDensityExceeded($units,$densityLimit);
+            $failure=LoadCalculator::overloaded($units)??LoadCalculator::crushed($units)??LoadCalculator::stackLimitExceeded($units)??LoadCalculator::stackDensityExceeded($units,$densityLimit);
             if($failure!==null)$issues[]=new ValidationIssue($failure[0],$packed->id().': '.$failure[1]);
             if($packed->container->axles!==null){
                 $axleFailure=AxleLoad::exceeded(
@@ -160,7 +160,7 @@ final class IndependentSolutionValidator
             foreach($ordered as [$x1,$x2,$index,$box]){
                 $active=array_values(array_filter($active,static fn(array $entry):bool=>$entry[0]>$x1));
                 foreach($active as [,$other,$otherBox])
-                    if($box->intersects($otherBox)&&!Nesting::isValidNesting($placements[$index],$placements[$other]))
+                    if(Placement::collide($placements[$index],$placements[$other])&&!Nesting::isValidNesting($placements[$index],$placements[$other]))
                         $pairs[min($index,$other).':'.max($index,$other)]=[min($index,$other),max($index,$other)];
                 $active[]=[$x2,$index,$box];
             }
