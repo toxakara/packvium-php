@@ -4,7 +4,7 @@ namespace Packvium\Serialization;
 use InvalidArgumentException;
 use Packvium\Algorithm\EffortBudget;
 use Packvium\Config\{PackingConfig,SolverProfile};
-use Packvium\Domain\{Axle,AxisAlignedBox,Container,Dimensions,Item,Obstacle,Point,RateTable,Rotation};
+use Packvium\Domain\{Axle,AxisAlignedBox,Compression,Container,Dimensions,Item,Obstacle,Point,RateTable,Rotation,ShapeType};
 use Packvium\Extension\ExtensionRegistry;
 use Packvium\Packer;
 use Packvium\Policy\PolicyRuleSet;
@@ -32,7 +32,29 @@ final class ArrayCodec
      *
      * @var array<string,list<string>>
      */
-    public const UNSUPPORTED_FIELDS=['request'=>[],'configuration'=>[],'item'=>[],'container'=>[]];
+    public const UNSUPPORTED_FIELDS=['request'=>[],'configuration'=>[],
+        // `hull_vertices`, `compression_ratio` and `max_compression_pressure_kpa` left this
+        // list in , when PHP gained both the solver behaviour and the independent
+        // validation the staged rollout requires. Rust and the JavaScript fallback still
+        // carry them.
+        'item'=>[],'container'=>[]];
+
+    /**
+     * `item.shape_type` values this engine does not implement.
+     *
+     * Empty since : this engine implements every value the schema defines. The guard
+     * stays because the next reserved value will need it, and because `rejectUnsupported`
+     * takes its lists as parameters precisely so it remains testable when they are empty.
+     *
+     * Presence is the wrong test for this one field: `rigid_cuboid` is the default and is
+     * implemented, so a caller that spells the default out must be served, not refused.
+     * What is unimplemented is a *value*, and the refusal has to name it -- an engine that
+     * packed a `convex_hull` item as its bounding box would return a plan that looks valid
+     * and does not physically fit.
+     *
+     * @var list<string>
+     */
+    public const UNSUPPORTED_SHAPE_TYPES=[];
 
     /**
      * @param array<string,list<string>> $unsupported
@@ -42,9 +64,10 @@ final class ArrayCodec
      * caught up -- a test can only prove that nothing is rejected, which is equally true of
      * a guard that does nothing at all.
      */
-    public static function rejectUnsupported(array $data,?array $unsupported=null):void
+    public static function rejectUnsupported(array $data,?array $unsupported=null,?array $shapeTypes=null):void
     {
         $unsupported = $unsupported ?? self::UNSUPPORTED_FIELDS;
+        $shapeTypes = $shapeTypes ?? self::UNSUPPORTED_SHAPE_TYPES;
         // Keyed by name, not appended per occurrence: fifty containers carrying one
         // unimplemented field are one complaint, not fifty.
         $found=[];
@@ -63,6 +86,12 @@ final class ArrayCodec
                     if(array_key_exists($key,$entry))$found["{$scope}.{$key}"]=true;
                 }
             }
+        }
+        foreach($data['items']??[] as $entry){
+            if(!is_array($entry))continue;
+            $shape=$entry['shape_type']??null;
+            if(is_string($shape)&&in_array($shape,$shapeTypes,true))
+                $found["item.shape_type={$shape}"]=true;
         }
         if($found===[])return;
         $names=array_keys($found);
@@ -135,7 +164,33 @@ final class ArrayCodec
         return Rotation::from($v);
     },$r['allowed_rotations']??array_map(function ($x) {
         return $x;
-    },Rotation::all()));return new Item((string)$r['id'],Dimensions::fromArray($r['dimensions'],$unit),Weight::parse($r['weight']??0), (int)($r['quantity']??1),$rot,(bool)($r['keep_upright']??false),(bool)($r['stackable']??true),(bool)($r['must_be_on_floor']??false),isset($r['max_top_load'])?Weight::parse($r['max_top_load']):null,(float)($r['minimum_support_ratio']??0),$r['group']??null,$r['tags']??[],$r['incompatible_tags']??[],(int)($r['priority']??0),$r['metadata']??[],isset($r['max_stacked_items'])?(int)$r['max_stacked_items']:null,$r['eligible_container_tags']??[],$r['ground_contact_rule']??null,isset($r['nesting_height'])?Length::parse($r['nesting_height'],$unit):null,isset($r['stop_index'])?(int)$r['stop_index']:null,isset($r['value'])?(int)$r['value']:null);}
+    },Rotation::all()));return new Item((string)$r['id'],Dimensions::fromArray($r['dimensions'],$unit),Weight::parse($r['weight']??0), (int)($r['quantity']??1),$rot,(bool)($r['keep_upright']??false),(bool)($r['stackable']??true),(bool)($r['must_be_on_floor']??false),isset($r['max_top_load'])?Weight::parse($r['max_top_load']):null,(float)($r['minimum_support_ratio']??0),$r['group']??null,$r['tags']??[],$r['incompatible_tags']??[],(int)($r['priority']??0),$r['metadata']??[],isset($r['max_stacked_items'])?(int)$r['max_stacked_items']:null,$r['eligible_container_tags']??[],$r['ground_contact_rule']??null,isset($r['nesting_height'])?Length::parse($r['nesting_height'],$unit):null,isset($r['stop_index'])?(int)$r['stop_index']:null,isset($r['value'])?(int)$r['value']:null,
+        ShapeType::from((string)($r['shape_type']??ShapeType::RIGID_CUBOID->value)),self::hullVertices($r['hull_vertices']??null,$unit),
+        isset($r['compression_ratio'])?Compression::ratioToPpm((float)$r['compression_ratio']):null,
+        isset($r['max_compression_pressure_kpa'])?(int)$r['max_compression_pressure_kpa']:null);}
+
+    /**
+     * Parse `hull_vertices` into the integer tick frame before any geometry runs.
+     *
+     * Coordinates go through `Length`, which refuses a negative value, so a hull crossing the
+     * wire is authored as non-negative offsets from the corner of its own bounding box. A
+     * library caller may still centre a hull wherever it likes -- `HullShape::rotate`
+     * normalises either way -- but the wire keeps one convention so four engines cannot
+     * disagree about where an item's frame starts.
+     *
+     * @return list<array{int,int,int}>|null
+     */
+    private static function hullVertices(?array $raw,string $unit):?array
+    {
+        if($raw===null)return null;
+        $out=[];
+        foreach($raw as $vertex)$out[]=[
+            Length::parse($vertex['x'],$unit)->ticks,
+            Length::parse($vertex['y'],$unit)->ticks,
+            Length::parse($vertex['z'],$unit)->ticks,
+        ];
+        return $out;
+    }
     private static function box(array $r,string $unit):AxisAlignedBox{$origin=$r['origin']??[];return new AxisAlignedBox(new Point(Length::parse($origin['x']??0,$unit)->ticks,Length::parse($origin['y']??0,$unit)->ticks,Length::parse($origin['z']??0,$unit)->ticks),Dimensions::fromArray($r['dimensions'],$unit));}
     private static function container(array $r,string $unit):Container{$obs=[];foreach($r['obstacles']??[] as $o){$additional=array_map(function ($b) use ($unit) {
         return self::box($b,$unit);

@@ -20,9 +20,19 @@ final class LoadSupportGraph
     private $supporters;
     /** @var list<list<int>> */
     private $children;
+    /**
+     * @var \Packvium\Constraint\ContactGraph
+     */
+    private $face;
+    /** @var list<LoadUnit> */
+    private $units;
+    /**
+     * @var bool
+     */
+    private $nested;
 
     /** @param list<LoadUnit> $units */
-    public function __construct(array $units)
+    public function __construct(array $units, int $cellHint = 1)
     {
         /** @var list<array{item:string,depth:int,x1:int,y1:int,x2:int,y2:int,z1:int,z2:int,index:int}> $nesting */
         $nesting=[];
@@ -38,7 +48,10 @@ final class LoadSupportGraph
         }
         $face=new ContactGraph(array_map(static function (LoadUnit $unit): AxisAlignedBox {
             return $unit->box;
-        },$units));
+        },$units),$cellHint);
+        $this->face=$face;
+        $this->units=$units;
+        $this->nested=$nesting!==[];
         $supporters=$children=[];
         foreach($units as $index=>$_){
             $supporters[$index]=$face->supporters($index);
@@ -89,6 +102,41 @@ final class LoadSupportGraph
             foreach($edges as $edge)$children[$edge->index][]=$childIndex;
         $this->supporters=$supporters;
         $this->children=$children;
+    }
+
+    /**
+     * This graph plus one more unit, appended at the next index.
+     *
+     * The search evaluates many candidates against one unchanged set of placements, and
+     * rebuilding the whole support graph for each of them was the cost  exists to
+     * remove. Adding a box cannot change contact between two boxes already placed, so the
+     * face graph only needs its two planes queried -- see `ContactGraph::withBox`.
+     *
+     * Nesting is the exception and falls back to a full rebuild. A nesting predecessor
+     * *replaces* the face edges of everything in its column, so one new unit can rewrite
+     * edges arbitrarily far from itself and the delta is no longer local. Nesting is an
+     * opt-in field on a minority of requests; correctness there is worth more than the
+     * speed, and the fallback keeps this method total.
+     */
+    public function withUnit(LoadUnit $unit,int $cellHint=1):self
+    {
+        if($this->nested||$unit->nestingItemId!==null){
+            $units=$this->units;
+            $units[]=$unit;
+            return new LoadSupportGraph($units,$cellHint);
+        }
+        $index=count($this->units);
+        $graph=clone $this;
+        $graph->face=$this->face->withBox($unit->box);
+        $graph->units[]=$unit;
+        // Without nesting this graph *is* the face graph, so read the edges straight off
+        // it rather than patching a copy of the old ones. Re-deriving them by hand would
+        // be a second implementation of the same rule, free to drift from the first.
+        for($i=0;$i<=$index;$i++){
+            $graph->supporters[$i]=$graph->face->supporters($i);
+            $graph->children[$i]=$graph->face->children($i);
+        }
+        return $graph;
     }
 
     /** @return list<ContactEdge> */

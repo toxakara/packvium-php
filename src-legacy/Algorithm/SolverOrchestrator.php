@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 namespace Packvium\Algorithm;
+
 use Packvium\Config\{PackingConfig,SolverProfile};
 use Packvium\Constraint\{ConstraintSet,ProvenRejection,SupportConstraint};
 use Packvium\Domain\{Container,ItemInstance,PackedContainer,Rotation,UnpackedItem};
@@ -390,7 +391,7 @@ final class SolverOrchestrator
      */
     private function supportIsTheBlocker(ItemInstance $item,array $packed,PackingConfig $config):bool
     {
-        $constraints=ConstraintSet::defaults($config->minimumSupportRatio,$this->customConstraints);
+        $constraints=ConstraintSet::defaults($config->minimumSupportRatio,$this->customConstraints,$config->accessDirections);
         $hasSupport=false;
         foreach($constraints as $constraint)
             if($constraint instanceof SupportConstraint&&$constraint->canReject($item)){$hasSupport=true;break;}
@@ -542,9 +543,34 @@ final class SolverOrchestrator
     }
 
     /** @return array{0:list<PackedContainer>,1:list<UnpackedItem>,2:bool,3:bool,4:bool} */
+    /**
+     * Compute the request-level lower bound once, at the root.
+     *
+     * The plan beam already computes the same relaxation per node to prune with; the
+     * request-level bound is that formula with the state empty. `exact_small` gets it for
+     * the opposite reason: it exhausts its candidate set, and a bound is what turns "I
+     * stopped looking" into a statement about the request.
+     *
+     * Only for the default objective -- `lowest_cost` and `maximum_value` order their score
+     * keys differently, so a bound vector compared against them would line cost up against
+     * container count. Nothing downstream reads this yet, and that is deliberate.
+     *
+     * @param list<ItemInstance> $items
+     * @param list<Container> $containers
+     */
+    private static function recordRootBound(SingleContainerSolver $solver,bool $beam,array $items,array $containers,PackingConfig $config,SearchStats $stats):void
+    {
+        if($stats->objectiveLowerBound!==null)return;
+        if(!$beam&&$solver->name()!=='exact_small')return;
+        if($config->objective!=='default')return;
+        $stats->objectiveLowerBound=ObjectiveBounds::compute($items,$containers);
+    }
+
     private function acrossContainers(SingleContainerSolver $solver,array $items,array $containers,PackingConfig $config,SearchStats $stats,Deadline $deadline):array
     {
-        if($config->containerPlanBeamWidth>1&&($this->containerSelector===null||$this->containerSelector instanceof DefaultContainerSelector)){
+        $beam=$config->containerPlanBeamWidth>1&&($this->containerSelector===null||$this->containerSelector instanceof DefaultContainerSelector);
+        self::recordRootBound($solver,$beam,$items,$containers,$config,$stats);
+        if($beam){
             return $this->acrossContainerPlans($solver,$items,$containers,$config,$stats,$deadline);
         }
         $remaining=$items;$packed=[];$reached=false;$exhaustive=true;$dominantLattice=true;

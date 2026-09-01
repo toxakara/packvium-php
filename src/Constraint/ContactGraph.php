@@ -93,13 +93,39 @@ final class ContactGraph
     private array $supporters;
     /** @var list<list<int>> */
     private array $children;
+    /** @var list<AxisAlignedBox> */
+    private array $boxes;
+    private int $cell;
+    /** @var array<int,list<array{0:int,1:AxisAlignedBox}>> */
+    private array $byTop;
+    /** @var array<int,list<array{0:int,1:AxisAlignedBox}>> */
+    private array $byBottom;
+    /** @var array<int,ContactLevelIndex> */
+    private array $topIndexes;
+    /** @var array<int,ContactLevelIndex> */
+    private array $bottomIndexes;
 
-    /** @param list<AxisAlignedBox> $boxes */
-    public function __construct(array $boxes)
+    /**
+     * `$cellHint` is an upper bound on the footprint of any box that may later be
+     * appended with `withBox`.
+     *
+     * Without it the cell is sized from the boxes present now, and appending anything
+     * wider has to fall back to a full rebuild -- which is correct but defeats the
+     * point, because in a search the base is what is already placed and the candidate is
+     * a *new* item that may well be the widest thing in the request. A caller that knows
+     * the item set passes its widest footprint once and the delta path then always
+     * applies. Too large a hint only makes each bucket coarser; too small a one is
+     * impossible to get wrong, because the fallback covers it.
+     *
+     * @param list<AxisAlignedBox> $boxes
+     */
+    public function __construct(array $boxes, int $cellHint = 1)
     {
         $byTop = [];
+        $byBottom = [];
         foreach ($boxes as $index => $box) {
             $byTop[$box->z2()][] = [$index, $box];
+            $byBottom[$box->origin->z][] = [$index, $box];
         }
         $supporters = array_fill(0, count($boxes), []);
         $children = array_fill(0, count($boxes), []);
@@ -107,7 +133,7 @@ final class ContactGraph
         // candidates: a querying box can be any size in this scene, and
         // ContactLevelIndex is only correct when its cell is at least as large as
         // every box it will ever index or be queried with.
-        $cell = 1;
+        $cell = max(1, $cellHint);
         foreach ($boxes as $box) {
             $cell = max($cell, $box->x2() - $box->origin->x, $box->y2() - $box->origin->y);
         }
@@ -141,6 +167,107 @@ final class ContactGraph
         }
         $this->supporters = $supporters;
         $this->children = $children;
+        $this->boxes = $boxes;
+        $this->cell = $cell;
+        $this->byTop = $byTop;
+        $this->byBottom = $byBottom;
+        // Only the top-plane indexes are populated by the build above; the bottom-plane
+        // ones are built on demand, because a from-scratch build never needs them and
+        // paying for them here would slow the common path to speed up the incremental one.
+        $this->topIndexes = $indexes;
+        $this->bottomIndexes = [];
+    }
+
+    /**
+     * This graph plus one more box, appended at the next index.
+     *
+     * Adding a box cannot create or destroy contact between two boxes that were already
+     * here: contact is a pairwise geometric predicate over two boxes and nothing else.
+     * That is the whole reason a delta is sound, and it is why this returns a graph
+     * sharing the base's edge lists instead of recomputing them -- only the new box's
+     * own two planes are queried.
+     *
+     * The result is required to be identical to `new ContactGraph([...$boxes, $box])`,
+     * not merely equivalent: `LoadCalculator::topLoads` splits a conserved integer
+     * across the supporter list and hands the rounding remainder to its last edge, so
+     * edge *order* is contract, not presentation. The new box takes the highest index,
+     * so appending it to an existing list keeps that list ascending.
+     */
+    public function withBox(AxisAlignedBox $box): self
+    {
+        $index = count($this->boxes);
+        $footprint = max($box->x2() - $box->origin->x, $box->y2() - $box->origin->y);
+        if ($footprint > $this->cell) {
+            // ContactLevelIndex is only correct while its cell is at least as large as
+            // every box indexed in or queried against it. A larger box could step over
+            // cells in the middle of its own footprint and miss a real overlap, so this
+            // is a correctness fallback, not an optimisation choice.
+            $boxes = $this->boxes;
+            $boxes[] = $box;
+            return new ContactGraph($boxes, $footprint);
+        }
+
+        // Both queries run before the clone so that any level index they build lands on
+        // this graph first and the clone inherits it -- the two planes the new box joins
+        // are invalidated below, and they are not the two it was queried against.
+        $below = $this->matches($this->byTop, $this->topIndexes, $box->origin->z, $box);
+        $above = $this->matches($this->byBottom, $this->bottomIndexes, $box->z2(), $box);
+
+        $graph = clone $this;
+        $graph->boxes[] = $box;
+
+        // What the new box rests on: boxes whose top plane is its bottom plane.
+        $ownSupporters = [];
+        foreach ($below as [$otherIndex, $area]) {
+            $ownSupporters[] = new ContactEdge($otherIndex, $area);
+            $graph->children[$otherIndex][] = $index;
+        }
+
+        // What now rests on it: boxes whose bottom plane is its top plane. Their
+        // supporter lists gain the new index, which is larger than every index already
+        // in them, so ascending order is preserved by appending.
+        $ownChildren = [];
+        foreach ($above as [$otherIndex, $area]) {
+            $ownChildren[] = $otherIndex;
+            $graph->supporters[$otherIndex][] = new ContactEdge($index, $area);
+        }
+
+        $graph->supporters[$index] = $ownSupporters;
+        $graph->children[$index] = $ownChildren;
+
+        // The by-plane buckets are carried forward rather than rederived: one box joins
+        // exactly two planes, so rewriting those two buckets is all that changed.
+        $graph->byTop[$box->z2()][] = [$index, $box];
+        $graph->byBottom[$box->origin->z][] = [$index, $box];
+        // A ContactLevelIndex is immutable once built, so every cached one may be shared
+        // with the base -- except on the two planes whose bucket just gained a member,
+        // where the cached index no longer describes its bucket.
+        unset($graph->topIndexes[$box->z2()], $graph->bottomIndexes[$box->origin->z]);
+        return $graph;
+    }
+
+    /**
+     * Every box on `$plane` overlapping `$box` in XY, in ascending index order.
+     *
+     * @param array<int,list<array{0:int,1:AxisAlignedBox}>> $buckets
+     * @param array<int,ContactLevelIndex> $cache
+     * @return list<array{0:int,1:int}>
+     */
+    private function matches(array $buckets, array &$cache, int $plane, AxisAlignedBox $box): array
+    {
+        if (!isset($buckets[$plane])) {
+            return [];
+        }
+        $level = $cache[$plane] ??= new ContactLevelIndex($this->cell, $buckets[$plane]);
+        $matches = [];
+        foreach ($level->near($box) as [$otherIndex, $other]) {
+            $area = $other->overlapAreaXY($box);
+            if ($area > 0) {
+                $matches[] = [$otherIndex, $area];
+            }
+        }
+        usort($matches, static fn(array $a, array $b): int => $a[0] <=> $b[0]);
+        return $matches;
     }
 
     /** What `$index` directly rests on, each with the contact area. @return list<ContactEdge> */

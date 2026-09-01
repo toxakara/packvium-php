@@ -98,7 +98,7 @@ final class ExactSmallSolver implements SingleContainerSolver
     public function packOne(Container $container,int $sequence,array $items,PackingConfig $config,SearchStats $stats,Deadline $deadline):SingleContainerSolution
     {
         if(count($items)>$config->exactItemLimit)throw new InvalidArgumentException('Exact-small item limit exceeded');
-        $constraints=ConstraintSet::defaults($config->minimumSupportRatio,$this->constraints);
+        $constraints=ConstraintSet::defaults($config->minimumSupportRatio,$this->constraints,$config->accessDirections);
         $scorer=$this->scorer??new DefaultCandidateScorer();
         $batches=GroupBatcher::batches($items);
         $batchVolumes=[];

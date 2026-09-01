@@ -67,6 +67,41 @@ final class Nesting
     }
 
     /**
+     * Space one placement actually takes, which is its box only if it is one.
+     *
+     * A `convex_hull` item occupies its hull: counting the bounding box is not a conservative
+     * approximation of utilisation but a wrong number, putting two interlocking wedges at
+     * 200% of a crate. A `compressible` item occupies the height left after the load it
+     * reports, which is what makes `compression_ratio` observable at all.
+     */
+    public static function occupiedVolume(Placement $placement): string
+    {
+        $item = $placement->instance->item;
+        // Route and clearance rules may conservatively use the envelope for collision, but
+        // they do not change the physical solid reported in utilisation/reserve accounting.
+        if ($item->shapeType === ShapeType::CONVEX_HULL) {
+            return HullShape::shapeFor($item->hullVertices, $placement->rotation)->volume;
+        }
+        if ($item->maxCompressionPressureKpa === null) { return $placement->dimensions->volumeString(); }
+        $dimensions = $placement->dimensions;
+        $footprint = $dimensions->baseAreaTicks();
+        $pressure = Compression::pressure($placement->topLoad->ticks, $footprint);
+        // A crushed item has no meaningful occupied volume, and the arrangement is already
+        // invalid -- the crush check refuses it and the validator reports it. Reporting the
+        // uncompressed figure keeps that a reported issue rather than a second, quieter one.
+        if (Compression::exceeds($pressure, $item->maxCompressionPressureKpa)) {
+            return $dimensions->volumeString();
+        }
+        $height = Compression::effectiveHeight(
+            $dimensions->height->ticks,
+            (int)$item->compressionRatioPpm,
+            $item->maxCompressionPressureKpa,
+            $pressure,
+        );
+        return BigInt::multiply((string)$footprint, (string)$height);
+    }
+
+    /**
      * Physical volume actually occupied by `$placements`, nesting overlap removed.
      *
      * @param list<Placement> $placements
@@ -74,7 +109,7 @@ final class Nesting
     public static function usedVolume(array $placements): string
     {
         $total = '0';
-        foreach ($placements as $p) { $total = BigInt::add($total, $p->dimensions->volumeString()); }
+        foreach ($placements as $p) { $total = BigInt::add($total, self::occupiedVolume($p)); }
         return BigInt::subtract($total, self::overlapVolume($placements));
     }
 
@@ -90,7 +125,7 @@ final class Nesting
     public static function usedVolumeDelta(array $placements, Placement $placement): string
     {
         $nesting = $placement->instance->item->nestingHeight;
-        if ($nesting === null) { return $placement->dimensions->volumeString(); }
+        if ($nesting === null) { return self::occupiedVolume($placement); }
         $overlap = '0';
         foreach ($placements as $existing) {
             if (!self::isValidNesting($existing, $placement)) { continue; }

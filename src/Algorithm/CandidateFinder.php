@@ -4,7 +4,7 @@ namespace Packvium\Algorithm;
 use Packvium\Config\PackingConfig;
 use Packvium\Constraint\{AxleLoad,ConstraintContext,LoadCalculator,PlacementConstraint,SupportConstraint};
 use Packvium\Support\{BigInt,StableSorter};
-use Packvium\Domain\{ItemInstance,Nesting,Placement,Point};
+use Packvium\Domain\{HullShape,ItemInstance,Nesting,Placement,Point,ShapeType};
 use Packvium\Extension\CandidateScorer;
 final class CandidateFinder
 {
@@ -20,7 +20,12 @@ final class CandidateFinder
         $container=$state->container;
         if($container->maxItems!==null&&count($state->placements)>=$container->maxItems)return [];
         if($container->maxPayload!==null&&$state->payloadTicks+$item->weight()->ticks>$container->maxPayload->ticks)return [];
-        if($container->voidFillReserveRatio>0&&$item->item->nestingHeight===null){
+        $compressionSensitive=$state->compressionSensitive
+            ||$item->item->shapeType===ShapeType::COMPRESSIBLE;
+        $reserveNeedsCandidate=$item->item->nestingHeight!==null
+            ||$item->item->shapeType===ShapeType::CONVEX_HULL
+            ||$compressionSensitive;
+        if($container->voidFillReserveRatio>0&&!$reserveNeedsCandidate){
             $projected=BigInt::add($state->usedVolume,$item->dimensions()->volumeString());
             if(BigInt::compare($projected,$state->usableVolume())>0)return [];
         }
@@ -30,14 +35,24 @@ final class CandidateFinder
         // Envelope and extents depend only on the rotation, so they are built once
         // instead of once per (point, rotation) pair.
         $forms=[];
-        foreach($item->dimensions()->uniqueRotations($item->item->allowedRotations) as [$rotation,$physical]){
+        // A hull is not the same solid under two rotations that happen to give the same box,
+        // so `uniqueRotations` -- which keys on the box -- would silently drop orientations
+        // that differ. Cuboids keep the deduplication they have always had.
+        $isHull=$item->item->shapeType===ShapeType::CONVEX_HULL;
+        $exactHull=Placement::hullCollisionIsExact($item->item,$clearance===0);
+        $rotationForms=[];
+        if($isHull)foreach($item->item->allowedRotations as $rotation)$rotationForms[]=[$rotation,$item->dimensions()->rotated($rotation)];
+        else $rotationForms=$item->dimensions()->uniqueRotations($item->item->allowedRotations);
+        foreach($rotationForms as [$rotation,$physical]){
             $envelope=$clearance?$physical->expand($config->clearance):$physical;
-            $forms[]=[$rotation,$physical,$envelope,$envelope->length->ticks,$envelope->width->ticks,$envelope->height->ticks];
+            $shape=$exactHull?HullShape::shapeFor($item->item->hullVertices,$rotation):null;
+            $forms[]=[$rotation,$physical,$envelope,$envelope->length->ticks,$envelope->width->ticks,$envelope->height->ticks,$shape];
         }
         $placed=$state->placements;
-        $stackSensitive=$state->stackSensitive||!$item->item->stackable||$item->item->maxTopLoad!==null||$item->item->maxStackedItems!==null||$container->maxStackDensity!==null;
+        $stackSensitive=$state->stackSensitive||$item->item->isStackSensitive()||$container->maxStackDensity!==null;
         $routeSensitive=$state->routeSensitive||$item->item->stopIndex!==null;
         $bounds=$state->bounds;
+        $hullShapes=$state->hullShapes;
         $index=$state->index;
         if($points===null){
             if($item->item->nestingHeight===null)$scan=array_slice($state->orderedPoints,0,$config->maxCandidatePoints);
@@ -57,7 +72,7 @@ final class CandidateFinder
             $deadline->check();
             $stats->candidatePointsConsidered++;
             $x1=$point->x;$y1=$point->y;$z1=$point->z;
-            foreach($forms as [$rotation,$physical,$envelope,$dx,$dy,$dz]){
+            foreach($forms as [$rotation,$physical,$envelope,$dx,$dy,$dz,$shape]){
                 $stats->placementsAttempted++;
                 $x2=$x1+$dx;$y2=$y1+$dy;$z2=$z1+$dz;
                 if($x2>$limitX||$y2>$limitY||$z2>$limitZ)continue;
@@ -73,6 +88,14 @@ final class CandidateFinder
                     if($x1<$bx2&&$bx1<$x2&&$y1<$by2&&$by1<$y2&&$z1<$bz2&&$bz1<$z2){
                         $placementIndex=$candidateIndex-$placementOffset;
                         if($tentative!==null&&$placementIndex>=0&&Nesting::isValidNesting($placed[$placementIndex],$tentative))continue;
+                        $blocker=$hullShapes[$candidateIndex];
+                        // The axis-aligned test is the broad phase and stays mandatory. Only
+                        // when a hull is one of the two solids does the exact test get to
+                        // overrule it, so a request of ordinary boxes never reaches here.
+                        if(($shape!==null||$blocker!==null)&&!HullShape::collide(
+                            $shape??HullShape::box($dx,$dy,$dz),[$x1,$y1,$z1],
+                            $blocker??HullShape::box($bx2-$bx1,$by2-$by1,$bz2-$bz1),[$bx1,$by1,$bz1],
+                        ))continue;
                         $blocked=true;break;
                     }
                 }
@@ -85,9 +108,22 @@ final class CandidateFinder
                 if($blocked)continue;
                 $position=$tentative?->position??new Point($x1+$clearance,$y1+$clearance,$z1+$clearance);
                 $candidate=new Candidate($point,$position,$rotation,$physical,$envelope,$scorer->score($state,$point,$envelope));
-                if($container->voidFillReserveRatio>0&&$item->item->nestingHeight!==null){
-                    assert($tentative!==null);
-                    $projected=BigInt::add($state->usedVolume,Nesting::usedVolumeDelta($placed,$tentative));
+                if($container->voidFillReserveRatio>0&&$reserveNeedsCandidate){
+                    $reservePlacement=$tentative??new Placement(
+                        $item,$position,$rotation,$physical,$point,$envelope,
+                    );
+                    if($compressionSensitive){
+                        // A zero-load candidate is at its largest, and adding load can only
+                        // shrink existing compressible supports. If that upper bound fits,
+                        // the exact support-graph refresh cannot reject it; only a candidate
+                        // close to the reserve boundary pays the non-local calculation.
+                        $upperBound=BigInt::add($state->usedVolume,Nesting::occupiedVolume($reservePlacement));
+                        $projected=BigInt::compare($upperBound,$state->usableVolume())<=0
+                            ?$upperBound
+                            :Nesting::usedVolume(TopLoadAssigner::assign([...$placed,$reservePlacement]));
+                    }else{
+                        $projected=BigInt::add($state->usedVolume,Nesting::usedVolumeDelta($placed,$reservePlacement));
+                    }
                     if(BigInt::compare($projected,$state->usableVolume())>0)continue;
                 }
                 $stats->candidatesEvaluated++;
@@ -140,7 +176,7 @@ final class CandidateFinder
         foreach($state->points as $point)if($point->z===0)$floorYs[$point->y]=true;
         $floorYs=$floorYs===[]?[0]:array_keys($floorYs);
         $points=[];
-        foreach($forms as [, , , $dx, , ]){
+        foreach($forms as [, , , $dx, , , ]){
             foreach(AxleLoad::axleBalancedOrigins($container->axles,$otherUnits,$tareTicks,$tareDoubledX,$item->weight()->ticks,$dx) as $x1){
                 if($x1<0||$x1>$limitX-$dx)continue;
                 foreach($floorYs as $y)$points[]=new Point($x1,$y,0);
