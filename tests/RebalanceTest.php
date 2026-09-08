@@ -240,7 +240,7 @@ final class RebalanceTest extends TestCase
         // A 300 mm crate carries 27,000 cm^3 / 5,000 = 5.4 kg = 5,400 g of dimensional
         // weight, past this tariff's 2,000 g last bracket: the input has no published
         // price, so there is nothing a weight shuffle could preserve. Refused in the
-        // same words as `Packer::pack()` ( review).
+        // same words as `Packer::pack()` (review).
         $cube = Support::item('cube', 100, 100, 100, ['weight' => '500 g', 'quantity' => 8]);
         $alpha = Support::box('alpha', 300, 300, 300, ['rateTable' => new RateTable([2_000], [900])]);
         $request = new PackingRequest([$cube], [$alpha]);
@@ -267,7 +267,7 @@ final class RebalanceTest extends TestCase
     {
         // Pricing admission belongs to the public operation, not only to the packer.
         // An unused untabled container is still available to the request and therefore
-        // makes the landed-cost comparison undefined ( second review).
+        // makes the landed-cost comparison undefined (second review).
         $parcel = Support::item('parcel', 100, 100, 100, ['weight' => '500 g']);
         $rated = Support::box('rated', 200, 200, 200, [
             'rateTable' => new RateTable([2_000], [500]),
@@ -337,7 +337,7 @@ final class RebalanceTest extends TestCase
     {
         // The move fits, validates, and strictly narrows the payload spread -- and must
         // still not be made: committing it would turn a shippable packing into one with
-        // no published price, the exact trade `Packer::pack()` refuses ( review).
+        // no published price, the exact trade `Packer::pack()` refuses (review).
         [$request, $packed] = self::bracketEdgeScene();
 
         $outcome = WeightRebalancer::rebalance($request, $packed, [], self::landedConfig());

@@ -89,7 +89,7 @@ final class Container
      * Which walls this container can be unloaded through.
      *
      * Empty means the horizontal half of route order is not enforced for it -- not that it
-     * is sealed. A container with no stated doors is the pre- default, and
+     * is sealed. A container with no stated doors is the pre-default, and
      * defaulting to all six instead would enforce a rule true of no real vehicle: a box is
      * almost always free through *some* face, so six doors is nearly the same as none, but
      * it is a *different* nearly-nothing and would change answers for every caller who

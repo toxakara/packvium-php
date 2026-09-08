@@ -196,7 +196,7 @@ final class Packer
         // The sentinel is a search device, never an answer -- and that must hold for the
         // alternatives list too: a runner-up the tariff cannot price would quote the same
         // unpublished number the winner was just guarded against. Filter the ranked
-        // runner-ups first, then take the top-k slice ( review).
+        // runner-ups first, then take the top-k slice (review).
         $alternatives = array_slice(
             array_values(array_filter(
                 array_slice($selected, 1),

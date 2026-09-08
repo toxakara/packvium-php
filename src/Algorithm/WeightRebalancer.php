@@ -75,7 +75,7 @@ final class WeightRebalancer
         // Under lowest_landed_cost an input that already bills past a rate table's last
         // bracket has no published price to preserve: refuse it outright, in the same
         // words as `Packer::pack()`, rather than shuffle weight inside an answer the
-        // caller cannot ship ( review). A no-op for every other objective --
+        // caller cannot ship (review). A no-op for every other objective --
         // `unpriceableContainer` is itself gated on the objective and divisor.
         $unpriceable = LandedCostSolutionScorer::unpriceableContainer($containers, $config);
         if ($unpriceable !== null) {
@@ -230,7 +230,7 @@ final class WeightRebalancer
         // A move can be geometrically and physically sound yet lift the destination's
         // billed weight past its rate table's last bracket. Under lowest_landed_cost
         // that would trade a shippable packing for one with no published price, so the
-        // candidate is skipped and the search moves on ( review).
+        // candidate is skipped and the search moves on (review).
         if (LandedCostSolutionScorer::unpriceableContainer($trial, $config) !== null) {
             return null;
         }
