@@ -566,7 +566,7 @@ final class ObjectiveTest extends TestCase
     {
         // The winner is guarded, but a ranked runner-up carrying the sentinel could
         // still surface through `alternatives` and quote the same unpublished number
-        // sideways ( review). Force such a runner-up deterministically: a custom
+        // sideways (review). Force such a runner-up deterministically: a custom
         // solver that only ever fills the short-tariffed box completes a valid
         // all-in-alpha packing (5,400 g of dimensional weight against a 2,000 g table),
         // ranked behind the priceable all-in-beta winner the built-in solvers find. It

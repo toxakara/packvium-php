@@ -43,7 +43,7 @@ final class AccessDirectionsTest extends TestCase
             self::crate($reversed)->accessDirections);
     }
 
-    /** A container that names no doors is the pre- default: the rule is inert, not
+    /** A container that names no doors is the pre-default: the rule is inert, not
      * the container sealed. Defaulting to all six would enforce a rule true of no real
      * vehicle and would change answers for every caller who never set the field. */
     public static function testAContainerStatesNoDoorsByDefault(): void

@@ -34,20 +34,20 @@ final class ArrayCodec
      */
     public const UNSUPPORTED_FIELDS=['request'=>[],'configuration'=>[],
         // `hull_vertices`, `compression_ratio` and `max_compression_pressure_kpa` left this
-        // list in , when PHP gained both the solver behaviour and the independent
+        // list in, when PHP gained both the solver behaviour and the independent
         // validation the staged rollout requires. Rust and the JavaScript fallback still
         // carry them.
         // `pallet_overhang_limit` was reserved in the schema by at the 1.1.0
         // contract freeze and is refused everywhere until an engine implements it from a
         // request: a field a caller can set and the solver ignores is worse than a refusal.
-        // `access_directions` left this list in , which wired the reserved field
+        // `access_directions` left this list in, which wired the reserved field
         // through to `StopAccessibilityConstraint` in all four engines at once.
         'item'=>[],'container'=>['pallet_overhang_limit']];
 
     /**
      * `item.shape_type` values this engine does not implement.
      *
-     * Empty since : this engine implements every value the schema defines. The guard
+     * Empty since: this engine implements every value the schema defines. The guard
      * stays because the next reserved value will need it, and because `rejectUnsupported`
      * takes its lists as parameters precisely so it remains testable when they are empty.
      *
