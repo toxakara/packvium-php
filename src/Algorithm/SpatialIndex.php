@@ -25,7 +25,11 @@ final class SpatialIndex
     private readonly int $cellX;
     private readonly int $cellY;
     private readonly int $cellZ;
-    /** @var array<string,list<int>> */
+    /**
+     * Nested by axis rather than keyed by a packed string: the candidate scan visits a few
+     * dozen cells per query, and three integer lookups cost less than building a key.
+     * @var array<int,array<int,array<int,list<int>>>>
+     */
     private array $cells = [];
 
     public function __construct(int $lengthTicks, int $widthTicks, int $heightTicks, int $cellsPerAxis = 8)
@@ -70,7 +74,7 @@ final class SpatialIndex
         for ($ix = $ix1; $ix < $ix2; $ix++) {
             for ($iy = $iy1; $iy < $iy2; $iy++) {
                 for ($iz = $iz1; $iz < $iz2; $iz++) {
-                    $this->cells["{$ix}:{$iy}:{$iz}"][] = $index;
+                    $this->cells[$ix][$iy][$iz][] = $index;
                 }
             }
         }
@@ -80,19 +84,80 @@ final class SpatialIndex
     public function query(int $x1, int $y1, int $z1, int $x2, int $y2, int $z2): array
     {
         [$ix1, $ix2, $iy1, $iy2, $iz1, $iz2] = $this->cellRange($x1, $y1, $z1, $x2, $y2, $z2);
-        $seen = [];
-        $out = [];
+        // Cells are visited in (x, y, z) order and an index keeps its first position, so
+        // the sequence is a deterministic function of the contents. A box touching a
+        // single occupied cell gets that bucket back as-is.
+        $hits = [];
         for ($ix = $ix1; $ix < $ix2; $ix++) {
+            $plane = $this->cells[$ix] ?? null;
+            if ($plane === null) { continue; }
             for ($iy = $iy1; $iy < $iy2; $iy++) {
+                $row = $plane[$iy] ?? null;
+                if ($row === null) { continue; }
                 for ($iz = $iz1; $iz < $iz2; $iz++) {
-                    foreach ($this->cells["{$ix}:{$iy}:{$iz}"] ?? [] as $index) {
-                        if (!isset($seen[$index])) {
-                            $seen[$index] = true;
-                            $out[] = $index;
-                        }
-                    }
+                    if (isset($row[$iz])) { $hits[] = $row[$iz]; }
                 }
             }
+        }
+        if ($hits === []) { return []; }
+        if (count($hits) === 1) { return $hits[0]; }
+        $seen = [];
+        $out = [];
+        foreach ($hits as $bucket) {
+            foreach ($bucket as $index) {
+                if (!isset($seen[$index])) {
+                    $seen[$index] = true;
+                    $out[] = $index;
+                }
+            }
+        }
+        return $out;
+    }
+
+    /** Indices registered in the cell that contains the point. @return list<int> */
+    public function bucketAt(int $x, int $y, int $z): array
+    {
+        return $this->cells[intdiv($x, $this->cellX)][intdiv($y, $this->cellY)][intdiv($z, $this->cellZ)] ?? [];
+    }
+
+    /**
+     * Every index registered in a cell of the ray below `$ceiling` through the point on the
+     * other two axes, possibly more than once. A solid that ends at or under the ceiling and
+     * covers the point on those axes is registered in one of these cells, which is what lets
+     * `ContainerState`'s surface projections skip every other bound.
+     *
+     * @return list<int>
+     */
+    public function columnZ(int $x, int $y, int $ceiling): array
+    {
+        $row = $this->cells[intdiv($x, $this->cellX)][intdiv($y, $this->cellY)] ?? [];
+        $out = [];
+        for ($iz = 0, $end = self::ceilDiv($ceiling, $this->cellZ); $iz < $end; $iz++) {
+            foreach ($row[$iz] ?? [] as $index) { $out[] = $index; }
+        }
+        return $out;
+    }
+
+    /** @return list<int> */
+    public function columnY(int $x, int $z, int $ceiling): array
+    {
+        $plane = $this->cells[intdiv($x, $this->cellX)] ?? [];
+        $iz = intdiv($z, $this->cellZ);
+        $out = [];
+        for ($iy = 0, $end = self::ceilDiv($ceiling, $this->cellY); $iy < $end; $iy++) {
+            foreach ($plane[$iy][$iz] ?? [] as $index) { $out[] = $index; }
+        }
+        return $out;
+    }
+
+    /** @return list<int> */
+    public function columnX(int $y, int $z, int $ceiling): array
+    {
+        $iy = intdiv($y, $this->cellY);
+        $iz = intdiv($z, $this->cellZ);
+        $out = [];
+        for ($ix = 0, $end = self::ceilDiv($ceiling, $this->cellX); $ix < $end; $ix++) {
+            foreach ($this->cells[$ix][$iy][$iz] ?? [] as $index) { $out[] = $index; }
         }
         return $out;
     }

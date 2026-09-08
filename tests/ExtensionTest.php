@@ -78,6 +78,28 @@ final class ExtensionTest extends TestCase
         self::assertSame([], $result->containers);
     }
 
+    public static function testAnExtensionMethodNamedInertForDoesNotOptOutOfTheChain(): void
+    {
+        // Activity pruning is an internal built-in specification, not a duck-typed
+        // extension point whose method name a custom constraint can collide with.
+        $constraint = new class implements PlacementConstraint {
+            public function inertFor(Container $container, ItemInstance $item, bool $stackSensitive, bool $routeSensitive): bool
+            {
+                return true;
+            }
+
+            public function evaluate(ConstraintContext $context): ConstraintResult
+            {
+                return ConstraintResult::reject('custom_rejection', $context->item->id());
+            }
+        };
+        $result = (new Packer(new PackingConfig(), new ExtensionRegistry([$constraint])))
+            ->pack([Support::item('a', 10, 10, 10)], [Support::box('b', 100, 100, 100)]);
+
+        self::assertFalse($result->complete());
+        self::assertSame([], $result->containers);
+    }
+
     public static function testACustomConstraintIsAppliedAtEveryCandidatePoint(): void
     {
         $items = [Support::item('a', 40, 40, 40, ['quantity' => 8])];

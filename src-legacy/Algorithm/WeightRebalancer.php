@@ -178,7 +178,7 @@ final class WeightRebalancer
      * that fails geometrically (no room in the destination), physically (the
      * validator rejects the result -- for example because something was resting on the
      * item that just moved) or commercially (under lowest_landed_cost the destination
-     * would bill past its rate table's last bracket,  review) simply is not made;
+     * would bill past its rate table's last bracket, review) simply is not made;
      * the caller's container list is untouched.
      *
      * @param list<PackedContainer> $containers

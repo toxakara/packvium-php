@@ -146,15 +146,20 @@ final class ContainerState
         // hull leaves most of that box -- including, for a wedge, the origin itself --
         // available to the next item. Pruning them first would mean the engine could describe
         // an interlocking pack it could never propose.
-        $retired=[];
-        if($shape===null)
-            foreach($this->points as $key=>$point)if($box->containsPoint($point)){$retired[$key]=true;unset($this->points[$key]);}
-        if($retired!==[])$this->orderedPoints=array_values(array_filter(
-            $this->orderedPoints,
-            static function (Point $point) use ($retired): bool {
-                return !isset($retired["{$point->x}:{$point->y}:{$point->z}"]);
-            },
-        ));
+        if($shape===null){
+            [$x1,$y1,$z1,$x2,$y2,$z2]=$bound;
+            $retired=false;
+            foreach($this->points as $key=>$point)
+                if($point->x>=$x1&&$point->x<$x2&&$point->y>=$y1&&$point->y<$y2&&$point->z>=$z1&&$point->z<$z2){$retired=true;unset($this->points[$key]);}
+            // `$orderedPoints` holds exactly the points of `$points`, so the same test
+            // retires the same set there without rebuilding a key per point.
+            if($retired){
+                $kept=[];
+                foreach($this->orderedPoints as $point)
+                    if(!($point->x>=$x1&&$point->x<$x2&&$point->y>=$y1&&$point->y<$y2&&$point->z>=$z1&&$point->z<$z2))$kept[]=$point;
+                $this->orderedPoints=$kept;
+            }
+        }
         $this->absorb($this->exposedPoints($box));
     }
 
@@ -218,9 +223,12 @@ final class ContainerState
             if($x>=$length||$y>=$width||$z>=$height)continue;
             $key="{$x}:{$y}:{$z}";
             if(isset($this->points[$key]))continue;
+            // A solid containing the point is registered in the point's own cell.
             $inside=false;
-            foreach($this->bounds as [$bx1,$by1,$bz1,$bx2,$by2,$bz2])
+            foreach($this->index->bucketAt($x,$y,$z) as $position){
+                [$bx1,$by1,$bz1,$bx2,$by2,$bz2]=$this->bounds[$position];
                 if($bx1<=$x&&$x<$bx2&&$by1<=$y&&$y<$by2&&$bz1<=$z&&$z<$bz2){$inside=true;break;}
+            }
             if(!$inside){
                 $this->points[$key]=$point;
                 $pointKey=[$z,$y,$x];$low=0;$high=count($this->orderedPoints);
@@ -249,13 +257,16 @@ final class ContainerState
         ];
     }
 
+    // Each projection is the highest face at or below a ceiling among the solids whose
+    // footprint covers the point on the other two axes. The index's ray under the ceiling
+    // holds every such solid, and a maximum is indifferent to seeing one twice.
     private function surfaceZ(int $x,int $y,int $ceiling):int
-    {$best=0;foreach($this->bounds as $b)if($b[5]<=$ceiling&&$b[0]<=$x&&$x<$b[3]&&$b[1]<=$y&&$y<$b[4]&&$b[5]>$best)$best=$b[5];return $best;}
+    {$best=0;foreach($this->index->columnZ($x,$y,$ceiling) as $i){$b=$this->bounds[$i];if($b[5]<=$ceiling&&$b[5]>$best&&$b[0]<=$x&&$x<$b[3]&&$b[1]<=$y&&$y<$b[4])$best=$b[5];}return $best;}
 
     private function surfaceY(int $x,int $z,int $ceiling):int
-    {$best=0;foreach($this->bounds as $b)if($b[4]<=$ceiling&&$b[0]<=$x&&$x<$b[3]&&$b[2]<=$z&&$z<$b[5]&&$b[4]>$best)$best=$b[4];return $best;}
+    {$best=0;foreach($this->index->columnY($x,$z,$ceiling) as $i){$b=$this->bounds[$i];if($b[4]<=$ceiling&&$b[4]>$best&&$b[0]<=$x&&$x<$b[3]&&$b[2]<=$z&&$z<$b[5])$best=$b[4];}return $best;}
 
     private function surfaceX(int $y,int $z,int $ceiling):int
-    {$best=0;foreach($this->bounds as $b)if($b[3]<=$ceiling&&$b[1]<=$y&&$y<$b[4]&&$b[2]<=$z&&$z<$b[5]&&$b[3]>$best)$best=$b[3];return $best;}
+    {$best=0;foreach($this->index->columnX($y,$z,$ceiling) as $i){$b=$this->bounds[$i];if($b[3]<=$ceiling&&$b[3]>$best&&$b[1]<=$y&&$y<$b[4]&&$b[2]<=$z&&$z<$b[5])$best=$b[3];}return $best;}
 
 }

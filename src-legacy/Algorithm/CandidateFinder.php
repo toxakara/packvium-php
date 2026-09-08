@@ -3,6 +3,7 @@ declare(strict_types=1);
 namespace Packvium\Algorithm;
 use Packvium\Config\PackingConfig;
 use Packvium\Constraint\{AxleLoad,ConstraintContext,LoadCalculator,PlacementConstraint,SupportConstraint};
+use Packvium\Constraint\Internal\ConstraintActivity;
 use Packvium\Support\{BigInt,StableSorter};
 use Packvium\Domain\{HullShape,ItemInstance,Nesting,Placement,Point,ShapeType};
 use Packvium\Extension\CandidateScorer;
@@ -54,6 +55,18 @@ final class CandidateFinder
         $bounds=$state->bounds;
         $hullShapes=$state->hullShapes;
         $index=$state->index;
+        $nesting=$item->item->nestingHeight!==null;
+        $reserveCheck=$container->voidFillReserveRatio>0&&$reserveNeedsCandidate;
+        $usable=$reserveCheck?$state->usableVolume():'0';
+        // Everything that decides whether a rule can fire is fixed for this call, so the
+        // chain is pruned once here rather than answered "allow" once per position. The
+        // support rule stays in regardless: `supportChecks` counts every time the chain
+        // reaches it.
+        $active=[];
+        foreach($constraints as $constraint){
+            if(ConstraintActivity::isInert($constraint,$container,$item,$stackSensitive,$routeSensitive,$config->accessDirections))continue;
+            $active[]=[$constraint,$constraint instanceof SupportConstraint];
+        }
         if($points===null){
             if($item->item->nestingHeight===null)$scan=array_slice($state->orderedPoints,0,$config->maxCandidatePoints);
             else{
@@ -81,7 +94,7 @@ final class CandidateFinder
                 $x2=$x1+$dx;$y2=$y1+$dy;$z2=$z1+$dz;
                 if($x2>$limitX||$y2>$limitY||$z2>$limitZ)continue;
                 $tentative=null;
-                if($item->item->nestingHeight!==null){
+                if($nesting){
                     $position=new Point($x1+$clearance,$y1+$clearance,$z1+$clearance);
                     $tentative=new Placement($item,$position,$rotation,$physical,$point,$envelope);
                 }
@@ -105,14 +118,14 @@ final class CandidateFinder
                 }
                 if($blocked)continue;
                 $ctx=new ConstraintContext($container,$placed,$item,$point,$rotation,$physical,$envelope,$stackSensitive,$routeSensitive);
-                foreach($constraints as $constraint){
-                    if($constraint instanceof SupportConstraint)$stats->supportChecks++;
+                foreach($active as [$constraint,$countsSupport]){
+                    if($countsSupport)$stats->supportChecks++;
                     if(!$constraint->evaluate($ctx)->allowed){$blocked=true;break;}
                 }
                 if($blocked)continue;
                 $position=(($nullsafeVariable1 = $tentative) ? $nullsafeVariable1->position : null)??new Point($x1+$clearance,$y1+$clearance,$z1+$clearance);
                 $candidate=new Candidate($point,$position,$rotation,$physical,$envelope,$scorer->score($state,$point,$envelope));
-                if($container->voidFillReserveRatio>0&&$reserveNeedsCandidate){
+                if($reserveCheck){
                     $reservePlacement=$tentative??new Placement(
                         $item,$position,$rotation,$physical,$point,$envelope,
                     );
@@ -122,13 +135,13 @@ final class CandidateFinder
                         // the exact support-graph refresh cannot reject it; only a candidate
                         // close to the reserve boundary pays the non-local calculation.
                         $upperBound=BigInt::add($state->usedVolume,Nesting::occupiedVolume($reservePlacement));
-                        $projected=BigInt::compare($upperBound,$state->usableVolume())<=0
+                        $projected=BigInt::compare($upperBound,$usable)<=0
                             ?$upperBound
                             :Nesting::usedVolume(TopLoadAssigner::assign(array_merge($placed, [$reservePlacement])));
                     }else{
                         $projected=BigInt::add($state->usedVolume,Nesting::usedVolumeDelta($placed,$reservePlacement));
                     }
-                    if(BigInt::compare($projected,$state->usableVolume())>0)continue;
+                    if(BigInt::compare($projected,$usable)>0)continue;
                 }
                 $stats->candidatesEvaluated++;
                 if($max===1){if($best===null||$candidate->score<$best->score)$best=$candidate;}

@@ -37,7 +37,12 @@ final class ArrayCodec
         // list in , when PHP gained both the solver behaviour and the independent
         // validation the staged rollout requires. Rust and the JavaScript fallback still
         // carry them.
-        'item'=>[],'container'=>[]];
+        // `pallet_overhang_limit` was reserved in the schema by at the 1.1.0
+        // contract freeze and is refused everywhere until an engine implements it from a
+        // request: a field a caller can set and the solver ignores is worse than a refusal.
+        // `access_directions` left this list in , which wired the reserved field
+        // through to `StopAccessibilityConstraint` in all four engines at once.
+        'item'=>[],'container'=>['pallet_overhang_limit']];
 
     /**
      * `item.shape_type` values this engine does not implement.
@@ -183,6 +188,6 @@ final class ArrayCodec
         return $out;
     }
     private static function box(array $r,string $unit):AxisAlignedBox{$origin=$r['origin']??[];return new AxisAlignedBox(new Point(Length::parse($origin['x']??0,$unit)->ticks,Length::parse($origin['y']??0,$unit)->ticks,Length::parse($origin['z']??0,$unit)->ticks),Dimensions::fromArray($r['dimensions'],$unit));}
-    private static function container(array $r,string $unit):Container{$obs=[];foreach($r['obstacles']??[] as $o){$additional=array_map(fn($b)=>self::box($b,$unit),$o['additional_boxes']??[]);$obs[]=new Obstacle((string)$o['id'],self::box($o,$unit),$additional);}return new Container((string)$r['id'],Dimensions::fromArray($r['inner_dimensions'],$unit),isset($r['outer_dimensions'])?Dimensions::fromArray($r['outer_dimensions'],$unit):null,Weight::parse($r['tare_weight']??0),isset($r['max_payload'])?Weight::parse($r['max_payload']):null,(int)($r['cost_minor']??0),isset($r['quantity'])?(int)$r['quantity']:null,$obs,$r['tags']??[],isset($r['max_items'])?(int)$r['max_items']:null,$r['metadata']??[],(float)($r['void_fill_reserve_ratio']??0),array_map(static fn($v)=>(int)$v,$r['tag_limits']??[]),isset($r['max_stack_density'])?Weight::parse($r['max_stack_density']):null,self::axles($r['axles']??null,$unit),self::rateTable($r['rate_table']??null));}
+    private static function container(array $r,string $unit):Container{$obs=[];foreach($r['obstacles']??[] as $o){$additional=array_map(fn($b)=>self::box($b,$unit),$o['additional_boxes']??[]);$obs[]=new Obstacle((string)$o['id'],self::box($o,$unit),$additional);}return new Container((string)$r['id'],Dimensions::fromArray($r['inner_dimensions'],$unit),isset($r['outer_dimensions'])?Dimensions::fromArray($r['outer_dimensions'],$unit):null,Weight::parse($r['tare_weight']??0),isset($r['max_payload'])?Weight::parse($r['max_payload']):null,(int)($r['cost_minor']??0),isset($r['quantity'])?(int)$r['quantity']:null,$obs,$r['tags']??[],isset($r['max_items'])?(int)$r['max_items']:null,$r['metadata']??[],(float)($r['void_fill_reserve_ratio']??0),array_map(static fn($v)=>(int)$v,$r['tag_limits']??[]),isset($r['max_stack_density'])?Weight::parse($r['max_stack_density']):null,self::axles($r['axles']??null,$unit),self::rateTable($r['rate_table']??null),array_map(static fn($d)=>(string)$d,$r['access_directions']??[]));}
     private static function rateTable(?array $r):?RateTable{if($r===null)return null;return new RateTable(array_map('intval',$r['weight_brackets_g']),array_map('intval',$r['prices_minor']),(int)($r['minimum_charge_minor']??0),(int)($r['fuel_surcharge_permille']??0));}
 }

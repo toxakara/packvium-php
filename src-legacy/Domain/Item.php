@@ -114,7 +114,7 @@ final class Item
     // to limits it never had.
     /**
      * @readonly
-     * @var \Packvium\Domain\ShapeType
+     * @var string
      */
     public $shapeType;
     /** @var list<array{int,int,int}>|null
@@ -130,10 +130,7 @@ final class Item
      * @var int|null
      */
     public $maxCompressionPressureKpa;
-    /**
-     * @param mixed $shapeType
-     */
-    public function __construct(string $id,Dimensions $dimensions,?Weight $weight=null,int $quantity=1,array $allowedRotations=[Rotation::LWH,Rotation::LHW,Rotation::WLH,Rotation::WHL,Rotation::HLW,Rotation::HWL],bool $keepUpright=false,bool $stackable=true,bool $mustBeOnFloor=false,?Weight $maxTopLoad=null,float $minimumSupportRatio=0.0,?string $group=null,array $tags=[],array $incompatibleTags=[],int $priority=0,array $metadata=[],?int $maxStackedItems=null,array $eligibleContainerTags=[],?string $groundContactRule=null,?Length $nestingHeight=null,?int $stopIndex=null,?int $value=null,$shapeType=ShapeType::RIGID_CUBOID,?array $hullVertices=null,?int $compressionRatioPpm=null,?int $maxCompressionPressureKpa=null)
+    public function __construct(string $id,Dimensions $dimensions,?Weight $weight=null,int $quantity=1,array $allowedRotations=[Rotation::LWH,Rotation::LHW,Rotation::WLH,Rotation::WHL,Rotation::HLW,Rotation::HWL],bool $keepUpright=false,bool $stackable=true,bool $mustBeOnFloor=false,?Weight $maxTopLoad=null,float $minimumSupportRatio=0.0,?string $group=null,array $tags=[],array $incompatibleTags=[],int $priority=0,array $metadata=[],?int $maxStackedItems=null,array $eligibleContainerTags=[],?string $groundContactRule=null,?Length $nestingHeight=null,?int $stopIndex=null,?int $value=null,string $shapeType=ShapeType::RIGID_CUBOID,?array $hullVertices=null,?int $compressionRatioPpm=null,?int $maxCompressionPressureKpa=null)
     {
         if($id==='')throw new InvalidArgumentException('Item id is required');if($quantity<=0)throw new InvalidArgumentException('Item quantity must be positive');if($minimumSupportRatio<0||$minimumSupportRatio>1)throw new InvalidArgumentException('Minimum support ratio must be between 0 and 1');if($maxStackedItems!==null&&$maxStackedItems<1)throw new InvalidArgumentException('max_stacked_items must be at least 1');if($groundContactRule!==null&&!in_array($groundContactRule,self::GROUND_CONTACT_RULES,true))throw new InvalidArgumentException('ground_contact_rule must be one of '.implode(', ',self::GROUND_CONTACT_RULES));
         if($nestingHeight!==null&&!($nestingHeight->ticks>=0&&$nestingHeight->ticks<$dimensions->height->ticks))throw new InvalidArgumentException("nesting_height must be at least zero and strictly less than the item's own height");
@@ -150,18 +147,16 @@ final class Item
     /**
      * @param \Packvium\Unit\Weight|int|string|mixed[] $weight
      * @param \Packvium\Unit\Weight|int|string|mixed[]|null $maxTopLoad
-     * @param mixed $shapeType
      */
-    public static function create(string $id,Dimensions $dimensions,$weight=0,int $quantity=1,array $allowedRotations=[Rotation::LWH,Rotation::LHW,Rotation::WLH,Rotation::WHL,Rotation::HLW,Rotation::HWL],bool $keepUpright=false,bool $stackable=true,bool $mustBeOnFloor=false,$maxTopLoad=null,float $minimumSupportRatio=0.0,?string $group=null,array $tags=[],array $incompatibleTags=[],int $priority=0,array $metadata=[],?int $maxStackedItems=null,array $eligibleContainerTags=[],?string $groundContactRule=null,?Length $nestingHeight=null,?int $stopIndex=null,?int $value=null,$shapeType=ShapeType::RIGID_CUBOID,?array $hullVertices=null,?int $compressionRatioPpm=null,?int $maxCompressionPressureKpa=null):self{return new self($id,$dimensions,Weight::parse($weight),$quantity,$allowedRotations,$keepUpright,$stackable,$mustBeOnFloor,$maxTopLoad===null?null:Weight::parse($maxTopLoad),$minimumSupportRatio,$group,$tags,$incompatibleTags,$priority,$metadata,$maxStackedItems,$eligibleContainerTags,$groundContactRule,$nestingHeight,$stopIndex,$value,$shapeType,$hullVertices,$compressionRatioPpm,$maxCompressionPressureKpa);}
+    public static function create(string $id,Dimensions $dimensions,$weight=0,int $quantity=1,array $allowedRotations=[Rotation::LWH,Rotation::LHW,Rotation::WLH,Rotation::WHL,Rotation::HLW,Rotation::HWL],bool $keepUpright=false,bool $stackable=true,bool $mustBeOnFloor=false,$maxTopLoad=null,float $minimumSupportRatio=0.0,?string $group=null,array $tags=[],array $incompatibleTags=[],int $priority=0,array $metadata=[],?int $maxStackedItems=null,array $eligibleContainerTags=[],?string $groundContactRule=null,?Length $nestingHeight=null,?int $stopIndex=null,?int $value=null,string $shapeType=ShapeType::RIGID_CUBOID,?array $hullVertices=null,?int $compressionRatioPpm=null,?int $maxCompressionPressureKpa=null):self{return new self($id,$dimensions,Weight::parse($weight),$quantity,$allowedRotations,$keepUpright,$stackable,$mustBeOnFloor,$maxTopLoad===null?null:Weight::parse($maxTopLoad),$minimumSupportRatio,$group,$tags,$incompatibleTags,$priority,$metadata,$maxStackedItems,$eligibleContainerTags,$groundContactRule,$nestingHeight,$stopIndex,$value,$shapeType,$hullVertices,$compressionRatioPpm,$maxCompressionPressureKpa);}
     /**
      * Admit this item's shape, or refuse it with the reason.
      *
      * Kept out of the constructor body because it is the only rule here spanning four fields
      * at once: which are required, which are forbidden, and what the survivors must agree
      * with. Mirrors the Python engine exactly -- the two must refuse the same requests.
-     * @param mixed $shapeType
      */
-    private static function admitShape($shapeType,?array $hullVertices,?int $ratioPpm,?int $limitKpa,Dimensions $dimensions,?Length $nestingHeight):?array
+    private static function admitShape(string $shapeType,?array $hullVertices,?int $ratioPpm,?int $limitKpa,Dimensions $dimensions,?Length $nestingHeight):?array
     {
         switch ($shapeType) {
             case ShapeType::CONVEX_HULL:
@@ -175,12 +170,12 @@ final class Item
                 break;
         }
         foreach($foreign as $name=>$value){
-            if($value!==null)throw new InvalidArgumentException("{$name} is not part of a {$shapeType->value} item");
+            if($value!==null)throw new InvalidArgumentException("{$name} is not part of a {$shapeType} item");
         }
         // Both rewrite occupied height. Choosing an order silently would give four engines
         // four contracts, so the interaction is refused until a task defines it.
         if($nestingHeight!==null&&$shapeType!==ShapeType::RIGID_CUBOID)
-            throw new InvalidArgumentException("nesting_height with shape_type {$shapeType->value} is not supported yet");
+            throw new InvalidArgumentException("nesting_height with shape_type {$shapeType} is not supported yet");
         if($shapeType===ShapeType::CONVEX_HULL){
             if($hullVertices===null)throw new InvalidArgumentException('a convex_hull item requires hull_vertices');
             $hullVertices=HullShape::validate($hullVertices);
