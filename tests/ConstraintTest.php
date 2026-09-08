@@ -194,6 +194,30 @@ final class ConstraintTest extends TestCase
         self::assertSame($one->allowed, $two->allowed);
     }
 
+    public static function testTheCorridorCacheSeparatesContainersWithDifferentDoors(): void
+    {
+        // The placements and dimensions are deliberately the same in both calls. Before
+        // doors were solve-wide, so they were absent from the cache key; once doors
+        // became a container field that stale entry would silently answer the second
+        // container's different question.
+        $early = self::wide('early', 40, 0);
+        $late = self::wide('late', 60, 1);
+        $placements = [self::placed($early, 60 * self::MM)];
+        $minus = Container::create('minus', Dimensions::mm(100, 100, 100),
+            accessDirections: ['-x']);
+        $plus = Container::create('plus', Dimensions::mm(100, 100, 100),
+            accessDirections: ['+x']);
+        $constraint = new StopAccessibilityConstraint();
+
+        $throughMinus = $constraint->evaluate(self::context(
+            $late, placements: $placements, container: $minus, x: 0));
+        $throughPlus = $constraint->evaluate(self::context(
+            $late, placements: $placements, container: $plus, x: 0));
+
+        self::assertFalse($throughMinus->allowed);
+        self::assertTrue($throughPlus->allowed);
+    }
+
     public static function testSweptVolumeRefusesAnUnknownDirectionAtThePrimitive(): void
     {
         // The constraint validates its doors at construction, but the primitive is public

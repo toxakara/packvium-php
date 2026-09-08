@@ -553,7 +553,12 @@ final class IrregularItemsTest extends TestCase
      */
     public static function testTheFaceWalkStartsFromACornerNotFromASmallString(): void
     {
+        // A cross-language fixture kept one level above this package; a published copy
+        // does not carry it.
         $path = __DIR__ . '/../../conformance/scene/hull-internals.json';
+        if (!is_file($path)) {
+            self::skip('the shared cross-language scene fixture is not part of this package');
+        }
         $document = json_decode((string)file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
         self::assertSame('packvium-hull-internals/v1', $document['format']);
         foreach ($document['cases'] as $case) {

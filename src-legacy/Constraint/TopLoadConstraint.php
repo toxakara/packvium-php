@@ -10,7 +10,7 @@ use Packvium\Domain\Placement;
  * the box directly underneath, so a tower of light items cannot crush its base.
  *
  * The support graph over the *placed* boxes is the same for every candidate evaluated
- * against one search state, and rebuilding it per candidate was the cost 
+ * against one search state, and rebuilding it per candidate was the cost
  * removes. One base per placement list is kept here and each candidate is appended to
  * it. The cache is deliberately a single entry: search evaluates a run of candidates
  * against one state before moving on, so one entry captures the whole run.

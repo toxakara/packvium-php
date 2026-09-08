@@ -82,34 +82,37 @@ final class UnsupportedFieldTest extends TestCase
      */
     public static function testTheUnsupportedListsMatchWhatTheFieldMatrixRecords(): void
     {
-        $matrix = json_decode((string) file_get_contents(
-            dirname(__DIR__, 2) . '/conformance/public-field-matrix.json'
-        ), true);
+        // A cross-language fixture kept one level above this package; a published copy
+        // does not carry it.
+        $shared = dirname(__DIR__, 2) . '/conformance/public-field-matrix.json';
+        if (!is_file($shared)) {
+            self::skip('the shared public field matrix is not part of this package');
+        }
+        $matrix = json_decode((string) file_get_contents($shared), true);
 
-        $rejectedByMatrix = [];
+        // An engine refuses a field by name; the matrix is keyed on the schema's leaves, so
+        // one refused field is several rows. The matrix's own `rejection_name` -- the name
+        // the conformance harness demands in the diagnostic -- ties the rows to the field,
+        // so the comparison is made on that and never inferred from the spelling of a path.
+        $rows = [];
         foreach ($matrix['fields'] as $path => $row) {
-            if (($matrix['support_sets'][$row['support']]['php'] ?? null) === 'rejected:unsupported_feature') {
-                $rejectedByMatrix[$path] = true;
+            $rows[$path] = [$row['rejection_name'] ?? null, $matrix['support_sets'][$row['support']]['php'] ?? null];
+        }
+        $rejectedByMatrix = [];
+        foreach ($rows as [$name, $support]) {
+            if ($support === 'rejected:unsupported_feature') {
+                $rejectedByMatrix[self::fieldOf((string) $name)] = true;
             }
         }
 
         $declared = [];
         foreach (ArrayCodec::UNSUPPORTED_FIELDS as $scope => $names) {
             foreach ($names as $name) {
-                $declared[in_array($scope, ['item', 'container'], true) ? "{$scope}s.*.{$name}" : $name] = true;
+                $declared[$scope === 'request' ? $name : "{$scope}.{$name}"] = true;
             }
         }
-        // A value-keyed refusal is one matrix row for the field itself. `hull_vertices` is
-        // an array of points, so the schema's leaves -- and therefore its rows -- are the
-        // three coordinates, not the array.
         if (ArrayCodec::UNSUPPORTED_SHAPE_TYPES !== []) {
-            $declared['items.*.shape_type'] = true;
-        }
-        if (isset($declared['items.*.hull_vertices'])) {
-            unset($declared['items.*.hull_vertices']);
-            foreach (['x', 'y', 'z'] as $axis) {
-                $declared["items.*.hull_vertices.*.{$axis}"] = true;
-            }
+            $declared['item.shape_type'] = true;
         }
 
         $declaredNames = array_keys($declared);
@@ -118,6 +121,21 @@ final class UnsupportedFieldTest extends TestCase
         sort($matrixNames);
         self::assertSame($matrixNames, $declaredNames,
             'the engine and the matrix disagree about what PHP refuses');
+        // A field refused by name is refused on every one of its leaves: a row that names a
+        // refused field while recording this engine as implementing it is a matrix error.
+        $halfRecorded = [];
+        foreach ($rows as $path => [$name, $support]) {
+            if ($name !== null && isset($declared[self::fieldOf($name)]) && $support !== 'rejected:unsupported_feature') {
+                $halfRecorded[] = $path;
+            }
+        }
+        self::assertSame([], $halfRecorded, 'rows recorded as implemented for a field PHP refuses');
+    }
+
+    /** A value-keyed template such as `item.shape_type={value}` names the field before `=`. */
+    private static function fieldOf(string $rejectionName): string
+    {
+        return explode('=', $rejectionName, 2)[0];
     }
 
     public static function testTheDefaultShapeTypeIsServedRatherThanRefused(): void

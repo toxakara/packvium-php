@@ -216,7 +216,7 @@ final class ObjectiveBounds
      * occupies its hull and leaves the rest of its bounding box free; a `compressible` item
      * gives up height under load.
      *
-     * The design document named only the first until  found the omission with a
+     * The design document named only the first until found the omission with a
      * soundness test. Asking the question once, here, is what stops a future fourth shape
      * from reintroducing the same unsoundness silently.
      */

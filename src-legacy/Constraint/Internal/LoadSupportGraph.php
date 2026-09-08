@@ -108,7 +108,7 @@ final class LoadSupportGraph
      * This graph plus one more unit, appended at the next index.
      *
      * The search evaluates many candidates against one unchanged set of placements, and
-     * rebuilding the whole support graph for each of them was the cost  exists to
+     * rebuilding the whole support graph for each of them was the cost exists to
      * remove. Adding a box cannot change contact between two boxes already placed, so the
      * face graph only needs its two planes queried -- see `ContactGraph::withBox`.
      *

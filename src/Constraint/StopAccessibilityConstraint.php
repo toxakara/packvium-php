@@ -14,11 +14,18 @@ use Packvium\Domain\SweptRegion;
  * the other; docs/STOP-ACCESSIBILITY.md derives the rule and the post-validator's
  * whole-scene replay remains the sufficient check.
  *
- * Opt-in twice over, and both are load-bearing. It is inert unless the caller supplies exit
- * directions, because the request schema has no field for them: assuming all six walls open
- * would enforce a rule true of no real vehicle and nearly vacuous besides, since a box is
- * almost always free through *some* face. And it is inert unless two distinct stops are in
- * play, which is what keeps a caller who never populates `stopIndex` paying nothing.
+ * Opt-in twice over, and both are load-bearing. It is inert unless doors are stated, because
+ * assuming all six walls open would enforce a rule true of no real vehicle and nearly vacuous
+ * besides, since a box is almost always free through *some* face. And it is inert unless two
+ * distinct stops are in play, which is what keeps a caller who never populates `stopIndex`
+ * paying nothing.
+ *
+ * The doors come from the container and fall back to the configuration.
+ * `container.access_directions` is a request field and has to be a per-container one: two
+ * doors on one trailer and none on another is the case that makes the rule worth having, and
+ * a solve opening several container types would otherwise pick one answer for all of them.
+ * The constructor argument stays as the default so callers who drove this through
+ * `PackingConfig(accessDirections: ...)` before the field existed keep working unchanged.
  *
  * The blocker set is `{q : s(q) > s(p)}` -- strictly later. Items due at the *same* stop are
  * excluded because the order within a stop is free: whichever is in the way comes off first.
@@ -28,10 +35,12 @@ use Packvium\Domain\SweptRegion;
 final class StopAccessibilityConstraint implements PlacementConstraint
 {
     /** @var list<string> */
-    private array $directions;
+    private array $defaultDirections;
     /** @var list<Placement>|null */
     private ?array $placements=null;
     private ?Dimensions $container=null;
+    /** @var list<string> */
+    private array $directions=[];
     /** @var list<array<string,true>> */
     private array $clear=[];
     /** @var list<int|float> */
@@ -50,7 +59,7 @@ final class StopAccessibilityConstraint implements PlacementConstraint
         }
         // Deduplicated in the canonical order rather than as given: two callers passing the
         // same doors in different orders must search identically.
-        $this->directions=array_values(array_filter(
+        $this->defaultDirections=array_values(array_filter(
             SweptRegion::ALL_DIRECTIONS,
             static fn(string $d):bool=>in_array($d,$directions,true),
         ));
@@ -76,14 +85,18 @@ final class StopAccessibilityConstraint implements PlacementConstraint
      * run of candidates against one state, so a single entry covers the whole run. Keyed on
      * the container too, because a corridor runs to a *wall*: the same boxes have different
      * exits in a longer container, and reusing one answer for the other would silently
-     * accept a placement that walls an item in.
+     * accept a placement that walls an item in. And on the doors, since made them a
+     * property of the container rather than of the solve: two containers of the same size
+     * with different doors have different answers for the same boxes, and nothing else in
+     * the key separates them.
      *
      * @param list<Placement> $placements
+     * @param list<string> $directions
      * @return array{0:list<array<string,true>>,1:list<int|float>}
      */
-    private function baseFor(array $placements,Dimensions $container):array
+    private function baseFor(array $placements,Dimensions $container,array $directions):array
     {
-        if($this->placements===$placements&&$this->container==$container)return [$this->clear,$this->stops];
+        if($this->placements===$placements&&$this->container==$container&&$this->directions===$directions)return [$this->clear,$this->stops];
         $stops=[];$boxes=[];
         foreach($placements as $p){$stops[]=self::stopOf($p);$boxes[]=$p->envelopeBox();}
         $clear=[];
@@ -91,9 +104,9 @@ final class StopAccessibilityConstraint implements PlacementConstraint
             $open=[];
             if($stops[$index]===INF){
                 // Never unloaded, so it needs no door of its own -- it only ever blocks.
-                foreach($this->directions as $d)$open[$d]=true;
+                foreach($directions as $d)$open[$d]=true;
             }else{
-                foreach($this->directions as $d){
+                foreach($directions as $d){
                     $sweep=SweptRegion::volume($box,$container,$d);
                     $blocked=false;
                     foreach($boxes as $other=>$otherBox){
@@ -104,17 +117,20 @@ final class StopAccessibilityConstraint implements PlacementConstraint
             }
             $clear[]=$open;
         }
-        $this->placements=$placements;$this->container=$container;$this->clear=$clear;$this->stops=$stops;
+        $this->placements=$placements;$this->container=$container;$this->directions=$directions;$this->clear=$clear;$this->stops=$stops;
         return [$clear,$stops];
     }
 
     public function evaluate(ConstraintContext $c):ConstraintResult
     {
-        if($this->directions===[])return ConstraintResult::allow();
         if(!$c->routeSensitive)return ConstraintResult::allow();
+        // The container's own doors win; the configured list is what a container that
+        // states none inherits.
+        $directions=$c->container->accessDirections!==[]?$c->container->accessDirections:$this->defaultDirections;
+        if($directions===[])return ConstraintResult::allow();
         $candidateStop=$c->item->item->stopIndex??INF;
         $inner=$c->container->innerDimensions;
-        [$clear,$stops]=$this->baseFor($c->placements,$inner);
+        [$clear,$stops]=$this->baseFor($c->placements,$inner,$directions);
 
         // One distinct stop means nothing can be due before anything else, so no corridor
         // can be blocked by a later item. Checked over the candidate too, or the first
@@ -138,7 +154,7 @@ final class StopAccessibilityConstraint implements PlacementConstraint
         }
 
         if($candidateStop===INF)return ConstraintResult::allow();
-        foreach($this->directions as $d){
+        foreach($directions as $d){
             $sweep=SweptRegion::volume($candidate,$inner,$d);
             $blocked=false;
             foreach($c->placements as $other=>$placement){

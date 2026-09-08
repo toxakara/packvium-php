@@ -27,7 +27,12 @@ final class ObjectiveBoundsTest extends TestCase
     /** @return array{format:string,cases:list<array>} */
     private static function scene(): array
     {
+        // A cross-language fixture kept one level above this package; a published copy
+        // does not carry it.
         $path = dirname(__DIR__, 2) . '/conformance/scene/objective-bounds.json';
+        if (!is_file($path)) {
+            self::skip('the shared cross-language scene fixture is not part of this package');
+        }
         $decoded = json_decode((string)file_get_contents($path), true);
         self::assertTrue(is_array($decoded), "the scene at $path is not readable JSON");
         self::assertSame('packvium-objective-bounds/v1', $decoded['format']);
@@ -103,7 +108,7 @@ final class ObjectiveBoundsTest extends TestCase
     /**
      * The shape rule, asserted against engine objects rather than the scene's flag.
      *
-     *  found this omission with a soundness test: the design document dropped the
+     * found this omission with a soundness test: the design document dropped the
      * volume argument for `nesting_height` alone, and `convex_hull` and `compressible` --
      * added after the document was written -- occupy less than their bounding box
      * for exactly the same reason. A port that checks only `nesting_height` is unsound, and

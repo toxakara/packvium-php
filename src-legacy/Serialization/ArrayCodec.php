@@ -37,7 +37,12 @@ final class ArrayCodec
         // list in , when PHP gained both the solver behaviour and the independent
         // validation the staged rollout requires. Rust and the JavaScript fallback still
         // carry them.
-        'item'=>[],'container'=>[]];
+        // `pallet_overhang_limit` was reserved in the schema by at the 1.1.0
+        // contract freeze and is refused everywhere until an engine implements it from a
+        // request: a field a caller can set and the solver ignores is worse than a refusal.
+        // `access_directions` left this list in , which wired the reserved field
+        // through to `StopAccessibilityConstraint` in all four engines at once.
+        'item'=>[],'container'=>['pallet_overhang_limit']];
 
     /**
      * `item.shape_type` values this engine does not implement.
@@ -165,7 +170,7 @@ final class ArrayCodec
     },$r['allowed_rotations']??array_map(function ($x) {
         return $x;
     },Rotation::all()));return new Item((string)$r['id'],Dimensions::fromArray($r['dimensions'],$unit),Weight::parse($r['weight']??0), (int)($r['quantity']??1),$rot,(bool)($r['keep_upright']??false),(bool)($r['stackable']??true),(bool)($r['must_be_on_floor']??false),isset($r['max_top_load'])?Weight::parse($r['max_top_load']):null,(float)($r['minimum_support_ratio']??0),$r['group']??null,$r['tags']??[],$r['incompatible_tags']??[],(int)($r['priority']??0),$r['metadata']??[],isset($r['max_stacked_items'])?(int)$r['max_stacked_items']:null,$r['eligible_container_tags']??[],$r['ground_contact_rule']??null,isset($r['nesting_height'])?Length::parse($r['nesting_height'],$unit):null,isset($r['stop_index'])?(int)$r['stop_index']:null,isset($r['value'])?(int)$r['value']:null,
-        ShapeType::from((string)($r['shape_type']??ShapeType::RIGID_CUBOID->value)),self::hullVertices($r['hull_vertices']??null,$unit),
+        ShapeType::from((string)($r['shape_type']??ShapeType::RIGID_CUBOID)),self::hullVertices($r['hull_vertices']??null,$unit),
         isset($r['compression_ratio'])?Compression::ratioToPpm((float)$r['compression_ratio']):null,
         isset($r['max_compression_pressure_kpa'])?(int)$r['max_compression_pressure_kpa']:null);}
 
@@ -196,6 +201,8 @@ final class ArrayCodec
         return self::box($b,$unit);
     },$o['additional_boxes']??[]);$obs[]=new Obstacle((string)$o['id'],self::box($o,$unit),$additional);}return new Container((string)$r['id'],Dimensions::fromArray($r['inner_dimensions'],$unit),isset($r['outer_dimensions'])?Dimensions::fromArray($r['outer_dimensions'],$unit):null,Weight::parse($r['tare_weight']??0),isset($r['max_payload'])?Weight::parse($r['max_payload']):null,(int)($r['cost_minor']??0),isset($r['quantity'])?(int)$r['quantity']:null,$obs,$r['tags']??[],isset($r['max_items'])?(int)$r['max_items']:null,$r['metadata']??[],(float)($r['void_fill_reserve_ratio']??0),array_map(static function ($v) {
         return (int)$v;
-    },$r['tag_limits']??[]),isset($r['max_stack_density'])?Weight::parse($r['max_stack_density']):null,self::axles($r['axles']??null,$unit),self::rateTable($r['rate_table']??null));}
+    },$r['tag_limits']??[]),isset($r['max_stack_density'])?Weight::parse($r['max_stack_density']):null,self::axles($r['axles']??null,$unit),self::rateTable($r['rate_table']??null),array_map(static function ($d) {
+        return (string)$d;
+    },$r['access_directions']??[]));}
     private static function rateTable(?array $r):?RateTable{if($r===null)return null;return new RateTable(array_map('intval',$r['weight_brackets_g']),array_map('intval',$r['prices_minor']),(int)($r['minimum_charge_minor']??0),(int)($r['fuel_surcharge_permille']??0));}
 }
