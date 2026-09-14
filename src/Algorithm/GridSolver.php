@@ -51,7 +51,18 @@ final class GridSolver implements SingleContainerSolver
     /** @param list<\Packvium\Domain\ItemInstance> $items */
     public function supports(array $items):bool
     {
-        return $items!==[]&&count(array_unique(array_map(static fn($i)=>self::latticeProfile($i->item),$items)))===1;
+        if($items===[])return false;
+        $prototype=$items[0]->item;
+        $profile=self::latticeProfile($prototype);
+        $previous=$prototype;
+        foreach($items as $instance){
+            $item=$instance->item;
+            // Quantities share an immutable Item. Compare each distinct run with
+            // one prototype, stopping as soon as a different profile is found.
+            if($item!==$prototype&&$item!==$previous&&self::latticeProfile($item)!==$profile)return false;
+            $previous=$item;
+        }
+        return true;
     }
 
     public function packOne(Container $container,int $sequence,array $items,PackingConfig $config,SearchStats $stats,Deadline $deadline):SingleContainerSolution

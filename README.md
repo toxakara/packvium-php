@@ -6,7 +6,7 @@ dependencies**, exact integer geometry.
 Full documentation, the constraint reference and benchmarks live at
 [packvium.com](https://packvium.com).
 
-> **Version 1.1.0 — the public API is frozen.** Field names, status codes and the
+> **Version 1.2.0 — the public API is frozen.** Field names, status codes and the
 > objective vector do not change without a major version, so any `1.x` is a safe upgrade
 > from any earlier `1.x`.
 > Read [docs/GUARANTEES.md](docs/GUARANTEES.md) before relying on a result.
@@ -73,6 +73,7 @@ surprise people.
 | [`shapes.php`](https://github.com/toxakara/packvium-php/blob/main/examples/shapes.php) | Items that are not their box: complementary wedges sharing one crate as `convex_hull`, and a cushion that compresses under load until the crush limit refuses it. |
 | [`nested.php`](examples/nested.php) | Units into cartons, cartons onto a pallet, in one call. |
 | [`commerce.php`](examples/commerce.php) | Rate a shipment, apply an eligibility rule, and pin a catalog version. |
+| [`execution.php`](https://github.com/toxakara/packvium-php/blob/main/examples/execution.php) | Turn a result into dock instructions: solver facts kept apart from screen text, and a step order that is injected or honestly absent — byte-identical to the other three engines. |
 
 ```bash
 php examples/objectives.php

@@ -27,6 +27,10 @@ require dirname(__DIR__) . '/autoload.php';
 use Packvium\Serialization\ArrayCodec;
 
 const MM = ['units' => ['length' => 'mm']];
+// An example must not change answer merely because the host was busy. These solves need
+// a fraction of the budget; the generous wall-clock value is only a safety fuse, so a
+// loaded machine cannot cut the multi-start portfolio short and let a different start win.
+const SAFETY_FUSE = ['configuration' => ['time_limit_ms' => 60000]];
 
 function crate(string $length, string $width, string $height): array
 {
@@ -37,7 +41,7 @@ function crate(string $length, string $width, string $height): array
 /** Run one request and print only what the shape changed: containers and refusals. */
 function summarise(string $label, array $request): void
 {
-    $result = ArrayCodec::pack($request);
+    $result = ArrayCodec::pack($request + SAFETY_FUSE);
     $placed = 0;
     foreach ($result['containers'] as $container) {
         $placed += count($container['placements']);
@@ -130,7 +134,7 @@ function brick(int $kilograms): array
 /** One crate, one cushion, one brick -- only the brick's mass changes. */
 function load(string $label, int $kilograms): void
 {
-    $result = ArrayCodec::pack(MM + [
+    $result = ArrayCodec::pack(MM + SAFETY_FUSE + [
         'items' => [cushion(100), brick($kilograms)],
         'containers' => crate('100', '100', '200'),
     ]);

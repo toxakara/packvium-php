@@ -14,13 +14,14 @@ final class GroupBatcher
      */
     public static function batches(array $items):array
     {
-        $batches=[];$seen=[];
+        $batches=[];$positions=[];
         foreach($items as $item){
             $group=$item->item->group;
             if($group===null){$batches[]=[$item];continue;}
-            if(isset($seen[$group]))continue;
-            $seen[$group]=true;
-            $batches[]=array_values(array_filter($items,static fn(ItemInstance $other):bool=>$other->item->group===$group));
+            if(!isset($positions[$group])){
+                $positions[$group]=count($batches);
+                $batches[]=[$item];
+            }else $batches[$positions[$group]][]=$item;
         }
         return $batches;
     }

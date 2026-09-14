@@ -25,6 +25,11 @@ use Packvium\Domain\{Container, Dimensions, Item, RateTable};
 use Packvium\Domain\UnratedWeightException;
 use Packvium\Packer;
 
+// An example must not change answer merely because the host was busy. These solves need
+// a fraction of the budget; the generous wall-clock value is only a safety fuse, so a
+// loaded machine cannot cut the multi-start portfolio short and let a different start win.
+const SAFETY_FUSE_MS = 60_000;
+
 $widgets = [Item::create('widget', Dimensions::mm('100', '100', '100'), '500 g', quantity: 8)];
 
 $solve = static function (PackingConfig $config, array $containers) use ($widgets): string {
@@ -40,14 +45,14 @@ $solve = static function (PackingConfig $config, array $containers) use ($widget
 $snug = Container::create('snug', Dimensions::mm('300', '300', '300'), maxPayload: '20 kg', costMinor: 500);
 $roomy = Container::create('roomy', Dimensions::mm('400', '400', '400'), maxPayload: '20 kg', costMinor: 150);
 
-printf("%-18s %s\n", 'default', $solve(PackingConfig::balanced(), [$snug, $roomy]));
+printf("%-18s %s\n", 'default', $solve(PackingConfig::balanced(timeLimitMs: SAFETY_FUSE_MS), [$snug, $roomy]));
 
 // -----------------------------------------------------------------------------------
 // `lowest_cost` -- the cheapest *packaging*. `costMinor` is what the box costs you, so
 // this is the objective for a warehouse buying cartons, not for a shipper paying a
 // carrier.
 // -----------------------------------------------------------------------------------
-printf("%-18s %s\n", 'lowest_cost', $solve(new PackingConfig(objective: 'lowest_cost'), [$snug, $roomy]));
+printf("%-18s %s\n", 'lowest_cost', $solve(new PackingConfig(objective: 'lowest_cost', timeLimitMs: SAFETY_FUSE_MS), [$snug, $roomy]));
 
 // -----------------------------------------------------------------------------------
 // `shipping_cost` -- carrier-billable *weight*: the greater of actual gross weight and
@@ -62,6 +67,7 @@ $byWeight = new PackingConfig(
     dimensionalWeightDivisor: 5000,
     dimensionalWeightLengthUnit: 'cm',
     dimensionalWeightWeightUnit: 'kg',
+    timeLimitMs: SAFETY_FUSE_MS,
 );
 printf("%-18s %s\n", 'shipping_cost', $solve($byWeight, [$snug, $roomy]));
 
@@ -87,6 +93,7 @@ $byMoney = new PackingConfig(
     dimensionalWeightDivisor: 5000,
     dimensionalWeightLengthUnit: 'cm',
     dimensionalWeightWeightUnit: 'kg',
+    timeLimitMs: SAFETY_FUSE_MS,
 );
 printf("%-18s %s\n", 'lowest_landed_cost', $solve($byMoney, [$dearPerGram, $cheapPerGram]));
 
@@ -107,7 +114,7 @@ try {
 // pallet that has to clear a doorway.
 // -----------------------------------------------------------------------------------
 printf("%-18s %s\n", 'open_dimension_height',
-    $solve(new PackingConfig(objective: 'open_dimension_height'), [$snug, $roomy]));
+    $solve(new PackingConfig(objective: 'open_dimension_height', timeLimitMs: SAFETY_FUSE_MS), [$snug, $roomy]));
 
 // -----------------------------------------------------------------------------------
 // `maximum_value` -- when not everything fits, leave the *cheap* things behind. Note the
@@ -120,7 +127,7 @@ $mixed = [
     Item::create('gold', Dimensions::mm('100', '100', '100'), '500 g', quantity: 2, value: 90000),
     Item::create('gravel', Dimensions::mm('100', '100', '100'), '500 g', quantity: 2, value: 10),
 ];
-$result = (new Packer(new PackingConfig(objective: 'maximum_value')))->pack($mixed, $tiny);
+$result = (new Packer(new PackingConfig(objective: 'maximum_value', timeLimitMs: SAFETY_FUSE_MS)))->pack($mixed, $tiny);
 $kept = [];
 foreach ($result->containers as $container) {
     foreach ($container->placements as $placement) {

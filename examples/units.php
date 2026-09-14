@@ -81,7 +81,10 @@ printf("\non the wire: %s %s\n",
     json_encode(Length::parse('12 3/8 in')->toArray()),
     json_encode(Weight::parse('2 3/4 lb')->toArray('g')));
 
-$result = (new Packer(PackingConfig::balanced()))->pack(
+// An example must not change answer merely because the host was busy. This solve needs
+// a fraction of the budget below; the generous wall-clock value is only a safety fuse, so
+// a loaded machine cannot cut the multi-start portfolio short and let a different start win.
+$result = (new Packer(PackingConfig::balanced(timeLimitMs: 60_000)))->pack(
     [Item::create('shelf', Dimensions::inches('12 3/8', '9 1/2', '3/4'), '2 3/4 lb', quantity: 3)],
     [Container::create('carton', Dimensions::inches('13', '10', '4'), maxPayload: '20 lb')],
 );
