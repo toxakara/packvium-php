@@ -80,6 +80,7 @@ final class CandidateFinder
             if($container->axles!==null)$scan=[...$scan,...self::axleBalancedPoints($state,$item,$forms,$limitX)];
         }else{$scan=$points;usort($scan,static fn(Point $a,Point $b):int=>[$a->z,$a->y,$a->x]<=>[$b->z,$b->y,$b->x]);}
         $out=[];$best=null;
+        $retained=$max!==null&&$max>1?new \SplPriorityQueue():null;
         $placementOffset=count($bounds)-count($placed);
         foreach($scan as $point){
             $deadline->check();
@@ -119,9 +120,10 @@ final class CandidateFinder
                     if(!$constraint->evaluate($ctx)->allowed){$blocked=true;break;}
                 }
                 if($blocked)continue;
-                $position=$tentative?->position??new Point($x1+$clearance,$y1+$clearance,$z1+$clearance);
-                $candidate=new Candidate($point,$position,$rotation,$physical,$envelope,$scorer->score($state,$point,$envelope));
+                $score=$scorer->score($state,$point,$envelope);
+                $position=$tentative?->position;
                 if($reserveCheck){
+                    $position??=new Point($x1+$clearance,$y1+$clearance,$z1+$clearance);
                     $reservePlacement=$tentative??new Placement(
                         $item,$position,$rotation,$physical,$point,$envelope,
                     );
@@ -140,11 +142,27 @@ final class CandidateFinder
                     if(BigInt::compare($projected,$usable)>0)continue;
                 }
                 $stats->candidatesEvaluated++;
-                if($max===1){if($best===null||$candidate->score<$best->score)$best=$candidate;}
+                // Selection follows every predicate and scorer call so extensions and
+                // effort counters observe exactly the same enumeration as a full sort.
+                if($max===1&&$best!==null&&$score>=$best->score)continue;
+                if($retained!==null&&$retained->count()===$max&&$score>=$retained->top()->score)continue;
+                $position??=new Point($x1+$clearance,$y1+$clearance,$z1+$clearance);
+                $candidate=new Candidate($point,$position,$rotation,$physical,$envelope,$score);
+                if($max===1)$best=$candidate;
+                elseif($retained!==null){
+                    // The largest score, then latest ordinal, is evicted first. The
+                    // ordinal also makes extraction stable when scores compare equal.
+                    if($retained->count()===$max)$retained->extract();
+                    $retained->insert($candidate,[$score,$stats->candidatesEvaluated]);
+                }
                 else $out[]=$candidate;
             }
         }
         if($max===1)return $best===null?[]:[$best];
+        if($retained!==null){
+            while(!$retained->isEmpty())$out[]=$retained->extract();
+            return array_reverse($out);
+        }
         $out=StableSorter::sortBy($out,static fn(Candidate $candidate):array=>$candidate->score);
         return $max===null?$out:array_slice($out,0,$max);
     }

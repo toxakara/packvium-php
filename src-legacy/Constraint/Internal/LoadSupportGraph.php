@@ -30,6 +30,10 @@ final class LoadSupportGraph
      * @var bool
      */
     private $nested;
+    /** @var list<int>|null */
+    private $descending;
+    /** @var list<int>|null */
+    private $priorDescending;
 
     /** @param list<LoadUnit> $units */
     public function __construct(array $units, int $cellHint = 1)
@@ -52,15 +56,15 @@ final class LoadSupportGraph
         $this->face=$face;
         $this->units=$units;
         $this->nested=$nesting!==[];
+        if($nesting===[]){
+            $this->supporters=[];
+            $this->children=[];
+            return;
+        }
         $supporters=$children=[];
         foreach($units as $index=>$_){
             $supporters[$index]=$face->supporters($index);
             $children[$index]=$face->children($index);
-        }
-        if($nesting===[]){
-            $this->supporters=$supporters;
-            $this->children=$children;
-            return;
         }
         usort($nesting,static function(array $left,array $right):int{
             $item=strcmp($left['item'],$right['item']);
@@ -125,24 +129,49 @@ final class LoadSupportGraph
             $units[]=$unit;
             return new LoadSupportGraph($units,$cellHint);
         }
-        $index=count($this->units);
         $graph=clone $this;
+        $graph->descending=null;
+        $graph->priorDescending=$this->descendingIndices();
         $graph->face=$this->face->withBox($unit->box);
         $graph->units[]=$unit;
         // Without nesting this graph *is* the face graph, so read the edges straight off
         // it rather than patching a copy of the old ones. Re-deriving them by hand would
         // be a second implementation of the same rule, free to drift from the first.
-        for($i=0;$i<=$index;$i++){
-            $graph->supporters[$i]=$graph->face->supporters($i);
-            $graph->children[$i]=$graph->face->children($i);
-        }
         return $graph;
     }
 
+    /** @return list<int> Canonical load order, shared across candidate siblings. */
+    public function descendingIndices():array
+    {
+        if($this->descending!==null)return $this->descending;
+        if($this->priorDescending===null){
+            $count=count($this->units);
+            $order=$count===0?[]:range(0,$count-1);
+            usort($order,function (int $a, int $b): int {
+                return [-$this->units[$a]->box->z2(),-$this->units[$a]->box->origin->z,$a]<=>[-$this->units[$b]->box->z2(),-$this->units[$b]->box->origin->z,$b];
+            });
+            return $this->descending=$order;
+        }
+        $order=$this->priorDescending;
+        $index=count($this->units)-1;
+        $box=$this->units[$index]->box;
+        $key=[-$box->z2(),-$box->origin->z,$index];
+        $lo=0;$hi=count($order);
+        while($lo<$hi){
+            $mid=intdiv($lo+$hi,2);
+            $other=$order[$mid];
+            $otherBox=$this->units[$other]->box;
+            if($key<[-$otherBox->z2(),-$otherBox->origin->z,$other])$hi=$mid;
+            else $lo=$mid+1;
+        }
+        array_splice($order,$lo,0,[$index]);
+        return $this->descending=$order;
+    }
+
     /** @return list<ContactEdge> */
-    public function supporters(int $index):array{return $this->supporters[$index];}
+    public function supporters(int $index):array{return $this->nested?$this->supporters[$index]:$this->face->supporters($index);}
     /** @return list<int> */
-    public function children(int $index):array{return $this->children[$index];}
+    public function children(int $index):array{return $this->nested?$this->children[$index]:$this->face->children($index);}
 
     /**
      * A direct-support edge may never originate at a non-stackable item.

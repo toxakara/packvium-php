@@ -29,7 +29,10 @@ use Packvium\Config\PackingConfig;
 use Packvium\Domain\{Container, Dimensions, Item};
 use Packvium\Packer;
 
-$result = (new Packer(PackingConfig::balanced()))->pack(
+// An example must not change answer merely because the host was busy. This solve needs
+// a fraction of the budget below; the generous wall-clock value is only a safety fuse, so
+// a loaded machine cannot cut the multi-start portfolio short and let a different start win.
+$result = (new Packer(PackingConfig::balanced(timeLimitMs: 60_000)))->pack(
     [
         Item::create('book', Dimensions::mm('210', '140', '30'), '450 g', quantity: 4),
         Item::create('mug', Dimensions::inches('4', '4', '5'), '12 oz', quantity: 2, keepUpright: true),

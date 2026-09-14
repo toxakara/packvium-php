@@ -18,6 +18,11 @@ declare(strict_types=1);
 
 require dirname(__DIR__) . '/autoload.php';
 
+// An example must not change answer merely because the host was busy. These solves need
+// a fraction of the budget; the generous wall-clock value is only a safety fuse, so a
+// loaded machine cannot cut the multi-start portfolio short and let a different start win.
+const SAFETY_FUSE_MS = 60_000;
+
 use Packvium\Config\PackingConfig;
 use Packvium\Domain\{Container, Dimensions, Item, Rotation};
 use Packvium\Explain\Explain;
@@ -81,7 +86,7 @@ $containers = [
     ),
 ];
 
-$result = (new Packer(PackingConfig::balanced()))->pack($items, $containers);
+$result = (new Packer(PackingConfig::balanced(timeLimitMs: SAFETY_FUSE_MS)))->pack($items, $containers);
 
 /** Positions are exact integers in 1/16000 mm; render them for a human. */
 $millimetres = static fn (int $ticks): string => rtrim(rtrim(
@@ -133,7 +138,7 @@ if ($result->unpacked !== []) {
 $compare = static function (string $rule, array $without, array $withRule, array $containers): void {
     printf("\n%s\n", $rule);
     foreach ([['without the rule', $without], ['with the rule   ', $withRule]] as [$label, $variant]) {
-        $outcome = (new Packer(PackingConfig::balanced()))->pack($variant, $containers);
+        $outcome = (new Packer(PackingConfig::balanced(timeLimitMs: SAFETY_FUSE_MS)))->pack($variant, $containers);
         $placed = 0;
         foreach ($outcome->containers as $packed) {
             $placed += count($packed->placements);

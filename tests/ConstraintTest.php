@@ -39,6 +39,21 @@ use Packvium\Unit\Weight;
  */
 final class ConstraintTest extends TestCase
 {
+    public static function testCandidateLoadOrderPreservesHeightTiesAndSiblingIndependence(): void
+    {
+        $units=[self::unit(0,0,9,1,1,1),self::unit(10,0,0,1,1,10),self::unit(20,0,8,1,1,2)];
+        $base=new LoadSupportGraph($units);
+        self::assertSame([0,2,1],$base->descendingIndices());
+        $above=$base->withUnit(self::unit(30,0,10,1,1,1));
+        $below=$base->withUnit(self::unit(30,0,0,1,1,1));
+        $tied=$base->withUnit(self::unit(30,0,8,1,1,2));
+        self::assertSame([3,0,2,1],$above->descendingIndices());
+        self::assertSame([0,2,1,3],$below->descendingIndices());
+        self::assertSame([0,2,3,1],$tied->descendingIndices());
+        self::assertSame([0,2,1],$base->descendingIndices());
+        self::assertSame([],(new LoadSupportGraph([]))->descendingIndices());
+    }
+
     private const MM = 16_000;
 
     private static function box(): Container
@@ -865,6 +880,9 @@ final class ConstraintTest extends TestCase
                 self::edges($graph, count($units)),
                 "seed {$seed}",
             );
+            $order=range(0,count($units)-1);
+            usort($order,static fn(int $a,int $b):int=>[-$units[$a]->box->z2(),-$units[$a]->box->origin->z,$a]<=>[-$units[$b]->box->z2(),-$units[$b]->box->origin->z,$b]);
+            self::assertSame($order,$graph->descendingIndices());
         }
     }
 
@@ -885,6 +903,7 @@ final class ConstraintTest extends TestCase
             self::edges(new LoadSupportGraph([$lower, $upper, $arriving]), 3),
             self::edges($graph, 3),
         );
+        self::assertSame([2,1,0],$graph->descendingIndices());
     }
 
     // --------------------------------------------------------- stacked-item counting

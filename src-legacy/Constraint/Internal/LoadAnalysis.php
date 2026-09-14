@@ -43,10 +43,7 @@ final class LoadAnalysis
         $count=count($this->units);
         if($count===0)return $this->topLoads=[];
         $loads=array_fill(0,$count,0);
-        $order=range(0,$count-1);
-        usort($order,function (int $a, int $b): int {
-            return [-$this->units[$a]->box->z2(),-$this->units[$a]->box->origin->z,$a]<=>[-$this->units[$b]->box->z2(),-$this->units[$b]->box->origin->z,$b];
-        });
+        $order=$this->graph->descendingIndices();
         foreach($order as $upperIndex){
             $supports=$this->graph->supporters($upperIndex);
             $totalArea=array_sum(array_map(static function (ContactEdge $edge): int {

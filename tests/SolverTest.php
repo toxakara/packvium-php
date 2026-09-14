@@ -52,6 +52,31 @@ use Packvium\Unit\Length;
  */
 final class SolverTest extends TestCase
 {
+    public static function testInterleavedGroupsKeepFirstOccurrenceAndMemberOrder(): void
+    {
+        $first=self::instances('a',10,10,10,['quantity'=>2,'group'=>'00']);
+        $second=self::instances('b',10,10,10,['quantity'=>2,'group'=>'0']);
+        $third=self::instances('c',10,10,10,['quantity'=>2,'group'=>'1']);
+        $loose=self::instances('loose',10,10,10,['quantity'=>2]);
+        $ordered=[$second[1],$loose[0],$third[0],$first[1],$second[0],$first[0],$loose[1],$third[1]];
+        self::assertSame([
+            [$second[1],$second[0]],[$loose[0]],$third,[$first[1],$first[0]],[$loose[1]],
+        ],GroupBatcher::batches($ordered));
+    }
+
+    public static function testLatticeProfileChecksSurviveInterleavedAliasesAndReuse(): void
+    {
+        $first=self::instances('same-id',6,12,20,['quantity'=>2]);
+        $alias=self::instances('alias',12,6,20,['quantity'=>2]);
+        $different=self::instances('same-id',7,12,20);
+        $ordered=[$first[0],$alias[0],$first[1],$alias[1]];
+        $solver=new GridSolver();
+        self::assertTrue($solver->supports($ordered));
+        self::assertFalse($solver->supports([...$ordered,...$different]));
+        self::assertTrue($solver->supports($alias));
+        self::assertFalse($solver->supports([]));
+    }
+
     /** @param array<string,mixed> $options @return list<\Packvium\Domain\ItemInstance> */
     private static function instances(string $id, int $l, int $w, int $h, array $options = []): array
     {
@@ -574,6 +599,43 @@ final class SolverTest extends TestCase
         self::assertSame($stats->candidatesEvaluated,$metrics->feasibleCandidates);
         self::assertGreaterThan(0,$metrics->collisionChecks);
         self::assertGreaterThan(0,$metrics->supportChecks);
+    }
+
+    public static function testBoundedCandidatesPreserveFullSortTiesAndScorerCalls(): void
+    {
+        $state=new ContainerState(Container::create('c',Dimensions::mm(100,100,100)),1);
+        [$item]=self::instances('a',30,20,10);
+        $points=array_map(static fn(int $x):Point=>new Point(Length::mm($x)->ticks,0,0),[95,40,20,0]);
+        $custom=new class implements \Packvium\Extension\CandidateScorer {
+            public array $calls=[];
+            public function score(ContainerState $state,Point $point,Dimensions $envelope):array
+            {
+                $this->calls[]=[$point,$envelope];
+                // Negative, large integer keys and deliberate rotation ties. Later
+                // origins outrank earlier ones, requiring eviction from a full heap.
+                return [-$point->x,-PHP_INT_MAX,$envelope->height->ticks];
+            }
+        };
+        foreach([0,1] as $clearance){
+            $config=new PackingConfig(clearance:Length::mm($clearance));
+            $constraints=ConstraintSet::defaults($config->minimumSupportRatio);
+            foreach([new DefaultCandidateScorer(),$custom] as $scorer){
+                $custom->calls=[];
+                $fullStats=new SearchStats();
+                $every=CandidateFinder::find($state,$item,$config,$constraints,$fullStats,self::generous(),$scorer,null,$points);
+                $calls=$custom->calls;
+                self::assertGreaterThan(7,count($every));
+                self::assertTrue(count(array_unique(array_map(static fn($c):string=>json_encode($c->score),$every)))<count($every));
+                foreach([1,2,3,7,128] as $width){
+                    $custom->calls=[];
+                    $stats=new SearchStats();
+                    $selected=CandidateFinder::find($state,$item,$config,$constraints,$stats,self::generous(),$scorer,$width,$points);
+                    self::assertTrue($selected==array_slice($every,0,$width));
+                    self::assertTrue($stats==$fullStats);
+                    self::assertTrue($custom->calls==$calls);
+                }
+            }
+        }
     }
 
     public static function testSpaceAndNodeMetricsCountTheirOwnSolverWork(): void
