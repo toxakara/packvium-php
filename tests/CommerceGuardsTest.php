@@ -365,4 +365,22 @@ final class CommerceGuardsTest extends TestCase
             ]]],
         ]]]]];
     }
+    public static function testCatalogPinnedLookupKeepsBoundariesAndRollback(): void
+    {
+        $registry = new CatalogRegistry('lookup');
+        $snapshot = new Snapshot();
+        foreach (range(1, 64) as $number) { $registry->publish($snapshot, $number % 7, $number); }
+        foreach ([1, 2, 32, 64] as $number) {
+            self::assertSame($number, $registry->version($number)->number);
+        }
+        foreach ([-10, 0, 65, PHP_INT_MAX, PHP_INT_MIN] as $number) {
+            self::assertThrows(VersionNotFoundException::class, static fn() => $registry->version($number));
+        }
+        $rollback = $registry->rollback(1, 100, 6);
+        self::assertSame(65, $rollback->number);
+        self::assertSame($snapshot, $registry->version(65)->snapshot);
+        self::assertSame(65, $registry->resolve(100, asOf: 6)->number);
+        self::assertSame(63, $registry->resolve(100, asOf: 0)->number);
+    }
+
 }

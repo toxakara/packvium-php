@@ -266,6 +266,68 @@ final class ExecutionPlanTest extends TestCase
         self::fail('a result with no status produced a plan');
     }
 
+    public static function testAPlacementWithoutUsableTicksIsRefused(): void
+    {
+        foreach ([null, ['nested']] as $ticks) {
+            $placement = self::placement('cube', 0, 0, 0);
+            $placement['position']['y']['ticks'] = $ticks;
+            try {
+                Plan::placementReference(0, $placement);
+                self::fail('a placement with no usable ticks was referenced anyway');
+            } catch (ExecutionPlanException $error) {
+                self::assertTrue(\str_contains($error->getMessage(), 'position.y.ticks'));
+            }
+        }
+    }
+
+    public static function testAFieldThePlanListsThatIsNotAListIsRefused(): void
+    {
+        $alternatives = new \stdClass();
+        $alternatives->first = ['score' => [0, 1, 0, 0, 1000000]];
+        foreach ([['containers' => 'crate'], ['unpacked_items' => 7], ['alternatives' => $alternatives]] as $overrides) {
+            try {
+                Plan::build([], self::result($overrides));
+                self::fail('a field that is not a list was listed anyway');
+            } catch (ExecutionPlanException $error) {
+                self::assertTrue(\str_contains($error->getMessage(), 'not a list'));
+            }
+        }
+    }
+
+    public static function testAnEmptyValueListsNothing(): void
+    {
+        // Python reads these fields as `list(value or ())`, so every empty JSON value is no entries.
+        $plan = Plan::build([], self::result([
+            'unpacked_items' => new \stdClass(),
+            'alternatives' => false,
+            'score' => '',
+        ]));
+        self::assertSame([], $plan['unplaced']);
+        self::assertSame([], $plan['alternatives']);
+        self::assertSame([], $plan['facts']['score']);
+        self::assertSame(0, Plan::build([], self::result(['containers' => 0]))['facts']['container_count']);
+    }
+
+    public static function testADecodedResultKeepsAnEmptyObjectAnObject(): void
+    {
+        // An associative array would turn `feasibility: {}` into `[]` in the plan.
+        $text = (string) \json_encode(self::result(['feasibility' => new \stdClass()]));
+        $result = \json_decode($text, false, 512, \JSON_THROW_ON_ERROR);
+        $plan = Plan::build(new \stdClass(), $result, [0 => [1, 0]]);
+        self::assertTrue(\str_contains(Plan::canonicalJson($plan), '"feasibility":{}'));
+        self::assertSame([1, 2], \array_column($plan['containers'][0]['steps'], 'sequence'));
+        self::assertSame(1600000, $plan['containers'][0]['steps'][0]['placement']['position_ticks']['x']);
+    }
+
+    public static function testAnEmptyContainerTakesAnEmptyLoadingOrder(): void
+    {
+        // PHP's `range(0, -1)` is [0, -1], not empty; the only order of no placements is [].
+        $result = self::result(['containers' => [['container_type' => 'box', 'placements' => []]]]);
+        $container = Plan::build([], $result, [0 => []])['containers'][0];
+        self::assertSame('loading', $container['order']);
+        self::assertSame([], $container['steps']);
+    }
+
     public static function testTheAdapterImportsNoSolverAndNoValidator(): void
     {
         // The dependency direction from docs/EXECUTION-PLAN.md, as the cheapest test of it.

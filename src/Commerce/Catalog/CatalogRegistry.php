@@ -76,8 +76,8 @@ final class CatalogRegistry
 
     public function version(int $number): Version
     {
-        foreach ($this->versions as $version) {
-            if ($version->number === $number) { return $version; }
+        if ($number >= 1 && $number <= count($this->versions)) {
+            return $this->versions[$number - 1];
         }
         throw new VersionNotFoundException("catalog '{$this->catalogId}' has no version {$number}");
     }

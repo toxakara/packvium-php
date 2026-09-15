@@ -2,6 +2,9 @@
 declare(strict_types=1);
 namespace Packvium\Execution;
 
+use Packvium\Support\CanonicalJson;
+use Packvium\Support\JsonValue;
+
 /**
  * An execution plan derived from an already validated packing result.
  *
@@ -10,6 +13,10 @@ namespace Packvium\Execution;
  * is why several things here look more careful than they need to for PHP alone:
  * integers are cast rather than trusted, keys are emitted in a fixed order, and no value
  * is ever formatted through a locale-sensitive path.
+ *
+ * The request and result may be associative arrays or JSON decoded with objects as
+ * `stdClass`; the second keeps an empty object such as `feasibility: {}` an object in the
+ * plan, which an associative array cannot.
  *
  * The adapter imports no solver and no validator, holds no registry and reads no clock.
  * Everything it emits is a function of the request and result it was handed.
@@ -41,31 +48,33 @@ final class Plan
      * `ticks`, the exact integer, and never from `value`, the rendering the same
      * `exactScalar` also carries.
      *
-     * @param array<string,mixed> $placement
+     * @param array<string,mixed>|\stdClass|mixed $placement
      * @return array<string,mixed>
      */
-    public static function placementReference(int $containerIndex, array $placement): array
+    public static function placementReference(int $containerIndex, $placement): array
     {
         foreach (['item_type', 'orientation', 'position'] as $required) {
-            if (!\array_key_exists($required, $placement)) {
+            if (!JsonValue::has($placement, $required)) {
                 throw new ExecutionPlanException(
                     "placement is missing a field the reference is built from: '$required'"
                 );
             }
         }
+        $position = JsonValue::get($placement, 'position');
         $ticks = [];
         foreach (['x', 'y', 'z'] as $axis) {
-            if (!isset($placement['position'][$axis]['ticks'])) {
+            $tick = JsonValue::get(JsonValue::get($position, $axis), 'ticks');
+            if ($tick === null || !\is_scalar($tick)) {
                 throw new ExecutionPlanException(
                     "placement is missing a field the reference is built from: 'position.$axis.ticks'"
                 );
             }
-            $ticks[$axis] = (int) $placement['position'][$axis]['ticks'];
+            $ticks[$axis] = (int) $tick;
         }
         return [
             'container_index' => $containerIndex,
-            'item_type' => $placement['item_type'],
-            'orientation' => $placement['orientation'],
+            'item_type' => JsonValue::get($placement, 'item_type'),
+            'orientation' => JsonValue::get($placement, 'orientation'),
             'position_ticks' => $ticks,
         ];
     }
@@ -78,13 +87,13 @@ final class Plan
      * Falling back to the order placements happen to appear in would present an artifact
      * of how the solver walked its candidates as a safe order to lift boxes in.
      *
-     * @param array<string,mixed> $container
+     * @param mixed $container
      * @param list<int>|null $loadingOrder
      * @return array<string,mixed>
      */
-    private static function steps(int $containerIndex, array $container, ?array $loadingOrder): array
+    private static function steps(int $containerIndex, $container, ?array $loadingOrder): array
     {
-        $placements = \array_values($container['placements'] ?? []);
+        $placements = self::sequence(JsonValue::get($container, 'placements'));
         if ($loadingOrder === null) {
             $steps = [];
             foreach ($placements as $placement) {
@@ -94,7 +103,9 @@ final class Plan
         }
         $sorted = $loadingOrder;
         \sort($sorted);
-        if ($sorted !== \range(0, \count($placements) - 1)) {
+        // Not `range(0, count - 1)`: for an empty container PHP's range counts down to [0, -1].
+        $indices = $placements === [] ? [] : \range(0, \count($placements) - 1);
+        if ($sorted !== $indices) {
             throw new ExecutionPlanException(
                 "loading order for container $containerIndex is not a permutation of its "
                 . \count($placements) . ' placements'
@@ -144,12 +155,12 @@ final class Plan
 
     /**
      * @param list<int> $winnerScore
-     * @param array<string,mixed> $alternative
+     * @param mixed $alternative
      * @return array<string,mixed>
      */
-    private static function alternative(int $index, array $winnerScore, array $alternative): array
+    private static function alternative(int $index, array $winnerScore, $alternative): array
     {
-        $score = \array_map('intval', \array_values($alternative['score'] ?? []));
+        $score = \array_map('intval', self::sequence(JsonValue::get($alternative, 'score')));
         $difference = self::firstDifference($winnerScore, $score);
         if ($difference === null) {
             $text = 'This option scored identically to the chosen one on every objective axis; '
@@ -163,7 +174,7 @@ final class Plan
             'facts' => [
                 'alternative_index' => $index,
                 'score' => $score,
-                'status' => $alternative['status'] ?? null,
+                'status' => JsonValue::get($alternative, 'status'),
                 'first_difference' => $difference,
             ],
             // Deliberately not "it lost because it is taller". The solver recorded a score,
@@ -178,63 +189,65 @@ final class Plan
     /**
      * Derive the execution plan for one validated result.
      *
-     * @param array<string,mixed> $request
-     * @param array<string,mixed> $result
+     * @param array<string,mixed>|\stdClass $request
+     * @param array<string,mixed>|\stdClass $result
      * @param array<int,list<int>> $loadingOrders container index => engine-computed order
      * @return array<string,mixed>
      */
-    public static function build(array $request, array $result, array $loadingOrders = []): array
+    public static function build(array|\stdClass $request, array|\stdClass $result, array $loadingOrders = []): array
     {
-        if (!isset($result['status'])) {
+        if (JsonValue::get($result, 'status') === null) {
             throw new ExecutionPlanException('a result without a status is not a validated result');
         }
-        $containers = \array_values($result['containers'] ?? []);
-        $winnerScore = \array_map('intval', \array_values($result['score'] ?? []));
+        $containers = self::sequence(JsonValue::get($result, 'containers'));
+        $winnerScore = \array_map('intval', self::sequence(JsonValue::get($result, 'score')));
 
         $planContainers = [];
         foreach ($containers as $index => $container) {
+            $steps = self::steps($index, $container, $loadingOrders[$index] ?? null);
             $planContainers[] = [
                 'container_index' => $index,
                 'facts' => [
-                    'container_type' => $container['container_type'] ?? null,
-                    'placement_count' => \count($container['placements'] ?? []),
-                    'volume_utilization' => $container['volume_utilization'] ?? null,
+                    'container_type' => JsonValue::get($container, 'container_type'),
+                    'placement_count' => \count(self::sequence(JsonValue::get($container, 'placements'))),
+                    'volume_utilization' => JsonValue::get($container, 'volume_utilization'),
                 ],
-            ] + self::steps($index, $container, $loadingOrders[$index] ?? null);
+            ] + $steps;
         }
 
         $unplaced = [];
-        foreach ($result['unpacked_items'] ?? [] as $item) {
-            $level = $item['proof']['level'] ?? null;
+        foreach (self::sequence(JsonValue::get($result, 'unpacked_items')) as $item) {
+            $reason = JsonValue::get($item, 'reason');
+            $level = JsonValue::get(JsonValue::get($item, 'proof'), 'level');
             $unplaced[] = [
                 'facts' => [
-                    'item_type' => $item['item_type'] ?? null,
-                    'reason' => $item['reason'] ?? null,
+                    'item_type' => JsonValue::get($item, 'item_type'),
+                    'reason' => $reason,
                     // Carried through unchanged. Softening `observed` into "could not fit"
                     // would turn an honest limit into a false certainty.
                     'proof_level' => $level,
-                    'details' => \array_values($item['details'] ?? []),
+                    'details' => self::sequence(JsonValue::get($item, 'details')),
                 ],
                 'presentation' => [
-                    'summary' => 'Not packed: ' . ($item['reason'] ?? '') . ' (' . ($level ?? '') . ').',
+                    'summary' => 'Not packed: ' . ($reason ?? '') . ' (' . ($level ?? '') . ').',
                     'cites' => ['unpacked_items[].reason', 'unpacked_items[].proof.level'],
                 ],
             ];
         }
 
         $alternatives = [];
-        foreach (\array_values($result['alternatives'] ?? []) as $index => $alternative) {
+        foreach (self::sequence(JsonValue::get($result, 'alternatives')) as $index => $alternative) {
             $alternatives[] = self::alternative($index, $winnerScore, $alternative);
         }
 
         return [
             'format' => self::FORMAT,
-            'objective' => $result['objective'] ?? null,
+            'objective' => JsonValue::get($result, 'objective'),
             'facts' => [
-                'status' => $result['status'],
+                'status' => JsonValue::get($result, 'status'),
                 'score' => $winnerScore,
-                'feasibility' => $result['feasibility'] ?? null,
-                'optimality' => $result['optimality'] ?? null,
+                'feasibility' => JsonValue::get($result, 'feasibility'),
+                'optimality' => JsonValue::get($result, 'optimality'),
                 'container_count' => \count($containers),
             ],
             'containers' => $planContainers,
@@ -251,38 +264,40 @@ final class Plan
     }
 
     /**
-     * The one byte-comparable spelling of a plan.
+     * The one byte-comparable spelling of a plan: RFC 8785, shared with the operational
+     * artifact and held to `packvium.execution.canonical_plan_json`.
      *
      * Cross-language equality is asserted on this string rather than on a parsed array, so
-     * key order and whitespace cannot make two identical plans look different. Keys are
-     * sorted recursively because PHP preserves insertion order where Python's
-     * `sort_keys=True` does not care, and `JSON_UNESCAPED_*` matches `ensure_ascii=False`.
+     * key order and whitespace cannot make two identical plans look different. Until 1.3.0
+     * this was `json_encode` over recursively sorted keys: the same bytes for every plan the
+     * corpus produces, but not for a string holding U+2028, a key outside the Basic
+     * Multilingual Plane, or a float, where the four adapters disagreed.
      *
      * @param array<string,mixed> $plan
+     * @throws \Packvium\Support\CanonicalJsonException when a value has no canonical spelling
      */
     public static function canonicalJson(array $plan): string
     {
-        return (string) \json_encode(
-            self::sortKeys($plan),
-            \JSON_UNESCAPED_SLASHES | \JSON_UNESCAPED_UNICODE | \JSON_THROW_ON_ERROR
-        );
+        return CanonicalJson::encode($plan);
     }
 
     /**
+     * A JSON array as a list, and an absent one as empty. Python reads these fields as
+     * `list(value or ())`, so the other empty values -- `{}`, `""`, `0`, `false` -- are empty
+     * too; any other non-list has no entries to describe.
+     *
      * @param mixed $value
-     * @return mixed
+     * @return list<mixed>
      */
-    private static function sortKeys($value)
+    private static function sequence($value): array
     {
-        if (!\is_array($value)) {
-            return $value;
+        if (\is_array($value)) {
+            return \array_values($value);
         }
-        // A list stays a list: sorting its keys would reorder steps, which are ordered on
-        // purpose. Only associative arrays are sorted, matching `sort_keys=True`.
-        if ($value === [] || \array_keys($value) === \range(0, \count($value) - 1)) {
-            return \array_map([self::class, 'sortKeys'], $value);
+        if ($value === null || $value === false || $value === '' || $value === 0 || $value === 0.0
+            || ($value instanceof \stdClass && JsonValue::members($value) === [])) {
+            return [];
         }
-        \ksort($value, \SORT_STRING);
-        return \array_map([self::class, 'sortKeys'], $value);
+        throw new ExecutionPlanException('a field the plan lists is not a list');
     }
 }
