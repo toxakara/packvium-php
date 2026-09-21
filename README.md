@@ -6,7 +6,7 @@ dependencies**, exact integer geometry.
 Full documentation, the constraint reference and benchmarks live at
 [packvium.com](https://packvium.com).
 
-> **Version 1.2.0 — the public API is frozen.** Field names, status codes and the
+> **Version 1.3.0 — the public API is frozen.** Field names, status codes and the
 > objective vector do not change without a major version, so any `1.x` is a safe upgrade
 > from any earlier `1.x`.
 > Read [docs/GUARANTEES.md](docs/GUARANTEES.md) before relying on a result.
@@ -74,6 +74,7 @@ surprise people.
 | [`nested.php`](examples/nested.php) | Units into cartons, cartons onto a pallet, in one call. |
 | [`commerce.php`](examples/commerce.php) | Rate a shipment, apply an eligibility rule, and pin a catalog version. |
 | [`execution.php`](https://github.com/toxakara/packvium-php/blob/main/examples/execution.php) | Turn a result into dock instructions: solver facts kept apart from screen text, and a step order that is injected or honestly absent — byte-identical to the other three engines. |
+| [`artifacts.php`](https://github.com/toxakara/packvium-php/blob/main/examples/artifacts.php) | Hand a result to a system with no engine: one document with the plan, geometry and the request that produced it, exported as CSV and a printable HTML work order — byte-identical to the other three engines. |
 
 ```bash
 php examples/objectives.php
@@ -100,6 +101,11 @@ print, which is the cross-language contract this port is held to, not a coincide
   containers.
 - **Extensible.** Register your own constraints, item orderings, candidate scorers,
   container selectors or complete solvers.
+- **Work orders and portable artifacts.** `Packvium\Execution\Plan` turns a result into an
+  operator's step list. `Packvium\Artifacts\OperationalArtifact` wraps that plan with
+  geometry, display values and the request that produced it, and `ArtifactExports` writes it
+  as canonical JSON, CSV or a self-contained HTML work order, byte for byte what the Python,
+  Rust and JavaScript packages write.
 
 ## Documentation
 
