@@ -115,6 +115,7 @@ final class IndependentSolutionValidator
         sort($unknown);
         foreach($unknown as $id)$issues[]=new ValidationIssue('unknown_item',$id);
         foreach(self::splitGroups($containers) as $detail)$issues[]=new ValidationIssue('group_split',$detail);
+        array_push($issues,...self::fixedPlacementIssues($request,$containers));
         if($unpacked!==null)
             foreach(self::partialGroups($request,$containers) as $detail)$issues[]=new ValidationIssue('group_partial',$detail);
         return new ValidationReport($issues===[],$issues);
@@ -222,6 +223,62 @@ final class IndependentSolutionValidator
     }
 
     /** @param list<PackedContainer> $containers @return list<string> */
+    /**
+     * Every fixed placement is where the request put it, and nothing else claims to be.
+     *
+     * Physics needs no rule: a fixed item is an ordinary placement, so every check above
+     * already applied to it. Only whether it moved is new (docs/PLAN-REVISIONS.md).
+     *
+     * @param list<PackedContainer> $containers @return list<ValidationIssue>
+     */
+    private static function fixedPlacementIssues(PackingRequest $request,array $containers):array
+    {
+        $requested=[];
+        foreach($request->fixedPlacements as $entry)
+            $requested[self::fixedKey($entry->packedContainerId(),$entry->itemId,$entry->position,$entry->rotation)]=true;
+        $reported=[];$present=[];
+        foreach($containers as $packed){
+            $present[$packed->id()]=true;
+            foreach($packed->placements as $placement)
+                if($placement->fixed)
+                    $reported[self::fixedKey($packed->id(),$placement->instance->item->id,$placement->position,$placement->rotation)]=true;
+        }
+        $issues=[];
+        foreach(self::sortedKeys(array_diff_key($requested,$reported)) as $key){
+            [$containerId]=explode("\0",$key);
+            $issues[]=new ValidationIssue(isset($present[$containerId])?'fixed_placement_moved':'fixed_container_missing',self::fixedDetail($key));
+        }
+        foreach(self::sortedKeys(array_diff_key($reported,$requested)) as $key)
+            $issues[]=new ValidationIssue('unexpected_fixed_placement',self::fixedDetail($key));
+        return $issues;
+    }
+
+    private static function fixedKey(string $containerId,string $itemId,Point $position,string $rotation):string
+    {
+        return implode("\0",[$containerId,$itemId,(string)$position->x,(string)$position->y,(string)$position->z,$rotation]);
+    }
+
+    /**
+     * Ordered as Python orders its tuples: text fields by code point, coordinates as numbers.
+     *
+     * @param array<string,true> $keys @return list<string>
+     */
+    private static function sortedKeys(array $keys):array
+    {
+        $list=array_map('strval',array_keys($keys));
+        usort($list,static function(string $left,string $right):int{
+            $a=explode("\0",$left);$b=explode("\0",$right);
+            return [$a[0],$a[1],(int)$a[2],(int)$a[3],(int)$a[4],$a[5]]<=>[$b[0],$b[1],(int)$b[2],(int)$b[3],(int)$b[4],$b[5]];
+        });
+        return $list;
+    }
+
+    private static function fixedDetail(string $key):string
+    {
+        [$containerId,$itemId,$x,$y,$z,$rotation]=explode("\0",$key);
+        return "{$itemId} in {$containerId} at ({$x}, {$y}, {$z}) {$rotation}";
+    }
+
     private static function splitGroups(array $containers):array
     {
         $located=[];

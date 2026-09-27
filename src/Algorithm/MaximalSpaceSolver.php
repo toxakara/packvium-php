@@ -37,6 +37,7 @@ final class MaximalSpaceSolver implements SingleContainerSolver
         $scorer=$this->scorer??new DefaultCandidateScorer();
         $state=new ContainerState($container,$sequence);
         $obstacleBoxes=array_merge([],...array_map(static fn($o)=>$o->boxes(),$container->obstacles));
+        foreach($container->preloaded as $placement)$obstacleBoxes[]=$placement->envelopeBox();
         $spaces=self::subtractAll([new Space(new Point(0,0,0),$container->innerDimensions)],$obstacleBoxes,$stats);
         $unplaced=[];
         $batches=GroupBatcher::batches($items);

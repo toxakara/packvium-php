@@ -49,7 +49,7 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
 
     private function supports(Container $container,array $items):bool
     {
-        if($this->constraints!==[]||$container->obstacles!==[]||$container->axles!==null||$container->tagLimits!==[]||$container->maxStackDensity!==null||$container->voidFillReserveRatio>0)return false;
+        if($this->constraints!==[]||$container->obstacles!==[]||$container->preloaded!==[]||$container->axles!==null||$container->tagLimits!==[]||$container->maxStackDensity!==null||$container->voidFillReserveRatio>0)return false;
         foreach($items as $instance){
             $item=$instance->item;
             if($item->group!==null||$item->tags!==[]||$item->incompatibleTags!==[]||$item->eligibleContainerTags!==[]||!$item->stackable||$item->mustBeOnFloor||$item->maxTopLoad!==null||$item->maxStackedItems!==null||$item->minimumSupportRatio!=0.0||!in_array($item->groundContactRule,[null,'free'],true)||$item->nestingHeight!==null||$item->stopIndex!==null)return false;

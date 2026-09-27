@@ -86,6 +86,11 @@ final class Container
      */
     public $rateTable;
     /**
+     * @readonly
+     * @var mixed[]
+     */
+    public $preloaded = [];
+    /**
      * Which walls this container can be unloaded through.
      *
      * Empty means the horizontal half of route order is not enforced for it -- not that it
@@ -104,8 +109,15 @@ final class Container
      */
     public $accessDirections;
 
-    /** @param list<Obstacle> $obstacles @param list<string> $tags @param array<string,int> $tagLimits @param array{0:Axle,1:Axle}|null $axles @param list<string> $accessDirections */
-    public function __construct(string $id,Dimensions $innerDimensions,?Dimensions $outerDimensions=null,?Weight $tareWeight=null,?Weight $maxPayload=null,int $costMinor=0,?int $quantity=null,array $obstacles=[],array $tags=[],?int $maxItems=null,array $metadata=[],float $voidFillReserveRatio=0.0,array $tagLimits=[],?Weight $maxStackDensity=null,?array $axles=null,?RateTable $rateTable=null,array $accessDirections=[])
+    /**
+     * `$preloaded`: items already in this one container instance before search starts. Set
+     * only by the orchestrator, on the instance a request's `fixed_placements` name, so every
+     * solver's `ContainerState` starts from them without knowing they exist; a packed result
+     * carries the container with this emptied again (docs/PLAN-REVISIONS.md).
+     *
+     * @param list<Obstacle> $obstacles @param list<string> $tags @param array<string,int> $tagLimits @param array{0:Axle,1:Axle}|null $axles @param list<string> $accessDirections @param list<Placement> $preloaded
+     */
+    public function __construct(string $id,Dimensions $innerDimensions,?Dimensions $outerDimensions=null,?Weight $tareWeight=null,?Weight $maxPayload=null,int $costMinor=0,?int $quantity=null,array $obstacles=[],array $tags=[],?int $maxItems=null,array $metadata=[],float $voidFillReserveRatio=0.0,array $tagLimits=[],?Weight $maxStackDensity=null,?array $axles=null,?RateTable $rateTable=null,array $accessDirections=[],array $preloaded=[])
     {$tareWeight = $tareWeight ?? new Weight(0);
     $this->id = $id;
     $this->innerDimensions = $innerDimensions;
@@ -123,7 +135,8 @@ final class Container
     $this->maxStackDensity = $maxStackDensity;
     $this->axles = $axles;
     $this->rateTable = $rateTable;
-    if($id==='')throw new InvalidArgumentException('Container id is required');if($quantity!==null&&$quantity<=0)throw new InvalidArgumentException('Container quantity must be positive');if($costMinor<0)throw new InvalidArgumentException('Container cost cannot be negative');if($voidFillReserveRatio<0||$voidFillReserveRatio>1)throw new InvalidArgumentException('void_fill_reserve_ratio must be between 0 and 1');foreach($tagLimits as $limit)if($limit<1)throw new InvalidArgumentException('tag_limits must be at least 1');if($outerDimensions!==null&&!$innerDimensions->fitsInside($outerDimensions))throw new InvalidArgumentException('Outer dimensions cannot be smaller than inner dimensions');$boundary=new AxisAlignedBox(new Point(0,0,0),$innerDimensions);foreach($obstacles as $o)foreach($o->boxes() as $box)if(!$boundary->contains($box))throw new InvalidArgumentException("Obstacle {$o->id} lies outside container");
+    $this->preloaded = $preloaded;
+    if($id==='')throw new InvalidArgumentException('Container id is required');if($quantity!==null&&$quantity<=0)throw new InvalidArgumentException('Container quantity must be positive');if($costMinor<0)throw new InvalidArgumentException('Container cost cannot be negative');if($maxItems!==null&&$maxItems<1)throw new InvalidArgumentException('Container max_items must be at least 1');if($voidFillReserveRatio<0||$voidFillReserveRatio>1)throw new InvalidArgumentException('void_fill_reserve_ratio must be between 0 and 1');foreach($tagLimits as $limit)if($limit<1)throw new InvalidArgumentException('tag_limits must be at least 1');if($outerDimensions!==null&&!$innerDimensions->fitsInside($outerDimensions))throw new InvalidArgumentException('Outer dimensions cannot be smaller than inner dimensions');$boundary=new AxisAlignedBox(new Point(0,0,0),$innerDimensions);foreach($obstacles as $o)foreach($o->boxes() as $box)if(!$boundary->contains($box))throw new InvalidArgumentException("Obstacle {$o->id} lies outside container");
         if($axles!==null){[$front,$rear]=$axles;if($front->position->ticks>=$rear->position->ticks)throw new InvalidArgumentException('The front axle must be strictly nearer the origin than the rear axle');if($front->position->ticks<0||$rear->position->ticks>$innerDimensions->length->ticks)throw new InvalidArgumentException("Axle positions must lie within the container's length");}
         foreach($accessDirections as $direction)if(!in_array($direction,SweptRegion::ALL_DIRECTIONS,true))throw new InvalidArgumentException("unknown movement direction {$direction}");
         // Deduplicated into the canonical order rather than kept as given: two callers
@@ -131,6 +144,8 @@ final class Container
         $this->accessDirections=array_values(array_filter(SweptRegion::ALL_DIRECTIONS,static function (string $d) use ($accessDirections): bool {
             return in_array($d,$accessDirections,true);
         }));}
+    /** The same container holding `$placements` before search. @param list<Placement> $placements */
+    public function withPreloaded(array $placements):self{return new self($this->id,$this->innerDimensions,$this->outerDimensions,$this->tareWeight,$this->maxPayload,$this->costMinor,$this->quantity,$this->obstacles,$this->tags,$this->maxItems,$this->metadata,$this->voidFillReserveRatio,$this->tagLimits,$this->maxStackDensity,$this->axles,$this->rateTable,$this->accessDirections,$placements);}
     /**
      * @param \Packvium\Unit\Weight|int|string|mixed[] $tareWeight
      * @param \Packvium\Unit\Weight|int|string|mixed[]|null $maxPayload

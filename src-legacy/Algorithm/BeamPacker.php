@@ -33,10 +33,9 @@ final class BeamPacker
             if($children!==[])$greedy=$children[0];else $greedyUnplaced=array_merge($greedyUnplaced,$batch);
         }
         $incumbent=[$greedy,$greedyUnplaced];
-        // nodeKey builds an O(m) placement signature, BigInt chunks and the knapsack
-        // lower bound; computing it once per node instead of once per usort comparison
-        // (and once per incumbent test) changes no ordering: usort is stable and the
-        // keys are identical values.
+        // nodeKey builds an O(m) placement signature and BigInt chunks; computing it once
+        // per node instead of once per usort comparison (and once per incumbent test)
+        // changes no ordering: usort is stable and the keys are identical values.
         $incumbentKey=self::nodeKey($incumbent);
         foreach($batches as $position=>$batch){
             $expansions=[];$exhausted=false;
@@ -50,14 +49,23 @@ final class BeamPacker
                 else $expansions[]=[$state,array_merge($unplaced,$batch)];
             }
             $future=GroupBatcher::flatten(array_slice($batches,$position+1));
+            $futureCount=count($future);
             foreach($expansions as [$state,$unplaced]){
-                $candidate=[$state,array_merge($unplaced,$future)];
-                $candidateKey=self::nodeKey($candidate);
-                if($candidateKey<$incumbentKey){$incumbent=$candidate;$incumbentKey=$candidateKey;}
+                $unplacedCount=count($unplaced)+$futureCount;
+                $used=$state->usedVolume;$signature=[];
+                foreach($state->placements as $p){
+                    $signature[]=$p->instance->id().'@'.$p->envelopeOrigin->x.','.$p->envelopeOrigin->y.','.$p->envelopeOrigin->z;
+                }
+                $descendingUsed=array_map(static function (int $c): int {
+                    return -$c;
+                },\Packvium\Support\BigInt::chunks($used));
+                $candidateKey=array_merge([$unplacedCount,$unplacedCount,-count($state->placements),$state->maxZ],$descendingUsed,[implode('|',$signature)]);
+                if($candidateKey<$incumbentKey){$incumbent=[$state,array_merge($unplaced,$future)];$incumbentKey=$candidateKey;}
             }
             if($expansions===[])break;
-            $beam=array_slice(StableSorter::sortBy($expansions,static function (array $node) use ($future): array {
-                return self::nodeKey($node,$future);
+            $futureInfo=self::precomputeFuture($future,$container->maxPayload!==null);
+            $beam=array_slice(StableSorter::sortBy($expansions,static function (array $node) use ($futureInfo): array {
+                return self::nodeKeyPrecomputed($node,$futureInfo);
             }),0,$width);
             if($exhausted){
                 [$state,$unplaced]=$incumbent;
@@ -134,43 +142,77 @@ final class BeamPacker
         return $child;
     }
 
-    /** @param array{0:ContainerState,1:list<ItemInstance>} $node */
-    private static function maximumCountByVolume(array $future,string $capacity):int
+    /** @param list<string> $sortedCosts */
+    private static function countWithVolumeCapacity(array $sortedCosts,string $capacity):int
     {
-        $costs=array_map(static function (ItemInstance $item): string {
-            return $item->dimensions()->volumeString();
-        },$future);
-        usort($costs,static function (string $a, string $b): int {
-            return BigInt::compare($a,$b);
-        });
         $used='0';$count=0;
-        foreach($costs as $cost){$next=BigInt::add($used,$cost);if(BigInt::compare($next,$capacity)>0)break;$used=$next;$count++;}
+        foreach($sortedCosts as $cost){
+            $next=BigInt::add($used,$cost);
+            if(BigInt::compare($next,$capacity)>0)break;
+            $used=$next;$count++;
+        }
         return $count;
     }
 
-    /** @param list<ItemInstance> $future */
-    private static function unpackedLowerBound(ContainerState $state,array $unplaced,array $future):int
+    /** @param list<int> $sortedWeights */
+    private static function countWithWeightCapacity(array $sortedWeights,int $capacity):int
     {
-        if($future===[])return count($unplaced);
-        $possible=count($future);
-        if(!array_filter($future,static function (ItemInstance $item): bool {
-            return $item->item->nestingHeight!==null;
-        })){
-            $capacity=BigInt::subtract($state->container->innerDimensions->volumeString(),$state->usedVolume);
-            $possible=min($possible,self::maximumCountByVolume($future,$capacity));
+        $used=0;$count=0;
+        foreach($sortedWeights as $weight){
+            if($used+$weight>$capacity)break;
+            $used+=$weight;$count++;
         }
-        if($state->container->maxPayload!==null){
-            $capacity=max(0,$state->container->maxPayload->ticks-$state->payloadTicks);
-            $weights=array_map(static function (ItemInstance $item): int {
-                return $item->weight()->ticks;
-            },$future);sort($weights,SORT_NUMERIC);
-            $used=0;$count=0;foreach($weights as $weight){if($used+$weight>$capacity)break;$used+=$weight;$count++;}
-            $possible=min($possible,$count);
-        }
-        return count($unplaced)+count($future)-$possible;
+        return $count;
     }
 
-    private static function nodeKey(array $node,array $future=[]):array
+    /**
+     * @param list<ItemInstance> $future
+     * @return array{count:int,volumes:?list<string>,weights:?list<int>}
+     */
+    private static function precomputeFuture(array $future,bool $hasMaxPayload):array
+    {
+        $count=count($future);
+        if($count===0)return ['count'=>0,'volumes'=>null,'weights'=>null];
+        $hasNesting=false;
+        foreach($future as $item){
+            if($item->item->nestingHeight!==null){$hasNesting=true;break;}
+        }
+        $volumes=null;
+        if(!$hasNesting){
+            $volumes=array_map(static function (ItemInstance $item): string {
+                return $item->dimensions()->volumeString();
+            },$future);
+            usort($volumes,static function (string $a, string $b): int {
+                return BigInt::compare($a,$b);
+            });
+        }
+        $weights=null;
+        if($hasMaxPayload){
+            $weights=array_map(static function (ItemInstance $item): int {
+                return $item->weight()->ticks;
+            },$future);
+            sort($weights,SORT_NUMERIC);
+        }
+        return ['count'=>$count,'volumes'=>$volumes,'weights'=>$weights];
+    }
+
+    private static function unpackedLowerBoundPrecomputed(ContainerState $state,int $unplacedCount,array $futureInfo):int
+    {
+        $futureCount=$futureInfo['count'];
+        if($futureCount===0)return $unplacedCount;
+        $possible=$futureCount;
+        if($futureInfo['volumes']!==null){
+            $capacity=BigInt::subtract($state->container->innerDimensions->volumeString(),$state->usedVolume);
+            $possible=min($possible,self::countWithVolumeCapacity($futureInfo['volumes'],$capacity));
+        }
+        if($futureInfo['weights']!==null&&$state->container->maxPayload!==null){
+            $capacity=max(0,$state->container->maxPayload->ticks-$state->payloadTicks);
+            $possible=min($possible,self::countWithWeightCapacity($futureInfo['weights'],$capacity));
+        }
+        return $unplacedCount+$futureCount-$possible;
+    }
+
+    private static function nodeKeyPrecomputed(array $node,array $futureInfo):array
     {
         [$state,$unplaced]=$node;
         $used=$state->usedVolume;$signature=[];
@@ -180,6 +222,20 @@ final class BeamPacker
         $descendingUsed=array_map(static function (int $c): int {
             return -$c;
         },\Packvium\Support\BigInt::chunks($used));
-        return array_merge([self::unpackedLowerBound($state,$unplaced,$future),count($unplaced),-count($state->placements),$state->maxZ],$descendingUsed,[implode('|',$signature)]);
+        return array_merge([self::unpackedLowerBoundPrecomputed($state,count($unplaced),$futureInfo),count($unplaced),-count($state->placements),$state->maxZ],$descendingUsed,[implode('|',$signature)]);
+    }
+
+    /** @param array{0:ContainerState,1:list<ItemInstance>} $node */
+    private static function nodeKey(array $node):array
+    {
+        [$state,$unplaced]=$node;
+        $used=$state->usedVolume;$signature=[];
+        foreach($state->placements as $p){
+            $signature[]=$p->instance->id().'@'.$p->envelopeOrigin->x.','.$p->envelopeOrigin->y.','.$p->envelopeOrigin->z;
+        }
+        $descendingUsed=array_map(static function (int $c): int {
+            return -$c;
+        },\Packvium\Support\BigInt::chunks($used));
+        return array_merge([count($unplaced),count($unplaced),-count($state->placements),$state->maxZ],$descendingUsed,[implode('|',$signature)]);
     }
 }

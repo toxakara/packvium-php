@@ -122,6 +122,9 @@ final class WeightRebalancer
 
             $committed = null;
             foreach ($rankedItems as $placementIndex) {
+                if ($source->placements[$placementIndex]->fixed) {
+                    continue;
+                }
                 $weightTicks = $source->placements[$placementIndex]->instance->weight()->ticks;
                 if ($weightTicks <= 0) {
                     continue;

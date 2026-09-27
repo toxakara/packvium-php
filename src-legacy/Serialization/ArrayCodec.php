@@ -1,14 +1,19 @@
 <?php
 declare(strict_types=1);
 namespace Packvium\Serialization;
+use ArithmeticError;
 use InvalidArgumentException;
 use Packvium\Algorithm\EffortBudget;
 use Packvium\Config\{PackingConfig,SolverProfile};
-use Packvium\Domain\{Axle,AxisAlignedBox,Compression,Container,Dimensions,Item,Obstacle,Point,RateTable,Rotation,ShapeType};
+use Packvium\Domain\{Axle,AxisAlignedBox,Compression,Container,Dimensions,FixedPlacement,Item,Obstacle,Point,RateTable,Rotation,ShapeType};
 use Packvium\Extension\ExtensionRegistry;
 use Packvium\Packer;
 use Packvium\Policy\PolicyRuleSet;
+use Packvium\Support\{FixedPlacementShape,JsonValue,RequestRules};
 use Packvium\Unit\{Length,Weight};
+use Throwable;
+use TypeError;
+use ValueError;
 final class ArrayCodec
 {
     private static function effortBudget(?array $r):?EffortBudget{if($r===null)return null;return new EffortBudget($r['max_candidates_evaluated']??null,$r['max_placement_attempts']??null,$r['max_search_nodes']??null,$r['max_restarts']??null);}
@@ -32,7 +37,10 @@ final class ArrayCodec
      *
      * @var array<string,list<string>>
      */
-    public const UNSUPPORTED_FIELDS=['request'=>[],'configuration'=>[],
+    public const UNSUPPORTED_FIELDS=[
+        // `fixed_placements` left this list in 1.4.0, when this engine gained seeding,
+        // admission and the fixed-placement validator rule (docs/PLAN-REVISIONS.md).
+        'request'=>[],'configuration'=>[],
         // `hull_vertices`, `compression_ratio` and `max_compression_pressure_kpa` left this
         // list in, when PHP gained both the solver behaviour and the independent
         // validation the staged rollout requires. Rust and the JavaScript fallback still
@@ -81,18 +89,21 @@ final class ArrayCodec
         foreach($unsupported['request']??[] as $key){
             if(array_key_exists($key,$data))$found[$key]=true;
         }
+        // A block of the wrong type is the request rules' refusal to make, with its pointer;
+        // this guard only has to stay quiet about it.
+        $configuration=is_array($data['configuration']??null)?$data['configuration']:[];
         foreach($unsupported['configuration']??[] as $key){
-            if(array_key_exists($key,$data['configuration']??[]))$found["configuration.{$key}"]=true;
+            if(array_key_exists($key,$configuration))$found["configuration.{$key}"]=true;
         }
         foreach(['item'=>'items','container'=>'containers'] as $scope=>$collection){
-            foreach($data[$collection]??[] as $entry){
+            foreach(self::entries($data,$collection) as $entry){
                 if(!is_array($entry))continue;
                 foreach($unsupported[$scope]??[] as $key){
                     if(array_key_exists($key,$entry))$found["{$scope}.{$key}"]=true;
                 }
             }
         }
-        foreach($data['items']??[] as $entry){
+        foreach(self::entries($data,'items') as $entry){
             if(!is_array($entry))continue;
             $shape=$entry['shape_type']??null;
             if(is_string($shape)&&in_array($shape,$shapeTypes,true))
@@ -107,28 +118,74 @@ final class ArrayCodec
         );
     }
 
-    public static function pack(array $data):array
+    /** @return array<array-key,mixed> a collection to scan, or nothing when it is not one */
+    private static function entries(array $data,string $collection):array{$entries=$data[$collection]??[];return is_array($entries)?$entries:[];}
+
+    /**
+     * Solve a JSON request decoded with `json_decode(..., true)`.
+     *
+     * A request no engine may answer is refused with `InvalidRequestException` (or its
+     * subclass `FixedPlacementException`) naming the bad value: first the schema's rules over
+     * the raw JSON, then -- for anything those rules do not name -- whatever failed while the
+     * model was built, as reason `invalid_value`. The solve itself is never wrapped, so a
+     * solver defect is never dressed up as the caller's mistake.
+     *
+     * @param mixed $data
+     */
+    public static function pack($data):array
     {
+        if(!is_array($data)||($data!==[]&&JsonValue::isList($data)))throw new InvalidRequestException('wrong_type','','must be an object');
         self::rejectUnsupported($data);
+        RequestRules::check($data);
+        try{[$config,$references,$extensions,$items,$containers,$fixed]=self::model($data);}
+        catch(InvalidArgumentException|TypeError|ValueError|ArithmeticError $error){throw self::asRequestError($error);}
+        $unit=(string)($data['units']['length']??'mm');
+        $out=$data['output']??[];
+        $result=(new Packer($config,$extensions))->pack($items,$containers,$fixed)->toArray($out['length_unit']??$unit,$out['weight_unit']??'g');
+        $result['catalog_versions_used']=$references;
+        return $result;
+    }
+
+    /**
+     * The request's model, in the reference's order: configuration, catalog references,
+     * policy, items, containers, fixed placements.
+     *
+     * @param array<string,mixed> $data
+     * @return array{0:PackingConfig,1:list<array{catalog_id:string,version:int,effective_at:int,resolved_at:int}>,2:ExtensionRegistry,3:list<Item>,4:list<Container>,5:list<FixedPlacement>}
+     */
+    private static function model(array $data):array
+    {
         $unit=(string)($data['units']['length']??'mm');
         $cfg=$data['configuration']??[];
         $profile=SolverProfile::from($cfg['solver_profile']??'balanced');
         $quality=$profile===SolverProfile::Quality;
         $config=new PackingConfig($profile, (int)($cfg['time_limit_ms']??1000), (int)($cfg['alternatives']??3), (int)($cfg['seed']??42), isset($cfg['max_containers'])?(int)$cfg['max_containers']:null, Length::parse($cfg['clearance']??0,$unit), (float)($cfg['minimum_support_ratio']??0), (int)($cfg['exact_item_limit']??7), (int)($cfg['multi_start_orders']??8), true, (int)($cfg['max_candidates_per_item']??($quality?16:1)), (int)($cfg['max_candidate_points']??4096), array_map('strval',$cfg['solvers']??[]), (string)($cfg['objective']??'default'), self::effortBudget($cfg['effort_budget']??null), isset($cfg['dimensional_weight_divisor'])?(int)$cfg['dimensional_weight_divisor']:null, (string)($cfg['dimensional_weight_length_unit']??'in'), (string)($cfg['dimensional_weight_weight_unit']??'lb'), (bool)($cfg['require_placement_coordinates']??true), 1, (int)($cfg['container_plan_beam_width']??($quality?16:1)), (int)($cfg['container_plan_node_limit']??($quality?100000:1)));
+        $references=self::catalogVersionsUsed($data['catalog_versions_used']??[]);
+        // Rules compile into this engine's own constraint pipeline rather than post-filtering
+        // a chosen answer: an illegal candidate is rejected during search, so the packing
+        // that wins was never allowed to be illegal in the first place.
+        $extensions=new ExtensionRegistry(PolicyRuleSet::fromArray($data['policy']??null)->constraints());
         $items=array_map(function ($r) use ($unit) {
             return self::item($r,$unit);
         },$data['items']);
         $containers=array_map(function ($r) use ($unit) {
             return self::container($r,$unit);
         },$data['containers']);
-        $out=$data['output']??[];
-        // Rules compile into this engine's own constraint pipeline rather than post-filtering
-        // a chosen answer: an illegal candidate is rejected during search, so the packing
-        // that wins was never allowed to be illegal in the first place.
-        $extensions=new ExtensionRegistry(PolicyRuleSet::fromArray($data['policy']??null)->constraints());
-        $result=(new Packer($config,$extensions))->pack($items,$containers)->toArray($out['length_unit']??$unit,$out['weight_unit']??'g');
-        $result['catalog_versions_used']=self::catalogVersionsUsed($data['catalog_versions_used']??[]);
-        return $result;
+        $fixed=array_map(function ($r) use ($unit) {
+            return self::fixedPlacement($r,$unit);
+        },FixedPlacementShape::requireEntries($data['fixed_placements']??null,$unit));
+        return [$config,$references,$extensions,$items,$containers,$fixed];
+    }
+
+    /**
+     * Whatever the rules did not name still reaches the caller as a request error. One that
+     * already carries its own code -- a request, fixed-placement or unsupported-feature
+     * refusal, or any exception with an `errorCode()` -- passes through unchanged.
+     */
+    private static function asRequestError(Throwable $error):Throwable
+    {
+        if($error instanceof InvalidRequestException||$error instanceof UnsupportedFeatureException||method_exists($error,'errorCode'))return $error;
+        return new InvalidRequestException('invalid_value','',$error->getMessage(),$error);
     }
 
     /** @return list<array{catalog_id:string,version:int,effective_at:int,resolved_at:int}>
@@ -196,7 +253,15 @@ final class ArrayCodec
         ];
         return $out;
     }
-    private static function box(array $r,string $unit):AxisAlignedBox{$origin=$r['origin']??[];return new AxisAlignedBox(new Point(Length::parse($origin['x']??0,$unit)->ticks,Length::parse($origin['y']??0,$unit)->ticks,Length::parse($origin['z']??0,$unit)->ticks),Dimensions::fromArray($r['dimensions'],$unit));}
+    private static function point(array $r,string $unit):Point{return new Point(Length::parse($r['x']??0,$unit)->ticks,Length::parse($r['y']??0,$unit)->ticks,Length::parse($r['z']??0,$unit)->ticks);}
+    private static function box(array $r,string $unit):AxisAlignedBox{return new AxisAlignedBox(self::point($r['origin']??[],$unit),Dimensions::fromArray($r['dimensions'],$unit));}
+    /**
+     * One entry `FixedPlacementShape` has already admitted, so every read here is exact: the
+     * names are strings, the orientation a code, the instance an integer by value.
+     *
+     * @param array<string,mixed> $r
+     */
+    private static function fixedPlacement(array $r,string $unit):FixedPlacement{return new FixedPlacement($r['item_type'],$r['container_type'],self::point($r['position']??[],$unit),Rotation::from($r['orientation']),array_key_exists('container_instance',$r)?(int)JsonValue::integer($r['container_instance']):1);}
     private static function container(array $r,string $unit):Container{$obs=[];foreach($r['obstacles']??[] as $o){$additional=array_map(function ($b) use ($unit) {
         return self::box($b,$unit);
     },$o['additional_boxes']??[]);$obs[]=new Obstacle((string)$o['id'],self::box($o,$unit),$additional);}return new Container((string)$r['id'],Dimensions::fromArray($r['inner_dimensions'],$unit),isset($r['outer_dimensions'])?Dimensions::fromArray($r['outer_dimensions'],$unit):null,Weight::parse($r['tare_weight']??0),isset($r['max_payload'])?Weight::parse($r['max_payload']):null,(int)($r['cost_minor']??0),isset($r['quantity'])?(int)$r['quantity']:null,$obs,$r['tags']??[],isset($r['max_items'])?(int)$r['max_items']:null,$r['metadata']??[],(float)($r['void_fill_reserve_ratio']??0),array_map(static function ($v) {

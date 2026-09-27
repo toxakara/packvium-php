@@ -5,6 +5,7 @@ namespace Packvium\Tests;
 
 use Packvium\Domain\ReasonProof;
 use Packvium\Serialization\ArrayCodec;
+use Packvium\Serialization\InvalidRequestException;
 use Packvium\Unit\Length;
 use Packvium\Result\{
     AlgorithmReport,
@@ -14,7 +15,6 @@ use Packvium\Result\{
     StartRecord,
     TerminationSummary
 };
-use ValueError;
 
 /**
  * The array API — the wire contract every language binding shares.
@@ -258,8 +258,13 @@ final class SerializationTest extends TestCase
 
     public static function testAnUnknownProfileIsRejectedRatherThanSilentlyDefaulted(): void
     {
-        self::assertThrows(ValueError::class, static fn() => ArrayCodec::pack(
-            self::request([self::cube('a', 50)], [self::box('c')], ['configuration' => ['solver_profile' => 'magic']])));
+        try {
+            ArrayCodec::pack(self::request([self::cube('a', 50)], [self::box('c')], ['configuration' => ['solver_profile' => 'magic']]));
+            throw new \RuntimeException('an unknown profile was packed');
+        } catch (InvalidRequestException $error) {
+            self::assertSame('not_allowed', $error->reason());
+            self::assertSame('/configuration/solver_profile', $error->field());
+        }
     }
 
     public static function testExplicitSolversArePlumbedThroughAndDriveTheAnswer(): void

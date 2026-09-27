@@ -84,6 +84,9 @@ final class SpatialIndex
     public function query(int $x1, int $y1, int $z1, int $x2, int $y2, int $z2): array
     {
         [$ix1, $ix2, $iy1, $iy2, $iz1, $iz2] = $this->cellRange($x1, $y1, $z1, $x2, $y2, $z2);
+        if ($ix2 === $ix1 + 1 && $iy2 === $iy1 + 1 && $iz2 === $iz1 + 1) {
+            return $this->cells[$ix1][$iy1][$iz1] ?? [];
+        }
         // Cells are visited in (x, y, z) order and an index keeps its first position, so
         // the sequence is a deterministic function of the contents. A box touching a
         // single occupied cell gets that bucket back as-is.

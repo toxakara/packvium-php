@@ -32,6 +32,27 @@ final class JsonValue
         return true;
     }
 
+    /**
+     * The integer a JSON number is, judged by value as every engine can judge it: `1.0` is 1,
+     * because JavaScript cannot tell them apart once the text is parsed; a boolean, a string,
+     * `1.5` and anything past 2^53 - 1 -- which JavaScript no longer holds exactly, and which
+     * `json_decode` may already have turned into a float -- are not integers. The bound also
+     * means `+ 1` on a returned value can never overflow.
+     *
+     * @param mixed $value
+     */
+    public static function integer($value): ?int
+    {
+        if (\is_int($value)) {
+            return \abs($value) <= CanonicalJson::MAX_EXACT_MAGNITUDE ? $value : null;
+        }
+        if (!\is_float($value) || !\is_finite($value) || \floor($value) !== $value
+            || \abs($value) > CanonicalJson::MAX_EXACT_MAGNITUDE) {
+            return null;
+        }
+        return (int) $value;
+    }
+
     /** @param mixed $value */
     public static function isObject($value): bool
     {
@@ -80,5 +101,26 @@ final class JsonValue
             $members[] = [(string) $name, $value];
         }
         return $members;
+    }
+
+    /**
+     * An object's member names that are not in `$allowed`, sorted by code point -- which is
+     * UTF-8 byte order -- so every engine lists them alike. Names are strings even where PHP
+     * made an array key or a property name numeric.
+     *
+     * @param stdClass|array<array-key,mixed> $object
+     * @param list<string> $allowed
+     * @return list<string>
+     */
+    public static function namesOutside($object, array $allowed): array
+    {
+        $unknown = [];
+        foreach (self::members($object) as [$name]) {
+            if (!\in_array($name, $allowed, true)) {
+                $unknown[] = $name;
+            }
+        }
+        \sort($unknown, \SORT_STRING);
+        return $unknown;
     }
 }
