@@ -6,6 +6,7 @@ namespace Packvium\Tests;
 use Packvium\Execution\Plan;
 use Packvium\Support\CanonicalJson;
 use Packvium\Support\CanonicalJsonException;
+use Packvium\Support\JsonValue;
 use stdClass;
 
 /**
@@ -150,6 +151,36 @@ final class CanonicalJsonTest extends TestCase
         } finally {
             \fclose($stream);
         }
+    }
+
+    public static function testARefusalQuotesAValueByItsCanonicalSpelling(): void
+    {
+        self::assertSame('"x\\"y"', CanonicalJson::spelling('x"y'));
+        self::assertSame('["a","b"]', CanonicalJson::spelling(['a', 'b']));
+        self::assertSame('true', CanonicalJson::spelling(true));
+        self::assertSame('null', CanonicalJson::spelling(null));
+        self::assertSame('2', CanonicalJson::spelling(2.0));
+        self::assertSame('an out-of-range number', CanonicalJson::spelling(2 ** 53));
+        self::assertSame('an out-of-range number', CanonicalJson::spelling(1e300));
+        self::assertSame('an unspellable value', CanonicalJson::spelling("\xff"));
+        self::assertSame('an unspellable value', CanonicalJson::spelling(new \ArrayObject()));
+    }
+
+    public static function testAJsonIntegerIsJudgedByValueWithinTheExactRange(): void
+    {
+        foreach ([[1, 1], [1.0, 1], [-3.0, -3], [9007199254740991, 9007199254740991], [9007199254740991.0, 9007199254740991]] as [$value, $integer]) {
+            self::assertSame($integer, JsonValue::integer($value), \var_export($value, true));
+        }
+        foreach ([true, false, '1', null, 1.5, [], new stdClass(), 9007199254740992, -9007199254740992, 9007199254740992.0, 1e300, \PHP_INT_MAX, \PHP_INT_MIN, \INF, \NAN] as $value) {
+            self::assertNull(JsonValue::integer($value), \var_export($value, true));
+        }
+    }
+
+    public static function testUnknownNamesAreStringsInCodePointOrder(): void
+    {
+        $object = \json_decode('{"z":1,"5":2,"\u00e9":3,"a":4,"x":5}');
+        self::assertSame(['5', 'a', 'z', 'é'], JsonValue::namesOutside($object, ['x']));
+        self::assertSame([], JsonValue::namesOutside(['x' => 1], ['x']));
     }
 
     public static function testNoPlanAnEngineEmitsChangedItsBytesWhenTheSpellingBecameRfc8785(): void

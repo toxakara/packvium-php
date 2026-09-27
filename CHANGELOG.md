@@ -4,6 +4,51 @@ What changed in `packvium/packvium` on Packagist, release by release. The format
 [Keep a Changelog](https://keepachangelog.com/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0]
+
+Replanning a job that has already started, and container ids that match the other engines.
+A request the schema never allowed is now refused (see *Fixed*).
+
+### Added
+
+- **Fixed placements.** `fixed_placements` in an array request, or `Packer::pack($items,
+  $containers, $fixedPlacements)` with `Packvium\Domain\FixedPlacement`. Each entry pins an
+  item type to a container type and instance, at the origin a result reports, in one
+  orientation. Fixed items keep their place, count toward weight, support and top load, and
+  come back marked `fixed`. A fixed set that is not a valid packing on its own throws
+  `Packvium\Validation\FixedPlacementException` before any search.
+- **`Packvium\Revisions\PlanRevision`** — `root()`, `derive()`, `applyEvents()`,
+  `verifyChain()`, `digest()`, `canonicalJson()` and `parse()`. A `packvium-plan-revision/v1`
+  chain records what happened on the dock — `item_missing`, `container_substituted`,
+  `placement_locked`, `placement_verified` — against the artifact it changed, linked by
+  SHA-256, and carries the request the next plan solves. Every Packvium engine computes the
+  same bytes from the same inputs. Errors are `PlanRevisionException` with a stable
+  `errorCode()`.
+- Both are available on PHP 7.3+ through `src-legacy/` as well.
+- **`Packvium\Serialization\InvalidRequestException`.** A malformed request names what is
+  wrong: `errorCode()` is `invalid_request`, `reason()` one of a closed set (`missing_field`,
+  `wrong_type`, `below_minimum`, `above_maximum`, `negative_measure`, `invalid_unit`,
+  `duplicate_id`, `not_allowed`, `invalid_value`), `field()` the JSON Pointer of the bad value,
+  and the message reads `invalid_request: /items/0/quantity: must be at least 1`. It extends
+  `InvalidArgumentException`, so existing handlers still catch it;
+  `FixedPlacementException` extends it.
+- `examples/revisions.php`.
+
+### Changed
+
+- **Container ids number each type from 1.** The `quality` profile's container-plan search
+  counted containers across types, so a crate opened after a box was `crate#2` where every
+  other search, and every other engine, said `crate#1`. Only answers with more than one
+  container type change, and only their ids.
+
+### Fixed
+
+- **Limits below their floor are refused.** A zero or negative container `max_items`,
+  `maxContainers` or effort-budget limit was accepted; each now throws.
+- **A fixed placement is refused, never coerced, when it is not the schema's shape.** A
+  position given as a list or null was read as the origin, and an instance of `"1"` or `1.9` as
+  1; each is now refused naming the entry.
+
 ## [1.3.0]
 
 Portable operational artifacts for PHP, and two execution-plan fixes. Nothing breaks 1.2.0.

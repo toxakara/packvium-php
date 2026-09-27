@@ -6,7 +6,7 @@ dependencies**, exact integer geometry.
 Full documentation, the constraint reference and benchmarks live at
 [packvium.com](https://packvium.com).
 
-> **Version 1.3.0 — the public API is frozen.** Field names, status codes and the
+> **Version 1.4.0 — the public API is frozen.** Field names, status codes and the
 > objective vector do not change without a major version, so any `1.x` is a safe upgrade
 > from any earlier `1.x`.
 > Read [docs/GUARANTEES.md](docs/GUARANTEES.md) before relying on a result.
@@ -53,6 +53,32 @@ echo '{"items":[{"id":"box","quantity":8,"dimensions":{"length":"50","width":"50
 The library is framework-independent: no facades, no static state, no container bindings.
 Construct a `Packer` and call it.
 
+## Errors
+
+A request that no engine may answer throws `Packvium\Serialization\InvalidRequestException`, an
+`InvalidArgumentException`, before anything is solved. It names the problem instead of
+describing it:
+
+```php
+use Packvium\Serialization\ArrayCodec;
+use Packvium\Serialization\InvalidRequestException;
+
+try {
+    $result = ArrayCodec::pack($request);
+} catch (InvalidRequestException $e) {
+    $e->errorCode();  // "invalid_request"
+    $e->reason();     // "below_minimum"
+    $e->field();      // "/items/0/quantity" -- a JSON Pointer into your request
+    $e->getMessage(); // "invalid_request: /items/0/quantity: must be at least 1"
+}
+```
+
+`reason()` is one of `missing_field`, `wrong_type`, `below_minimum`, `above_maximum`, `negative_measure`, `invalid_unit`, `duplicate_id`, `not_allowed` or `invalid_value`. `FixedPlacementException` extends it, with code
+`invalid_fixed_placement` and reason `malformed` or `cannot_hold`.
+The message is the same in every Packvium engine. Branch on `reason` and `field`; show the
+message to a person. A request that is valid but does not fit completely is not an error: the
+result lists what was left out, and why, in `unpacked_items`.
+
 ## Examples
 
 Runnable, in [`examples/`](examples). Each one is a single file you can read top to bottom
@@ -75,6 +101,7 @@ surprise people.
 | [`commerce.php`](examples/commerce.php) | Rate a shipment, apply an eligibility rule, and pin a catalog version. |
 | [`execution.php`](https://github.com/toxakara/packvium-php/blob/main/examples/execution.php) | Turn a result into dock instructions: solver facts kept apart from screen text, and a step order that is injected or honestly absent — byte-identical to the other three engines. |
 | [`artifacts.php`](https://github.com/toxakara/packvium-php/blob/main/examples/artifacts.php) | Hand a result to a system with no engine: one document with the plan, geometry and the request that produced it, exported as CSV and a printable HTML work order — byte-identical to the other three engines. |
+| [`revisions.php`](https://github.com/toxakara/packvium-php/blob/main/examples/revisions.php) | Replan a half-loaded job: a missing item and a locked placement recorded against the approved plan, a replan that keeps the locked item in place, and a hash-chained record that notices an edit — the same digests as the other three engines. |
 
 ```bash
 php examples/objectives.php
@@ -106,6 +133,11 @@ print, which is the cross-language contract this port is held to, not a coincide
   geometry, display values and the request that produced it, and `ArtifactExports` writes it
   as canonical JSON, CSV or a self-contained HTML work order, byte for byte what the Python,
   Rust and JavaScript packages write.
+- **Items already in place, and replanning around them.** A request's `fixed_placements`
+  pins items to known positions before the solve: they keep their place, carry weight and
+  support, and come back marked `fixed: true`. `Packvium\Revisions\PlanRevision` records what
+  changed on the dock — a missing item, a substituted container, a lock, a verification — as
+  an append-only chain linked by SHA-256, and derives the request the next plan solves.
 
 ## Documentation
 

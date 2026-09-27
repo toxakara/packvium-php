@@ -43,6 +43,21 @@ final class CanonicalJson
         return $out;
     }
 
+    /**
+     * How a refusal quotes a value: its canonical JSON, the one spelling four engines share,
+     * so no engine's own `repr` leaks into a message another engine must match.
+     *
+     * @param mixed $value
+     */
+    public static function spelling($value): string
+    {
+        try {
+            return self::encode($value);
+        } catch (CanonicalJsonException $error) {
+            return $error->errorCode() === 'number_out_of_range' ? 'an out-of-range number' : 'an unspellable value';
+        }
+    }
+
     /** @param mixed $value */
     private static function write($value, string &$out): void
     {

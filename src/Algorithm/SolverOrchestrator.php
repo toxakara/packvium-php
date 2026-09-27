@@ -19,15 +19,24 @@ final class SolverOrchestrator
         return $this->solvePortfolio($items,$containers,$config,$deadline)->solutions;
     }
 
-    public function solvePortfolio(array $items,array $containers,PackingConfig $config,Deadline $deadline):PortfolioRun
+    /**
+     * Search for placements of `$items`.
+     *
+     * `$preloaded` are the containers a request's fixed placements name, each holding only its
+     * fixed items, in the order they open (`FixedLoad`). Every start fills them first and keeps
+     * them, whatever else it does.
+     *
+     * @param list<PackedContainer> $preloaded
+     */
+    public function solvePortfolio(array $items,array $containers,PackingConfig $config,Deadline $deadline,array $preloaded=[]):PortfolioRun
     {
         $starts=$this->starts($items,$config);
         $effortBudget=$config->effortBudget;
         if($effortBudget!==null&&$effortBudget->maxRestarts!==null)$starts=array_slice($starts,0,$effortBudget->maxRestarts);
         if($this->eligibleForConcurrentExecution($deadline,$config)&&count($starts)>1){
-            return $this->solveConcurrent($items,$containers,$config,$deadline,$starts,$effortBudget);
+            return $this->solveConcurrent($items,$containers,$config,$deadline,$starts,$effortBudget,$preloaded);
         }
-        return $this->solveSequential($items,$containers,$config,$deadline,$starts,$effortBudget);
+        return $this->solveSequential($items,$containers,$config,$deadline,$starts,$effortBudget,$preloaded);
     }
 
     /**
@@ -57,7 +66,7 @@ final class SolverOrchestrator
             && function_exists('stream_socket_pair');
     }
 
-    private function solveSequential(array $items,array $containers,PackingConfig $config,Deadline $deadline,array $starts,?EffortBudget $effortBudget):PortfolioRun
+    private function solveSequential(array $items,array $containers,PackingConfig $config,Deadline $deadline,array $starts,?EffortBudget $effortBudget,array $preloaded=[]):PortfolioRun
     {
         $results=[];
         $records=array_map(
@@ -70,7 +79,7 @@ final class SolverOrchestrator
             $budget=$deadline->slice(count($starts)-$position);
             if($effortBudget!==null)$budget=$budget->withEffort($effortBudget,$stats);
             $startConfig=str_ends_with($orderName,':greedy')?self::greedyConfig($config):$config;
-            [$packed,$unpacked,$exhaustive,$reached,$dominantLattice]=$this->acrossContainers($solver,$order,$containers,$startConfig,$stats,$budget);
+            [$packed,$unpacked,$exhaustive,$reached,$dominantLattice]=$this->acrossContainers($solver,$order,$containers,$startConfig,$stats,$budget,$preloaded);
             $effortReached=$budget->effortExceeded();
             $wallReached=$reached&&$budget->remainingNs()<=0;
             if($effortReached){
@@ -110,7 +119,7 @@ final class SolverOrchestrator
             // every container this start packed actually went through the lattice.
             if($dominantLattice&&$unpacked===[]&&$this->candidateScorer===null)break;
         }
-        return $this->finishPortfolio($items,$containers,$deadline,$results,$records);
+        return $this->finishPortfolio($items,$containers,$deadline,$results,$records,$preloaded);
     }
 
     /**
@@ -144,7 +153,7 @@ final class SolverOrchestrator
      * parent instead of losing it -- correctness never depends on the fork
      * succeeding, only on whether that start gets the speed-up.
      */
-    private function solveConcurrent(array $items,array $containers,PackingConfig $config,Deadline $deadline,array $starts,?EffortBudget $effortBudget):PortfolioRun
+    private function solveConcurrent(array $items,array $containers,PackingConfig $config,Deadline $deadline,array $starts,?EffortBudget $effortBudget,array $preloaded=[]):PortfolioRun
     {
         $records=array_map(
             static fn(array $start):StartRecord=>new StartRecord($start[0]->name().':'.$start[1],false,false,false),
@@ -156,7 +165,7 @@ final class SolverOrchestrator
         $stats0=new SearchStats();
         $budget0=$deadline->slice(count($starts));
         if($effortBudget!==null)$budget0=$budget0->withEffort($effortBudget,$stats0);
-        [$packed0,$unpacked0,$exhaustive0,$reached0,$dominantLattice0]=$this->acrossContainers($solver0,$order0,$containers,$config,$stats0,$budget0);
+        [$packed0,$unpacked0,$exhaustive0,$reached0,$dominantLattice0]=$this->acrossContainers($solver0,$order0,$containers,$config,$stats0,$budget0,$preloaded);
         $effortReached0=$budget0->effortExceeded();
         $wallReached0=$reached0&&$budget0->remainingNs()<=0;
         if($effortReached0){
@@ -189,7 +198,7 @@ final class SolverOrchestrator
                     if($pid===-1){
                         fclose($pair[0]);fclose($pair[1]);
                         [$results[$position],$records[$position]]=$this->runOneStartInProcess(
-                            $solver,$orderName,$order,$containers,$config,$effortBudget,$absoluteDeadlineNs,
+                            $solver,$orderName,$order,$containers,$config,$effortBudget,$absoluteDeadlineNs,$preloaded,
                         );
                         continue;
                     }
@@ -198,7 +207,7 @@ final class SolverOrchestrator
                         $stats=new SearchStats();
                         $budget=Deadline::until($absoluteDeadlineNs);
                         if($effortBudget!==null)$budget=$budget->withEffort($effortBudget,$stats);
-                        [$packed,$unpacked,$exhaustive,$reached]=$this->acrossContainers($solver,$order,$containers,$config,$stats,$budget);
+                        [$packed,$unpacked,$exhaustive,$reached]=$this->acrossContainers($solver,$order,$containers,$config,$stats,$budget,$preloaded);
                         // Trusted internal IPC: this payload only ever comes from this
                         // process's own fork running the exact same code, never from
                         // external/attacker-controlled input, so the default (allow
@@ -235,16 +244,16 @@ final class SolverOrchestrator
         }
 
         $results=array_values(array_filter($results,static fn($result):bool=>$result!==null));
-        return $this->finishPortfolio($items,$containers,$deadline,$results,$records);
+        return $this->finishPortfolio($items,$containers,$deadline,$results,$records,$preloaded);
     }
 
     /** Fallback body for one start when `pcntl_fork()` itself fails -- runs synchronously, in the parent. */
-    private function runOneStartInProcess(SingleContainerSolver $solver,string $orderName,array $order,array $containers,PackingConfig $config,?EffortBudget $effortBudget,int $absoluteDeadlineNs):array
+    private function runOneStartInProcess(SingleContainerSolver $solver,string $orderName,array $order,array $containers,PackingConfig $config,?EffortBudget $effortBudget,int $absoluteDeadlineNs,array $preloaded):array
     {
         $stats=new SearchStats();
         $budget=Deadline::until($absoluteDeadlineNs);
         if($effortBudget!==null)$budget=$budget->withEffort($effortBudget,$stats);
-        [$packed,$unpacked,$exhaustive,$reached,]=$this->acrossContainers($solver,$order,$containers,$config,$stats,$budget);
+        [$packed,$unpacked,$exhaustive,$reached,]=$this->acrossContainers($solver,$order,$containers,$config,$stats,$budget,$preloaded);
         $effortReached=$budget->effortExceeded();
         $wallReached=$reached&&$budget->remainingNs()<=0;
         if($effortReached){
@@ -262,7 +271,7 @@ final class SolverOrchestrator
         ];
     }
 
-    private function finishPortfolio(array $items,array $containers,Deadline $deadline,array $results,array $records):PortfolioRun
+    private function finishPortfolio(array $items,array $containers,Deadline $deadline,array $results,array $records,array $preloaded=[]):PortfolioRun
     {
         $globalDeadline=$deadline->expired();
         $records=array_map(
@@ -271,7 +280,7 @@ final class SolverOrchestrator
         );
         if($results===[]){
             $fallbackId='portfolio:fallback';
-            $results[] = new RawSolution($fallbackId,[],array_map(
+            $results[] = new RawSolution($fallbackId,$preloaded,array_map(
                 fn($i)=>new UnpackedItem($i,...$this->unpackedReason($i,$containers,true)),
                 $items,
             ),new SearchStats(),true);
@@ -499,20 +508,21 @@ final class SolverOrchestrator
         $stats->objectiveLowerBound=ObjectiveBounds::compute($items,$containers);
     }
 
-    private function acrossContainers(SingleContainerSolver $solver,array $items,array $containers,PackingConfig $config,SearchStats $stats,Deadline $deadline):array
+    /** @param list<PackedContainer> $preloaded */
+    private function acrossContainers(SingleContainerSolver $solver,array $items,array $containers,PackingConfig $config,SearchStats $stats,Deadline $deadline,array $preloaded=[]):array
     {
         $beam=$config->containerPlanBeamWidth>1&&($this->containerSelector===null||$this->containerSelector instanceof DefaultContainerSelector);
         self::recordRootBound($solver,$beam,$items,$containers,$config,$stats);
+        [$opened,$reached]=$this->openPreloaded($solver,$preloaded,$items,$containers,$config,$stats,$deadline);
         if($beam){
-            return $this->acrossContainerPlans($solver,$items,$containers,$config,$stats,$deadline);
+            return $this->acrossContainerPlans($solver,$items,$containers,$config,$stats,$deadline,$opened,$reached);
         }
-        $remaining=$items;$packed=[];$reached=false;$exhaustive=true;$dominantLattice=true;
-        $inventory=[];$seq=[];
-        foreach($containers as $c){$inventory[$c->id]=$c->quantity;$seq[$c->id]=0;}
+        $remaining=$opened['remaining'];$packed=$opened['packed'];$exhaustive=$opened['exhaustive'];$dominantLattice=$opened['dominant'];
+        $inventory=$opened['inventory'];$seq=$opened['sequences'];
         $maximum=$config->maxContainers??array_sum(array_map(static fn($c)=>$c->quantity??count($items),$containers));
         $ordered=StableSorter::sortBy($containers,static fn(Container $c):array=>[$c->costMinor,...$c->innerDimensions->volumeKey(),$c->id]);
         $selector=$this->containerSelector??new DefaultContainerSelector();
-        while($remaining!==[]&&count($packed)<$maximum){
+        while($remaining!==[]&&count($packed)<$maximum&&!$reached){
             if($deadline->expired()){$reached=true;break;}
             $candidates=[];
             foreach($ordered as $container){
@@ -562,15 +572,8 @@ final class SolverOrchestrator
             $exhaustive=$exhaustive&&$best->exhaustive;
             $dominantLattice=$dominantLattice&&$best->dominantLattice;
             if($inventory[$c->id]!==null)$inventory[$c->id]--;
-            if($best->state->latticeSummary!==null){
-                // Compact fast path: no per-item Placement to attach a top load to --
-                // the summary carries every instance's coordinates implicitly instead.
-                $packed[]=new PackedContainer($c,$best->state->sequence,[],$best->state->latticeSummary,$best->state->latticeItems);
-                $ids=[];foreach($best->state->latticeItems as $i)$ids[$i->id()]=true;
-            }else{
-                $packed[]=new PackedContainer($c,$best->state->sequence,TopLoadAssigner::assign($best->state->placements));
-                $ids=[];foreach($best->state->placements as $p)$ids[$p->instance->id()]=true;
-            }
+            [$committed,$ids]=self::commitState($best->state);
+            $packed[]=$committed;
             $remaining=array_values(array_filter($remaining,static fn($i)=>!isset($ids[$i->id()])));
             if($reached)break;
         }
@@ -586,10 +589,47 @@ final class SolverOrchestrator
         return [$packed,$unpacked,$proven,$reached,$dominantLattice];
     }
 
+    /**
+     * Fill every container holding fixed items, first, and keep it whatever it gets.
+     *
+     * Returns the plan every start continues from. A container that search cannot fill --
+     * the deadline has passed, or the solver raised it -- is kept with its fixed items
+     * alone: dropping it would drop items the request says are already loaded.
+     *
+     * @param list<PackedContainer> $preloaded @param list<ItemInstance> $items @param list<Container> $containers
+     * @return array{0:array{packed:list<PackedContainer>,remaining:list<ItemInstance>,inventory:array<string,?int>,sequences:array<string,int>,exhaustive:bool,dominant:bool},1:bool}
+     */
+    private function openPreloaded(SingleContainerSolver $solver,array $preloaded,array $items,array $containers,PackingConfig $config,SearchStats $stats,Deadline $deadline):array
+    {
+        $plan=['packed'=>[],'remaining'=>$items,'inventory'=>[],'sequences'=>[],'exhaustive'=>true,'dominant'=>true];
+        foreach($containers as $container){$plan['inventory'][$container->id]=$container->quantity;$plan['sequences'][$container->id]=0;}
+        $reached=false;
+        foreach($preloaded as $fixed){
+            $seeded=$fixed->container->withPreloaded($fixed->placements);
+            $one=null;
+            if(!$reached&&!$deadline->expired()){
+                try{$one=$solver->packOne($seeded,$fixed->sequence,$plan['remaining'],$config,$stats,$deadline);}
+                catch(TimeLimitReached){}
+            }
+            if($one===null||$one->timeLimitReached)$reached=true;
+            [$committed,$ids]=self::commitState($one?->state??new ContainerState($seeded,$fixed->sequence));
+            $plan['packed'][]=$committed;
+            $plan['remaining']=array_values(array_filter($plan['remaining'],static fn(ItemInstance $item):bool=>!isset($ids[$item->id()])));
+            if($plan['inventory'][$seeded->id]!==null)$plan['inventory'][$seeded->id]--;
+            $plan['sequences'][$seeded->id]=$fixed->sequence;
+            $plan['exhaustive']=$plan['exhaustive']&&$one!==null&&$one->exhaustive;
+            $plan['dominant']=$plan['dominant']&&$one!==null&&$one->dominantLattice;
+        }
+        return [$plan,$reached];
+    }
+
     /** @return array{0:PackedContainer,1:array<string,bool>} */
     private static function commitState(ContainerState $state):array
     {
-        $container=$state->container;
+        // A result carries the request's container, not the seeded instance: anything that
+        // rebuilds a state from a packed container re-adds every placement itself, and a
+        // seeded container would add the fixed ones twice.
+        $container=$state->container->preloaded===[]?$state->container:$state->container->withPreloaded([]);
         if($state->latticeSummary!==null){
             $packed=new PackedContainer($container,$state->sequence,[],$state->latticeSummary,$state->latticeItems);
             $ids=[];foreach($state->latticeItems as $item)$ids[$item->id()]=true;
@@ -634,12 +674,15 @@ final class SolverOrchestrator
         return $score;
     }
 
-    /** @return array{0:list<PackedContainer>,1:list<UnpackedItem>,2:bool,3:bool,4:bool} */
-    private function acrossContainerPlans(SingleContainerSolver $solver,array $items,array $containers,PackingConfig $config,SearchStats $stats,Deadline $deadline):array
+    /**
+     * @param array{packed:list<PackedContainer>,remaining:list<ItemInstance>,inventory:array<string,?int>,sequences:array<string,int>,exhaustive:bool,dominant:bool} $initial
+     * @return array{0:list<PackedContainer>,1:list<UnpackedItem>,2:bool,3:bool,4:bool}
+     */
+    private function acrossContainerPlans(SingleContainerSolver $solver,array $items,array $containers,PackingConfig $config,SearchStats $stats,Deadline $deadline,array $initial,bool $reached):array
     {
-        $inventory=[];foreach($containers as $container)$inventory[$container->id]=$container->quantity;
-        $initial=['packed'=>[],'remaining'=>$items,'inventory'=>$inventory,'sequence'=>0,'exhaustive'=>true,'dominant'=>true];
-        $beam=[$initial];$incumbent=$initial;$nodes=0;$reached=false;
+        // Numbered per container type, as the greedy path and every other engine number
+        // them: a fixed placement names `<type>#<n>`, so the count must be the type's own.
+        $beam=$reached?[]:[$initial];$incumbent=$initial;$nodes=0;
         $maximum=$config->maxContainers??array_sum(array_map(static fn(Container $container):int=>$container->quantity??count($items),$containers));
         $ordered=StableSorter::sortBy($containers,static fn(Container $container):array=>[$container->costMinor,...$container->innerDimensions->volumeKey(),$container->id]);
         while($beam!==[]&&$nodes<$config->containerPlanNodeLimit){
@@ -651,9 +694,9 @@ final class SolverOrchestrator
                     if($deadline->expired()){$reached=true;break;}
                     if($plan['inventory'][$container->id]!==null&&$plan['inventory'][$container->id]<=0)continue;
                     $nodes++;
-                    try{$one=$solver->packOne($container,$plan['sequence']+1,$plan['remaining'],$config,$stats,$deadline);}catch(TimeLimitReached){$reached=true;break;}
+                    try{$one=$solver->packOne($container,$plan['sequences'][$container->id]+1,$plan['remaining'],$config,$stats,$deadline);}catch(TimeLimitReached){$reached=true;break;}
                     $reached=$reached||$one->timeLimitReached;if($one->state->placementCount()===0)continue;
-                    [$committed,$ids]=self::commitState($one->state);$child=$plan;$child['packed'][]=$committed;$child['remaining']=array_values(array_filter($plan['remaining'],static fn(ItemInstance $item):bool=>!isset($ids[$item->id()])));$child['sequence']++;
+                    [$committed,$ids]=self::commitState($one->state);$child=$plan;$child['packed'][]=$committed;$child['remaining']=array_values(array_filter($plan['remaining'],static fn(ItemInstance $item):bool=>!isset($ids[$item->id()])));$child['sequences'][$container->id]++;
                     if($child['inventory'][$container->id]!==null)$child['inventory'][$container->id]--;
                     $child['exhaustive']=$plan['exhaustive']&&$one->exhaustive;$child['dominant']=$plan['dominant']&&$one->dominantLattice;$expansions[]=$child;
                     if(self::planScore($child,$child['remaining'],$config)<self::planScore($incumbent,$incumbent['remaining'],$config))$incumbent=$child;

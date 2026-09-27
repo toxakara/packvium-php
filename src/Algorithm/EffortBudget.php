@@ -2,6 +2,8 @@
 declare(strict_types=1);
 namespace Packvium\Algorithm;
 
+use InvalidArgumentException;
+
 /**
  * Counted-work limits, checked alongside (never instead of) the wall clock.
  *
@@ -20,7 +22,15 @@ final class EffortBudget
         public readonly ?int $maxPlacementAttempts=null,
         public readonly ?int $maxSearchNodes=null,
         public readonly ?int $maxRestarts=null,
-    ) {}
+    ) {
+        // A limit of zero or less would stop every search before its first step, which no
+        // caller means; the schema's floor for each is 1.
+        foreach (['maxCandidatesEvaluated'=>$maxCandidatesEvaluated,'maxPlacementAttempts'=>$maxPlacementAttempts,'maxSearchNodes'=>$maxSearchNodes,'maxRestarts'=>$maxRestarts] as $name=>$limit) {
+            if ($limit!==null && $limit<1) {
+                throw new InvalidArgumentException("effortBudget.{$name} must be at least 1");
+            }
+        }
+    }
 
     public function exceeded(SearchStats $stats):bool
     {

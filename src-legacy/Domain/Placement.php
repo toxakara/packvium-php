@@ -44,7 +44,13 @@ final class Placement
      * @var \Packvium\Unit\Weight
      */
     public $topLoad;
-    public function __construct(ItemInstance $instance, Point $position, string $rotation, Dimensions $dimensions, Point $envelopeOrigin, Dimensions $envelopeDimensions, float $supportRatio=1.0, ?Weight $topLoad=null)
+    /**
+     * @readonly
+     * @var bool
+     */
+    public $fixed = false;
+    // `$fixed`: placed by the request's `fixed_placements`, not by search; nothing may move it.
+    public function __construct(ItemInstance $instance, Point $position, string $rotation, Dimensions $dimensions, Point $envelopeOrigin, Dimensions $envelopeDimensions, float $supportRatio=1.0, ?Weight $topLoad=null, bool $fixed=false)
     {
         $topLoad = $topLoad ?? new Weight(0);
         $this->instance = $instance;
@@ -55,6 +61,7 @@ final class Placement
         $this->envelopeDimensions = $envelopeDimensions;
         $this->supportRatio = $supportRatio;
         $this->topLoad = $topLoad;
+        $this->fixed = $fixed;
     }
     public function box():AxisAlignedBox{return new AxisAlignedBox($this->position,$this->dimensions);}public function envelopeBox():AxisAlignedBox{return new AxisAlignedBox($this->envelopeOrigin,$this->envelopeDimensions);}
 

@@ -68,7 +68,7 @@ final class GridSolver implements SingleContainerSolver
     public function packOne(Container $container,int $sequence,array $items,PackingConfig $config,SearchStats $stats,Deadline $deadline):SingleContainerSolution
     {
         $prototype=$items===[]?null:$items[0]->item;
-        if($container->obstacles!==[]||$prototype===null||!$this->supports($items)||array_intersect($prototype->tags,$prototype->incompatibleTags))
+        if($container->obstacles!==[]||$container->preloaded!==[]||$prototype===null||!$this->supports($items)||array_intersect($prototype->tags,$prototype->incompatibleTags))
             // A mixed-type list would otherwise place every item using the first
             // item's dimensions -- silently wrong geometry, not merely suboptimal.
             return (new ExtremePointSolver())->packOne($container,$sequence,$items,$config,$stats,$deadline);

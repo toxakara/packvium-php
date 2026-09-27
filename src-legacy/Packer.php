@@ -3,10 +3,10 @@ declare(strict_types=1);
 
 namespace Packvium;
 
-use Packvium\Algorithm\{Deadline, SolverOrchestrator};
+use Packvium\Algorithm\{Deadline, FixedPlacementAdmission, SolverOrchestrator};
 use Packvium\Support\StableSorter;
 use Packvium\Config\PackingConfig;
-use Packvium\Domain\{Container, Item, PackingRequest, UnratedWeightException};
+use Packvium\Domain\{Container, FixedPlacement, Item, PackingRequest, UnratedWeightException};
 use Packvium\Extension\ExtensionRegistry;
 use Packvium\Objective\{LandedCostSolutionScorer, ObjectiveRegistry, SolutionScorer, UnknownObjectiveException};
 use Packvium\Result\{
@@ -49,10 +49,10 @@ final class Packer
         $this->clock = $clock;
     }
 
-    /** @param list<Item> $items @param list<Container> $containers */
-    public function pack(array $items, array $containers): PackingResult
+    /** @param list<Item> $items @param list<Container> $containers @param list<FixedPlacement> $fixedPlacements */
+    public function pack(array $items, array $containers, array $fixedPlacements = []): PackingResult
     {
-        $request = new PackingRequest($items, $containers);
+        $request = new PackingRequest($items, $containers, $fixedPlacements);
         // Both cost objectives price the same billed weight, so both need the divisor.
         // There is no library-chosen default: a wrong guess would silently misprice
         // every shipment. `ShippingCostSolutionScorer::fromConfig` still refuses too,
@@ -80,6 +80,12 @@ final class Packer
                 }
             }
         }
+        $fixed = FixedPlacementAdmission::admit(
+            $request,
+            $this->config->minimumSupportRatio,
+            $this->config->clearance,
+            $this->config->maxContainers,
+        );
         $deadline = Deadline::ofMilliseconds($this->config->timeLimitMs, $this->clock);
         $orchestrator = new SolverOrchestrator(
             $this->extensions->placementConstraints,
@@ -89,10 +95,11 @@ final class Packer
             $this->extensions->containerSelector,
         );
         $portfolio = $orchestrator->solvePortfolio(
-            $request->instances(),
+            $fixed->free,
             $request->containers,
             $this->config,
             $deadline,
+            $fixed->containers,
         );
         $ranked = [];
         $validator = new IndependentSolutionValidator();

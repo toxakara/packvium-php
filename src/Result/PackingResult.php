@@ -101,6 +101,10 @@ final readonly class PackingResult
                     'support_ratio' => sprintf('%.6f', $placement->supportRatio),
                     'top_load' => $placement->topLoad->toArray($weightUnit),
                 ];
+                // Absent unless true, so a request without fixed placements keeps its bytes.
+                if ($placement->fixed) {
+                    $placements[array_key_last($placements)]['fixed'] = true;
+                }
             }
             $serialized = [
                 'id' => $container->id(),

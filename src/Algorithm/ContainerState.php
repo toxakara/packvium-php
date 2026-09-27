@@ -64,6 +64,9 @@ final class ContainerState
         }
         $this->absorb([new Point(0,0,0)]);
         foreach($this->occupied as $box)$this->absorb($this->exposedPoints($box));
+        // Fixed items enter as real placements, so payload, support, top load and every
+        // other rule that reads `placements` holds for them with no rule of its own.
+        foreach($container->preloaded as $placement)$this->add($placement);
     }
 
     /** Clone rather than reconstruct: the constructor's point seeding would be discarded. */
@@ -113,17 +116,16 @@ final class ContainerState
         // an interlocking pack it could never propose.
         if($shape===null){
             [$x1,$y1,$z1,$x2,$y2,$z2]=$bound;
-            $retired=false;
-            foreach($this->points as $key=>$point)
-                if($point->x>=$x1&&$point->x<$x2&&$point->y>=$y1&&$point->y<$y2&&$point->z>=$z1&&$point->z<$z2){$retired=true;unset($this->points[$key]);}
-            // `$orderedPoints` holds exactly the points of `$points`, so the same test
-            // retires the same set there without rebuilding a key per point.
-            if($retired){
-                $kept=[];
-                foreach($this->orderedPoints as $point)
-                    if(!($point->x>=$x1&&$point->x<$x2&&$point->y>=$y1&&$point->y<$y2&&$point->z>=$z1&&$point->z<$z2))$kept[]=$point;
-                $this->orderedPoints=$kept;
+            $kept=[];
+            foreach($this->orderedPoints as $point){
+                $px=$point->x;$py=$point->y;$pz=$point->z;
+                if($px>=$x1&&$px<$x2&&$py>=$y1&&$py<$y2&&$pz>=$z1&&$pz<$z2){
+                    unset($this->points["{$px}:{$py}:{$pz}"]);
+                }else{
+                    $kept[]=$point;
+                }
             }
+            $this->orderedPoints=$kept;
         }
         $this->absorb($this->exposedPoints($box));
     }
@@ -196,10 +198,10 @@ final class ContainerState
             }
             if(!$inside){
                 $this->points[$key]=$point;
-                $pointKey=[$z,$y,$x];$low=0;$high=count($this->orderedPoints);
+                $low=0;$high=count($this->orderedPoints);
                 while($low<$high){
                     $middle=intdiv($low+$high,2);$current=$this->orderedPoints[$middle];
-                    if([$current->z,$current->y,$current->x]<=$pointKey)$low=$middle+1;else $high=$middle;
+                    if($current->z < $z || ($current->z === $z && ($current->y < $y || ($current->y === $y && $current->x <= $x))))$low=$middle+1;else $high=$middle;
                 }
                 array_splice($this->orderedPoints,$low,0,[$point]);
             }

@@ -348,6 +348,34 @@ final class SolverTest extends TestCase
         self::assertPhysicallySound($solution->state);
     }
 
+    public static function testBeamPackerPrecomputedFutureMatchesStandardEvaluation(): void
+    {
+        $box = Container::create('box', Dimensions::mm(300, 200, 200), quantity: 1);
+        $items = self::instances('small', 50, 50, 50, ['quantity' => 10]);
+        $solver = new ExtremePointSolver();
+        $solution = $solver->packOne($box, 1, $items, new PackingConfig(profile: SolverProfile::Quality, maxCandidatesPerItem: 4, containerPlanBeamWidth: 4, containerPlanNodeLimit: 20), new SearchStats(), self::generous());
+        self::assertTrue($solution->state->placements !== []);
+        self::assertPhysicallySound($solution->state);
+    }
+
+    public static function testBeamPackerPrecomputedFutureBoundsByPayload(): void
+    {
+        $box = Container::create('box', Dimensions::mm(300, 200, 200), maxPayload: '1 kg', quantity: 1);
+        $items = self::instances('small', 50, 50, 50, ['quantity' => 10, 'weight' => '200 g']);
+        $solution = (new ExtremePointSolver())->packOne($box, 1, $items, new PackingConfig(profile: SolverProfile::Quality, maxCandidatesPerItem: 4, containerPlanBeamWidth: 4, containerPlanNodeLimit: 20), new SearchStats(), self::generous());
+        self::assertCount(5, $solution->state->placements);
+        self::assertPhysicallySound($solution->state);
+    }
+
+    public static function testBeamPackerPrecomputedFutureDropsTheVolumeBoundForNesting(): void
+    {
+        $box = Container::create('box', Dimensions::mm(300, 200, 200), quantity: 1);
+        $items = self::instances('cup', 50, 50, 50, ['quantity' => 10, 'nestingHeight' => Length::mm(10)]);
+        $solution = (new ExtremePointSolver())->packOne($box, 1, $items, new PackingConfig(profile: SolverProfile::Quality, maxCandidatesPerItem: 4, containerPlanBeamWidth: 4, containerPlanNodeLimit: 20), new SearchStats(), self::generous());
+        self::assertTrue($solution->state->placements !== []);
+        self::assertPhysicallySound($solution->state);
+    }
+
     private static function assertPhysicallySound(ContainerState $state): void
     {
         $boundary = new AxisAlignedBox(new Point(0, 0, 0), $state->container->innerDimensions);
@@ -483,6 +511,33 @@ final class SolverTest extends TestCase
     }
 
     // ------------------------------------------------------- effort budgets
+
+    public static function testAnEffortLimitBelowOneIsRefused(): void
+    {
+        // A limit of zero or less would stop every search before its first step.
+        $limits = [
+            static fn(int $v) => new EffortBudget($v),
+            static fn(int $v) => new EffortBudget(null, $v),
+            static fn(int $v) => new EffortBudget(null, null, $v),
+            static fn(int $v) => new EffortBudget(null, null, null, $v),
+        ];
+        foreach ($limits as $build) {
+            foreach ([0, -1] as $value) {
+                self::assertThrows(InvalidArgumentException::class, static fn() => $build($value));
+            }
+            self::assertSame(1, array_sum(array_filter((array) $build(1))));
+        }
+    }
+
+    public static function testAMaxContainersBelowOneIsRefused(): void
+    {
+        // `-1` would otherwise answer with no containers at all.
+        foreach ([0, -1] as $maxContainers) {
+            self::assertThrows(InvalidArgumentException::class,
+                static fn() => new PackingConfig(maxContainers: $maxContainers));
+        }
+        self::assertSame(1, (new PackingConfig(maxContainers: 1))->maxContainers);
+    }
 
     public static function testAnEffortBudgetBoundsSearchNodesRegardlessOfClockSpeed(): void
     {

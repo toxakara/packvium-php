@@ -12,7 +12,7 @@ final class TopLoadAssigner
         $loads=LoadCalculator::topLoads(LoadCalculator::units($placements));
         $out=[];
         foreach($placements as $index=>$p)
-            $out[]=new Placement($p->instance,$p->position,$p->rotation,$p->dimensions,$p->envelopeOrigin,$p->envelopeDimensions,$p->supportRatio,new Weight($loads[$index]));
+            $out[]=new Placement($p->instance,$p->position,$p->rotation,$p->dimensions,$p->envelopeOrigin,$p->envelopeDimensions,$p->supportRatio,new Weight($loads[$index]),$p->fixed);
         return $out;
     }
 }

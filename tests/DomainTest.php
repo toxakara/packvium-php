@@ -135,6 +135,16 @@ final class DomainTest extends TestCase
             static fn() => Container::create('c', Dimensions::mm(1, 1, 1), costMinor: -1));
     }
 
+    public static function testAContainerMaxItemsBelowOneIsRefused(): void
+    {
+        // A cap of zero admits no item at all, and a negative one has no reading.
+        foreach ([0, -1] as $maxItems) {
+            self::assertThrows(InvalidArgumentException::class,
+                static fn() => Container::create('c', Dimensions::mm(1, 1, 1), maxItems: $maxItems));
+        }
+        self::assertSame(1, Container::create('c', Dimensions::mm(1, 1, 1), maxItems: 1)->maxItems);
+    }
+
     public static function testOuterDimensionsCannotBeSmallerThanInner(): void
     {
         self::assertThrows(InvalidArgumentException::class, static fn() => Container::create(
