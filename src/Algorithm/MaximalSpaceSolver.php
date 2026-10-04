@@ -131,15 +131,7 @@ final class MaximalSpaceSolver implements SingleContainerSolver
         ],$kept);
         $result=[];
         foreach($kept as $index=>[$space,$isNew]){
-            if($isNew){
-                [$x1,$y1,$z1,$x2,$y2,$z2]=$extents[$index];
-                $dominated=false;
-                foreach($extents as $other=>$extent){
-                    if($other===$index)continue;
-                    if($extent[0]<=$x1&&$extent[1]<=$y1&&$extent[2]<=$z1&&$x2<=$extent[3]&&$y2<=$extent[4]&&$z2<=$extent[5]){$dominated=true;break;}
-                }
-                if($dominated)continue;
-            }
+            if($isNew&&self::isContained($extents,$index))continue;
             $result[]=$space;
         }
         if(count($result)>self::MAX_MAXIMAL_SPACES){
@@ -150,5 +142,23 @@ final class MaximalSpaceSolver implements SingleContainerSolver
             );
         }
         return $result;
+    }
+
+    /**
+     * Whether another extent contains `$extents[$index]`, for extents ordered by origin z.
+     *
+     * A container starts at or below what it contains, so the scan stops at the first
+     * extent that starts higher: O(prefix) instead of O(s), with no index to build.
+     *
+     * @param list<array{int,int,int,int,int,int}> $extents
+     */
+    private static function isContained(array $extents,int $index):bool
+    {
+        [$x1,$y1,$z1,$x2,$y2,$z2]=$extents[$index];
+        foreach($extents as $other=>$extent){
+            if($extent[2]>$z1)return false;
+            if($other!==$index&&$extent[0]<=$x1&&$extent[1]<=$y1&&$x2<=$extent[3]&&$y2<=$extent[4]&&$z2<=$extent[5])return true;
+        }
+        return false;
     }
 }

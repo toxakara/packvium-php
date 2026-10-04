@@ -103,4 +103,21 @@ final class AxleLoadTest extends TestCase
         self::assertTrue(str_starts_with($reaction['front_numerator'], '-'));
         self::assertFalse(str_starts_with($reaction['rear_numerator'], '-'));
     }
+
+    public static function testTheBalancedOriginsAccountForTheLoadAlreadyAboard(): void
+    {
+        // Axles at 100 and 900, each limited to 500. A 400-tick unit already sits with its
+        // centre at 100, right over the front axle. For a further 400-tick item 200 long,
+        // front reaches its limit with the item's centre at 700 (origin 600): 400 + 400*200/800.
+        // Rear reaches its limit with the centre at 1100 (origin 1000): 0 + 400*1000/800.
+        $axles = [new Axle(new Length(100), new Weight(500)), new Axle(new Length(900), new Weight(500))];
+        $aboard = [self::unit(400, 0, 200)];
+        self::assertSame([600, 1000], AxleLoad::axleBalancedOrigins($axles, $aboard, 0, 0, 400, 200));
+
+        // Both origins land exactly on a limit, which `exceeded` still admits.
+        $atFront = self::unit(400, 600, 200, 'item');
+        $atRear = self::unit(400, 1000, 200, 'item');
+        self::assertNull(AxleLoad::exceeded($axles, [...$aboard, $atFront]));
+        self::assertNull(AxleLoad::exceeded($axles, [...$aboard, $atRear]));
+    }
 }

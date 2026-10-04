@@ -192,6 +192,46 @@ final class RebalanceTest extends TestCase
         self::assertValid($request, $outcome->containers, [], $config);
     }
 
+    public static function testAWeightlessItemIsNeverMovedToBalanceWeight(): void
+    {
+        // Moving the 5 kg item only flips the imbalance, and moving the weightless one
+        // cannot narrow it at all, so it is not even tried: nothing moves.
+        $heavy = Support::item('heavy', 40, 40, 40, ['weight' => '5000 g']);
+        $feather = Support::item('feather', 40, 40, 40);
+        $alone = Support::item('alone', 40, 40, 40, ['weight' => '1000 g']);
+        $boxType = Support::box('box', 200, 200, 200);
+        $request = new PackingRequest([$heavy, $feather, $alone], [$boxType]);
+        $packed = [
+            new PackedContainer($boxType, 1, [self::floorPlacement($heavy, 1, 0, 0), self::floorPlacement($feather, 1, 50 * Support::MM, 0)]),
+            new PackedContainer($boxType, 2, [self::floorPlacement($alone, 1, 0, 0)]),
+        ];
+        $outcome = WeightRebalancer::rebalance($request, $packed, [], new PackingConfig());
+        self::assertSame([], $outcome->moves);
+        self::assertSame(self::weights($packed), self::weights($outcome->containers));
+    }
+
+    public static function testAMoveIntoAContainerWithNoRoomIsDeclined(): void
+    {
+        // Moving the 1 kg item would narrow the spread from 5 kg to 3 kg, but the only
+        // other container is already full, so there is nowhere in it to put the item.
+        $heavy = Support::item('heavy', 40, 40, 40, ['weight' => '5000 g']);
+        $light = Support::item('light', 40, 40, 40, ['weight' => '1000 g']);
+        $alone = Support::item('alone', 40, 40, 40, ['weight' => '1000 g']);
+        $roomy = Support::box('roomy', 200, 200, 200);
+        $snug = Support::box('snug', 40, 40, 40);
+        $request = new PackingRequest([$heavy, $light, $alone], [$roomy, $snug]);
+        $packed = [
+            new PackedContainer($roomy, 1, [self::floorPlacement($heavy, 1, 0, 0), self::floorPlacement($light, 1, 50 * Support::MM, 0)]),
+            new PackedContainer($snug, 1, [self::floorPlacement($alone, 1, 0, 0)]),
+        ];
+        $config = new PackingConfig();
+        $outcome = WeightRebalancer::rebalance($request, $packed, [], $config);
+        self::assertSame([], $outcome->moves);
+        self::assertSame(self::weights($packed), self::weights($outcome->containers));
+        self::assertAccountingHolds($request, $outcome->containers, []);
+        self::assertValid($request, $outcome->containers, [], $config);
+    }
+
     public static function testASingleContainerHasNothingToRebalance(): void
     {
         $solo = Support::item('solo', 40, 40, 40, ['weight' => '500 g']);

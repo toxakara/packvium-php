@@ -16,10 +16,9 @@
  *
  * - lengths and weights travel as *decimal strings*, never as floats, so "12 3/8 in"
  *   survives the trip intact (see units.php for why that matters);
- * - a field this engine has deliberately not implemented is refused by name, but a key
- *   the parser simply does not recognise is ignored. The last section shows both -- the
- *   refusal through the guard's own test hook, because this engine has caught up and now
- *   refuses nothing of its own.
+ * - a field this engine has deliberately not implemented yet is refused by name, never
+ *   quietly ignored -- but a key the parser does not recognise on an item *is* ignored.
+ *   The difference matters, and the last section shows both.
  */
 declare(strict_types=1);
 
@@ -39,16 +38,16 @@ $request = [
         'dimensional_weight_divisor' => 5000,
         'dimensional_weight_length_unit' => 'cm',
         'dimensional_weight_weight_unit' => 'kg',
-        'profile' => 'balanced',
+        'solver_profile' => 'balanced',
         'seed' => 42,
-        'top_k' => 2,
-        // An example must not change answer merely because the machine is busy. `top_k`
-        // asks the portfolio for runners-up, and how many it finds is bounded by the
-        // *wall clock* unless a budget says otherwise -- so without this line two runs on
-        // a loaded host can print a different number of alternatives, which is
-        // exactly. gave every conformance fixture an explicit budget for this
-        // reason; the examples were not part of that sweep. The value is a safety fuse,
-        // not a target: nothing here comes close to it.
+        // Up to two complete answers: the winner and one runner-up.
+        'alternatives' => 2,
+        // A wall clock is a fact about the machine, not about the request: how many
+        // runners-up a clock-bounded search finds depends on how busy the host is. The
+        // effort budget counts work instead, so it stops at the same point on every
+        // machine, and the time limit is only a safety fuse far above what this needs.
+        // reproducibility.php shows what happens when the clock does decide.
+        'effort_budget' => ['max_search_nodes' => 20000],
         'time_limit_ms' => 60000,
     ],
     'items' => [
@@ -103,25 +102,31 @@ echo "\none placement, in full:\n";
 echo substr(json_encode($result['containers'][0]['placements'][0], JSON_PRETTY_PRINT), 0, 320), " ...\n";
 
 // -----------------------------------------------------------------------------------
-// `top_k` asks for runners-up: real alternative arrangements, already scored and already
-// validated. Two of them can share a score and still differ in geometry, so compare
-// placements rather than scores when showing a human a choice.
+// `alternatives` asks for runners-up. They are real alternative arrangements, already
+// scored and already validated -- useful when you want to show a human a choice rather
+// than a verdict. The count includes the winner, so `2` means at most one runner-up, and
+// an empty list is normal: a search that found nothing else worth ranking says so.
 // -----------------------------------------------------------------------------------
+// Two alternatives can share a score and still be different arrangements -- equal cost,
+// different geometry. Compare their placements, not their scores, when showing a choice.
 echo "\nalternatives: ", count($result['alternatives'] ?? []), "\n";
 foreach ($result['alternatives'] ?? [] as $alternative) {
-    $first = $alternative['containers'][0]['placements'][0];
-    printf("   score %s  first placement %s at x=%s\n",
-        json_encode($alternative['score']), $first['item_id'], $first['position']['x']['value']);
+    $positions = [];
+    foreach ($alternative['containers'] as $container) {
+        foreach ($container['placements'] as $placement) {
+            $positions[] = [$placement['item_id'], $placement['position']['x']['value']];
+        }
+    }
+    printf("   score %s  first two placements %s\n",
+        json_encode($alternative['score']), json_encode(array_slice($positions, 0, 2)));
 }
 
 // -----------------------------------------------------------------------------------
 // What is refused, and what is not. The two look alike from the outside.
 //
-// A key the parser does not recognise is *ignored*. Misspell `keep_upright` and you get
-// a silently unrotated mug, not an error -- the strictness lives in the request JSON
-// Schema, which sets `additionalProperties: false` and ships with the project rather
-// than with this package. Validate against it if you want typo protection.
-// See docs/SERIALIZATION.md.
+// A key the parser does not recognise on an item is *ignored*. Misspell `keep_upright`
+// and you get a silently rotatable mug, not an error. If typos in item fields matter to
+// you, check keys against the field list in docs/PUBLIC-API.md before calling the engine.
 // -----------------------------------------------------------------------------------
 $typo = $request;
 $typo['items'][1]['keep_uprght'] = true;
@@ -139,33 +144,25 @@ try {
     printf("unknown objective: %s\n", substr($refusal->getMessage(), 0, 100));
 }
 
-// And a field this engine names as not-yet-implemented is refused explicitly, so a
-// request written for a newer engine fails loudly instead of being half-honoured. The
-// list below is the engine's own constant, and it is empty: implemented
-// `convex_hull` and `compressible`, the last reserved names left on it, so this engine
-// now serves every field and every `shape_type` value the schema defines.
+// And a field the schema reserves but this engine has not implemented yet is refused by
+// name, so a request written for a newer engine fails loudly instead of being
+// half-honoured. The list is the engine's own constant.
 $refused = array_filter(ArrayCodec::UNSUPPORTED_FIELDS);
 printf("fields this engine refuses by name: %s\n",
     $refused === [] ? 'none' : json_encode($refused));
 
-// Caught up is the right state and a poor demonstration, so the guard takes its lists as
-// parameters -- the same hook its own tests use. Passing the value retired shows
-// the refusal a caller still gets from an engine that is behind, and shows it naming the
-// *value* rather than the field: `rigid_cuboid` is the default and is implemented, so a
-// caller who spells the default out must be served, not refused.
-$behind = $request;
-$behind['items'][0]['shape_type'] = 'convex_hull';
+$ahead = $request;
+$ahead['containers'][0]['pallet_overhang_limit'] = ['length' => '50', 'width' => '50'];
 try {
-    ArrayCodec::rejectUnsupported($behind, null, ['convex_hull']);
+    ArrayCodec::pack($ahead);
 } catch (UnsupportedFeatureException $refusal) {
-    printf("  what one looks like, from an engine that is not: %s\n",
-        substr($refusal->getMessage(), 0, 110));
+    printf("  sending one anyway: %s\n", substr($refusal->getMessage(), 0, 100));
 }
 
 // -----------------------------------------------------------------------------------
 // The same document drives the command line, which reads a request on stdin and writes
-// a result on stdout -- which is how the cross-language conformance harness talks to
-// every engine:
+// a result on stdout -- which is how the engines are checked against each other, and how
+// you would call this from a language with no binding yet:
 //
 //     echo '<request json>' | php bin/packvium
 // -----------------------------------------------------------------------------------

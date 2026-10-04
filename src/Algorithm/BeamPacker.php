@@ -52,6 +52,8 @@ final class BeamPacker
             $futureCount=count($future);
             foreach($expansions as [$state,$unplaced]){
                 $unplacedCount=count($unplaced)+$futureCount;
+                // More unplaced items loses on the key's first component; skip building a signature that cannot win.
+                if($unplacedCount>$incumbentKey[0])continue;
                 $used=$state->usedVolume;$signature=[];
                 foreach($state->placements as $p){
                     $signature[]=$p->instance->id().'@'.$p->envelopeOrigin->x.','.$p->envelopeOrigin->y.','.$p->envelopeOrigin->z;
@@ -61,7 +63,7 @@ final class BeamPacker
                 if($candidateKey<$incumbentKey){$incumbent=[$state,array_merge($unplaced,$future)];$incumbentKey=$candidateKey;}
             }
             if($expansions===[])break;
-            $futureInfo=self::precomputeFuture($future,$container->maxPayload!==null);
+            $futureInfo=self::precomputeFuture($future,$container->maxPayload?->ticks);
             $beam=array_slice(StableSorter::sortBy($expansions,static fn(array $node):array=>self::nodeKeyPrecomputed($node,$futureInfo)),0,$width);
             if($exhausted){
                 [$state,$unplaced]=$incumbent;
@@ -134,34 +136,42 @@ final class BeamPacker
         return $child;
     }
 
-    /** @param list<string> $sortedCosts */
-    private static function countWithVolumeCapacity(array $sortedCosts,string $capacity):int
+    /** @param list<string> $cumulativeVolumes */
+    private static function countWithVolumeCapacity(array $cumulativeVolumes,string $capacity):int
     {
-        $used='0';$count=0;
-        foreach($sortedCosts as $cost){
-            $next=BigInt::add($used,$cost);
-            if(BigInt::compare($next,$capacity)>0)break;
-            $used=$next;$count++;
-        }
-        return $count;
+        return self::countWithin($cumulativeVolumes,static fn(string $used):bool=>BigInt::compare($used,$capacity)<=0);
     }
 
-    /** @param list<int> $sortedWeights */
-    private static function countWithWeightCapacity(array $sortedWeights,int $capacity):int
+    /** @param list<?int> $cumulativeWeights */
+    private static function countWithWeightCapacity(array $cumulativeWeights,int $capacity):int
     {
-        $used=0;$count=0;
-        foreach($sortedWeights as $weight){
-            if($used+$weight>$capacity)break;
-            $used+=$weight;$count++;
+        return self::countWithin($cumulativeWeights,static fn(?int $used):bool=>$used!==null&&$used<=$capacity);
+    }
+
+    /**
+     * How many of the cheapest costs fit, read off their prefix sums. Costs are
+     * non-negative, so the sums never decrease and the count is one binary search:
+     * O(log f) per node instead of the O(f) walk.
+     *
+     * @template T
+     * @param list<T> $cumulative
+     * @param callable(T):bool $fits
+     */
+    private static function countWithin(array $cumulative,callable $fits):int
+    {
+        $low=0;$high=count($cumulative);
+        while($low<$high){
+            $middle=intdiv($low+$high,2);
+            if($fits($cumulative[$middle]))$low=$middle+1;else $high=$middle;
         }
-        return $count;
+        return $low;
     }
 
     /**
      * @param list<ItemInstance> $future
-     * @return array{count:int,volumes:?list<string>,weights:?list<int>}
+     * @return array{count:int,volumes:?list<string>,weights:?list<?int>}
      */
-    private static function precomputeFuture(array $future,bool $hasMaxPayload):array
+    private static function precomputeFuture(array $future,?int $maxPayloadTicks):array
     {
         $count=count($future);
         if($count===0)return ['count'=>0,'volumes'=>null,'weights'=>null];
@@ -173,11 +183,21 @@ final class BeamPacker
         if(!$hasNesting){
             $volumes=array_map(static fn(ItemInstance $item):string=>$item->dimensions()->volumeString(),$future);
             usort($volumes,static fn(string $a,string $b):int=>BigInt::compare($a,$b));
+            $used='0';
+            foreach($volumes as $index=>$volume)$volumes[$index]=$used=BigInt::add($used,$volume);
         }
         $weights=null;
-        if($hasMaxPayload){
+        if($maxPayloadTicks!==null){
             $weights=array_map(static fn(ItemInstance $item):int=>$item->weight()->ticks,$future);
             sort($weights,SORT_NUMERIC);
+            // Null means a prefix exceeds the payload. Compare before adding so neither
+            // the sum nor payload + 1 can overflow a native int, even at PHP_INT_MAX.
+            $used=0;
+            foreach($weights as $index=>$weight){
+                if($used===null||$weight>$maxPayloadTicks-$used){$used=null;}
+                else $used+=$weight;
+                $weights[$index]=$used;
+            }
         }
         return ['count'=>$count,'volumes'=>$volumes,'weights'=>$weights];
     }

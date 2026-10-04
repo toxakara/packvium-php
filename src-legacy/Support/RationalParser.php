@@ -21,19 +21,29 @@ final class RationalParser
         $text = trim(str_replace("\u{00A0}", ' ', $value));
         $negative = strncmp($text, '-', strlen('-')) === 0;
         if (preg_match('/^([+-]?\d+)\s+(\d+)\s*\/\s*(\d+)$/', $text, $m)) {
-            $whole = (int)$m[1]; $n = (int)$m[2]; $d = (int)$m[3]; self::assertDenominator($d);
+            $whole = self::parseWhole($m[1]); $n = self::parseWhole($m[2]); $d = self::parseWhole($m[3]); self::assertDenominator($d);
+            if ($whole !== 0 && abs($whole) > intdiv(PHP_INT_MAX - $n, $d)) {
+                throw new InvalidArgumentException('Scaled unit value exceeds integer range');
+            }
             $magnitude = abs($whole) * $d + $n;
             return [$negative ? -$magnitude : $magnitude, $d];
         }
         if (preg_match('/^([+-]?\d+)\s*\/\s*(\d+)$/', $text, $m)) {
-            $d = (int)$m[2]; self::assertDenominator($d); return [(int)$m[1], $d];
+            $n = self::parseWhole($m[1]); $d = self::parseWhole($m[2]); self::assertDenominator($d); return [$n, $d];
         }
         if (!preg_match('/^([+-]?)(\d+)(?:\.(\d+))?$/', $text, $m)) { throw new InvalidArgumentException("Invalid decimal or fraction: {$text}"); }
         $fraction = $m[3] ?? '';
-        if ($fraction === '') { return [$negative ? -(int)$m[2] : (int)$m[2], 1]; }
+        if ($fraction === '') {
+            $num = self::parseWhole($m[2]);
+            return [$negative ? -$num : $num, 1];
+        }
         if (strlen($fraction) > 18) { throw new InvalidArgumentException('Decimal has more fractional digits than a tick can distinguish'); }
         $den = 10 ** strlen($fraction);
-        $num = (int)$m[2] * $den + (int)$fraction;
+        $intPart = self::parseWhole($m[2]);
+        if ($intPart !== 0 && $intPart > intdiv(PHP_INT_MAX - (int)$fraction, $den)) {
+            throw new InvalidArgumentException('Scaled unit value exceeds integer range');
+        }
+        $num = $intPart * $den + (int)$fraction;
         return [$negative ? -$num : $num, $den];
     }
 
@@ -43,6 +53,7 @@ final class RationalParser
     public static function scaled($value, int $multiplier, string $rounding): int
     {
         [$n, $d] = self::parse($value);
+        if ($n === PHP_INT_MIN || $multiplier === PHP_INT_MIN) { throw new InvalidArgumentException('Scaled unit value exceeds integer range'); }
         // Cancel the denominator against the multiplier before multiplying. A value like
         // "1.123456789012345678" mm would otherwise overflow on n * 16000 even though the
         // exact result is a small integer number of ticks.
@@ -112,6 +123,20 @@ final class RationalParser
 
     private static function gcd(int $a, int $b): int
     { while ($b !== 0) { [$a, $b] = [$b, $a % $b]; } return max(1, $a); }
+
+    private static function parseWhole(string $s): int
+    {
+        $sign = strncmp($s, '-', strlen('-')) === 0 ? '-' : '';
+        $digits = ltrim($s, '+-');
+        $trimmed = ltrim($digits, '0') ?: '0';
+        if ($sign === '-' && $trimmed === '9223372036854775808') {
+            return PHP_INT_MIN;
+        }
+        if ((string)(int)$trimmed !== $trimmed) {
+            throw new InvalidArgumentException('Scaled unit value exceeds integer range');
+        }
+        return (int)$s;
+    }
 
     private static function assertDenominator(int $d): void { if ($d <= 0) { throw new InvalidArgumentException('Fraction denominator must be positive'); } }
 }

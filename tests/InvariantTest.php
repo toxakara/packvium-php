@@ -326,7 +326,7 @@ final class InvariantTest extends TestCase
     public static function testConcurrentStartsReproduceTheSequentialAnswerUnderAnAmpleBudget(): void
     {
         if (!function_exists('pcntl_fork')) {
-            self::markTestSkipped('pcntl extension not available');
+            self::skip('pcntl extension not available');
         }
         for ($seed = 0; $seed < 4; $seed++) {
             [$items, $containers] = self::generate($seed);
@@ -350,7 +350,7 @@ final class InvariantTest extends TestCase
     public static function testConcurrentStartsAreBitIdenticalUnderABitingEffortBudget(): void
     {
         if (!function_exists('pcntl_fork')) {
-            self::markTestSkipped('pcntl extension not available');
+            self::skip('pcntl extension not available');
         }
         [$items, $containers] = self::generate(7);
         $effort = new EffortBudget(maxCandidatesEvaluated: 40, maxPlacementAttempts: 40, maxSearchNodes: 20, maxRestarts: 4);
@@ -363,6 +363,39 @@ final class InvariantTest extends TestCase
         for ($repeat = 0; $repeat < self::CONCURRENT_REPEATS; $repeat++) {
             self::assertSame($baseline, self::chosenAnswer(Support::pack($items, $containers, $config)->toArray()), "repeat {$repeat}");
         }
+    }
+
+    public static function testConcurrentStartsReportAnEffortStopAsEffortNotTime(): void
+    {
+        // A budget small enough to stop the in-process first start and every forked one.
+        // Each side relabels the items it left behind from `time_limit` to `effort_limit`
+        // on its own, so both must do it for the answer to say why the search stopped.
+        if (!function_exists('pcntl_fork')) {
+            self::skip('pcntl extension not available');
+        }
+        $items = [];
+        for ($index = 0; $index < 6; $index++) {
+            $items[] = Support::item("i{$index}", 30 + 5 * $index, 20 + 3 * $index, 15 + 2 * $index, ['quantity' => 3]);
+        }
+        $containers = [Support::box('c', 100, 100, 100, ['quantity' => 3])];
+        $config = new PackingConfig(
+            SolverProfile::Balanced, timeLimitMs: 60_000, seed: 1, effortBudget: new EffortBudget(maxSearchNodes: 3),
+            multiStartOrders: 4, solvers: ['extreme_points', 'layer'], parallelStarts: 4,
+        );
+
+        $result = Support::pack($items, $containers, $config);
+        self::assertTrue($result->algorithm->effortLimitReached);
+        self::assertFalse($result->complete());
+        foreach ($result->unpacked as $unpacked) {
+            self::assertSame('effort_limit', $unpacked->reason);
+        }
+        foreach ($result->alternatives as $alternative) {
+            foreach ($alternative->unpacked as $unpacked) {
+                self::assertSame('effort_limit', $unpacked->reason);
+            }
+        }
+        self::assertSame(self::chosenAnswer($result->toArray()),
+            self::chosenAnswer(Support::pack($items, $containers, $config)->toArray()));
     }
 
     public static function testParallelStartsFallsBackToSequentialWithAnInjectedClock(): void

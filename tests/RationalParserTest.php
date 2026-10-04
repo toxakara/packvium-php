@@ -94,6 +94,22 @@ final class RationalParserTest extends TestCase
             static fn() => RationalParser::scaled('9223372036854775807', 16_000, Rounding::Nearest));
     }
 
+    public static function testParsingRefusesValuesBeyondIntegerRange(): void
+    {
+        self::assertThrows(InvalidArgumentException::class,
+            static fn() => RationalParser::parse('99999999999999999999'));
+        self::assertThrows(InvalidArgumentException::class,
+            static fn() => RationalParser::parse('-99999999999999999999'));
+        self::assertThrows(InvalidArgumentException::class,
+            static fn() => RationalParser::scaled('99999999999999999999', 1, Rounding::Nearest));
+    }
+
+    public static function testScalingRefusesNativeIntegerMinimumCleanly(): void
+    {
+        self::assertThrows(InvalidArgumentException::class,
+            static fn() => RationalParser::scaled(PHP_INT_MIN, 1, Rounding::Nearest));
+    }
+
     public static function testRoundingModesAgreeWithPython(): void
     {
         self::assertSame(1, RationalParser::scaled('1.4', 1, Rounding::Floor));
@@ -125,6 +141,16 @@ final class RationalParserTest extends TestCase
         self::assertSame('-25.4', RationalParser::decimalString(-406_400, 16_000, 8));
     }
 
+    public static function testDecimalStringCarriesARoundUpIntoTheWholePart(): void
+    {
+        // Every fractional digit is a nine, so rounding up carries out of the fraction.
+        self::assertSame('1', RationalParser::decimalString(999_999_999, 1_000_000_000, 8));
+        self::assertSame('-1', RationalParser::decimalString(-999_999_999, 1_000_000_000, 8));
+        // With no fractional digits the tie rounds the whole part itself to even.
+        self::assertSame('2', RationalParser::decimalString(3, 2, 0));
+        self::assertSame('2', RationalParser::decimalString(5, 2, 0));
+    }
+
     public static function testDecimalStringRoundsTiesToEvenAtTheRequestedPrecision(): void
     {
         self::assertSame('0.33', RationalParser::decimalString(1, 3, 2));
@@ -148,5 +174,18 @@ final class RationalParserTest extends TestCase
         self::assertSame('1.2', RationalParser::decimalString(5, 4, 1));
         // 7/4 to 1 place is exactly 1.75 -> last kept digit 7 is odd, rounds up to '1.8'.
         self::assertSame('1.8', RationalParser::decimalString(7, 4, 1));
+    }
+
+    public static function testScalingPastTheIntegerRangeIsRefusedNotWrapped(): void
+    {
+        foreach (['9223372036854775807 1/2', '9223372036854775807.5'] as $text) {
+            self::assertThrows(InvalidArgumentException::class,
+                static fn() => RationalParser::parse($text), "accepted '{$text}'");
+        }
+    }
+
+    public static function testTheMostNegativeIntegerIsAValidNumerator(): void
+    {
+        self::assertSame([PHP_INT_MIN, 1], RationalParser::parse('-9223372036854775808/1'));
     }
 }

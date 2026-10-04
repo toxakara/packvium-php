@@ -100,6 +100,38 @@ final class SerializationTest extends TestCase
         self::assertSame(['code'=>'not_proven'],$result['optimality']);
     }
 
+    public static function testAProvenInfeasibleAndAnInvalidResultEachSayWhichAxisTheyAffect(): void
+    {
+        $infeasible=(new PackingResult(PackingStatus::Infeasible,[],[],new AlgorithmReport('quality','test',1,42),[0]))->toArray();
+        self::assertSame(['code'=>'infeasible'],$infeasible['feasibility']);
+        self::assertSame('complete',$infeasible['termination']['code']);
+        self::assertSame(['code'=>'proven_infeasible'],$infeasible['optimality']);
+
+        $invalid=(new PackingResult(PackingStatus::InvalidResult,[],[],new AlgorithmReport('quality','test',1,42),[0]))->toArray();
+        self::assertSame(['code'=>'unknown'],$invalid['feasibility']);
+        self::assertSame('error',$invalid['termination']['code']);
+    }
+
+    public static function testAFactNeedsANonEmptyCode(): void
+    {
+        self::assertThrows(\InvalidArgumentException::class, static fn() => new ResultFact(''));
+        self::assertThrows(\InvalidArgumentException::class, static fn() => ResultFact::fromArray(['limit'=>1]));
+        self::assertThrows(\InvalidArgumentException::class, static fn() => ResultFact::fromArray(['code'=>'']));
+        self::assertThrows(\InvalidArgumentException::class, static fn() => ResultFact::fromArray(['code'=>7]));
+    }
+
+    public static function testTerminationNeedsExactlyOneSelectedStart(): void
+    {
+        self::assertThrows(\InvalidArgumentException::class, static fn() => TerminationSummary::aggregate([]));
+        self::assertThrows(\InvalidArgumentException::class, static fn() => TerminationSummary::aggregate([
+            new StartRecord('a', true, true, false),
+        ]));
+        self::assertThrows(\InvalidArgumentException::class, static fn() => TerminationSummary::aggregate([
+            new StartRecord('a', true, true, false, true),
+            new StartRecord('b', true, true, false, true),
+        ]));
+    }
+
     public static function testAnUnknownFutureFactCodeRoundTripsVerbatim(): void
     {
         self::assertSame(

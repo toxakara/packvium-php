@@ -36,7 +36,7 @@ final class OperationalArtifact
      * The engine's own name is deliberately not recorded: four correct builders naming
      * themselves would emit four different documents.
      */
-    public const SUITE_VERSION = '1.4.0';
+    public const SUITE_VERSION = '1.5.0';
 
     /** The deterministic part of `result.algorithm`; `duration_ms` is wall-clock time. */
     private const SOLVER_FIELDS = ['profile', 'solver', 'seed', 'time_limit_reached', 'effort_limit_reached'];

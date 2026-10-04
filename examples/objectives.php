@@ -14,7 +14,8 @@
  *
  * The score is always a lexicographic vector of exact integers, never a float, and its
  * first key is always the unpacked count: no objective will ever leave an item behind to
- * save money. See docs/OBJECTIVE.md for the full key ordering.
+ * save money. Every line below prints the whole vector, so each objective's key order
+ * is on the page.
  */
 declare(strict_types=1);
 

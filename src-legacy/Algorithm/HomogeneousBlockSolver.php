@@ -3,8 +3,9 @@ declare(strict_types=1);
 namespace Packvium\Algorithm;
 
 use Packvium\Config\PackingConfig;
+use Packvium\Constraint\Internal\LoadSupportGraph;
 use Packvium\Constraint\PlacementConstraint;
-use Packvium\Domain\{AxisAlignedBox,Container,Dimensions,ItemInstance,Placement,Point};
+use Packvium\Domain\{AxisAlignedBox,Container,Dimensions,ItemInstance,Placement,Point,ShapeType};
 use Packvium\Extension\CandidateScorer;
 use Packvium\Support\BigInt;
 use Packvium\Unit\Length;
@@ -34,7 +35,7 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
 
     public function packOne(Container $container,int $sequence,array $items,PackingConfig $config,SearchStats $stats,Deadline $deadline):SingleContainerSolution
     {
-        if(!$this->supports($container,$items))
+        if(!$this->supports($container,$items,$config))
             return (new ExtremePointSolver($this->constraints))->packOne($container,$sequence,$items,$config,$stats,$deadline);
         $best=null;$reached=false;
         foreach(['count','volume'] as $mode){
@@ -47,14 +48,25 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
         return new SingleContainerSolution($best->state,$best->unpacked,false,$reached);
     }
 
-    private function supports(Container $container,array $items):bool
+    private function supports(Container $container,array $items,PackingConfig $config):bool
     {
+        // A block set on a smaller one overhangs it, so a request that asks for support
+        // is left to the per-item search.
+        if($config->minimumSupportRatio>0)return false;
         if($this->constraints!==[]||$container->obstacles!==[]||$container->preloaded!==[]||$container->axles!==null||$container->tagLimits!==[]||$container->maxStackDensity!==null||$container->voidFillReserveRatio>0)return false;
         foreach($items as $instance){
             $item=$instance->item;
-            if($item->group!==null||$item->tags!==[]||$item->incompatibleTags!==[]||$item->eligibleContainerTags!==[]||!$item->stackable||$item->mustBeOnFloor||$item->maxTopLoad!==null||$item->maxStackedItems!==null||$item->minimumSupportRatio!=0.0||!in_array($item->groundContactRule,[null,'free'],true)||$item->nestingHeight!==null||$item->stopIndex!==null)return false;
+            if($item->shapeType!==ShapeType::RIGID_CUBOID||$item->group!==null||$item->tags!==[]||$item->incompatibleTags!==[]||$item->eligibleContainerTags!==[]||!$item->stackable||$item->mustBeOnFloor||$item->maxTopLoad!==null||$item->maxStackedItems!==null||$item->minimumSupportRatio!=0.0||!in_array($item->groundContactRule,[null,'free'],true)||$item->nestingHeight!==null||$item->stopIndex!==null)return false;
         }
         return true;
+    }
+
+    /** The share of a member's base that rests on the floor or on a box beneath it. */
+    private static function memberSupport(ContainerState $state,ItemInstance $instance,Point $point,Dimensions $envelope):float
+    {
+        if($point->z===0)return 1.0;
+        $support=LoadSupportGraph::candidateView($state->placements,$instance,new AxisAlignedBox($point,$envelope));
+        return $support->supportingArea/$envelope->baseAreaTicks();
     }
 
     private function solutionKey(SingleContainerSolution $solution):array
@@ -118,7 +130,10 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
             for($z=0;$z<$best['nz'];$z++)for($y=0;$y<$best['ny'];$y++)for($x=0;$x<$best['nx'];$x++){
                 $point=new Point($best['space']->origin->x+$x*$best['envelope']->length->ticks,$best['space']->origin->y+$y*$best['envelope']->width->ticks,$best['space']->origin->z+$z*$best['envelope']->height->ticks);
                 $position=new Point($point->x+$clearance,$point->y+$clearance,$point->z+$clearance);
-                $state->addDirect(new Placement($chosen[$index++],$position,$best['rotation'],$best['physical'],$point,$best['envelope'],1.0));
+                // Above its bottom layer a member rests on an identical footprint; the
+                // bottom layer rests on whatever is there.
+                $support=$z===0?self::memberSupport($state,$chosen[$index],$point,$best['envelope']):1.0;
+                $state->addDirect(new Placement($chosen[$index++],$position,$best['rotation'],$best['physical'],$point,$best['envelope'],$support));
                 $stats->candidatesEvaluated++;$stats->placementsAttempted++;
             }
             $blockDimensions=new Dimensions(new Length($best['nx']*$best['envelope']->length->ticks),new Length($best['ny']*$best['envelope']->width->ticks),new Length($best['nz']*$best['envelope']->height->ticks));

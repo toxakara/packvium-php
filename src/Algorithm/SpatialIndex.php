@@ -14,11 +14,8 @@ namespace Packvium\Algorithm;
  * Safety property the whole design leans on: a grid cell assignment only needs to be a
  * superset of "boxes this query could possibly intersect" — `query()` returns bound
  * *indices*, and the caller (unchanged from before this class existed) still runs the
- * exact 6-comparison AABB test on each one before trusting it. A bug here can only make
- * the index slower (over-inclusive buckets) or, if under-inclusive, is caught immediately
- * by the differential property tests in SpatialIndexTest.php, which compare every query
- * against a naive O(n) scan across many random configurations. It can never by itself
- * cause a false "no collision" silently, because the exact check is still the final word.
+ * exact AABB test on each one. Over-inclusive buckets cost time; omitted candidates
+ * cannot be recovered by the exact check. Differential tests guard that invariant.
  */
 final class SpatialIndex
 {
@@ -31,6 +28,10 @@ final class SpatialIndex
      * @var array<int,array<int,array<int,list<int>>>>
      */
     private array $cells = [];
+    /** Every live search state owns its cache; 64 held the 1.4.0 peak where 1024 cost +26%. */
+    private const QUERY_CACHE_LIMIT = 64;
+    /** @var array<string,list<int>> Per-state, bounded; PHP copy-on-write isolates forks. */
+    private array $queryCache = [];
 
     public function __construct(int $lengthTicks, int $widthTicks, int $heightTicks, int $cellsPerAxis = 8)
     {
@@ -69,6 +70,7 @@ final class SpatialIndex
     /** @param array{0:int,1:int,2:int,3:int,4:int,5:int} $bound */
     public function add(int $index, array $bound): void
     {
+        $this->queryCache = [];
         [$x1, $y1, $z1, $x2, $y2, $z2] = $bound;
         [$ix1, $ix2, $iy1, $iy2, $iz1, $iz2] = $this->cellRange($x1, $y1, $z1, $x2, $y2, $z2);
         for ($ix = $ix1; $ix < $ix2; $ix++) {
@@ -87,6 +89,19 @@ final class SpatialIndex
         if ($ix2 === $ix1 + 1 && $iy2 === $iy1 + 1 && $iz2 === $iz1 + 1) {
             return $this->cells[$ix1][$iy1][$iz1] ?? [];
         }
+        $key = "$ix1:$ix2:$iy1:$iy2:$iz1:$iz2";
+        if (isset($this->queryCache[$key])) {
+            return $this->queryCache[$key];
+        }
+        if (count($this->queryCache) >= self::QUERY_CACHE_LIMIT) {
+            $this->queryCache = [];
+        }
+        return $this->queryCache[$key] = $this->collect($ix1, $ix2, $iy1, $iy2, $iz1, $iz2);
+    }
+
+    /** @return list<int> */
+    private function collect(int $ix1, int $ix2, int $iy1, int $iy2, int $iz1, int $iz2): array
+    {
         // Cells are visited in (x, y, z) order and an index keeps its first position, so
         // the sequence is a deterministic function of the contents. A box touching a
         // single occupied cell gets that bucket back as-is.
