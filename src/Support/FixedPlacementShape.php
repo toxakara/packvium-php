@@ -62,7 +62,7 @@ final class FixedPlacementShape
         }
         $unknown = JsonValue::namesOutside($point, self::AXES);
         if ($unknown !== []) {
-            throw $refuse("{$where} does not carry " . CanonicalJson::spelling($unknown), $field);
+            throw $refuse("{$where} cannot carry " . CanonicalJson::spelling($unknown), $field);
         }
         foreach (self::AXES as $axis) {
             $value = JsonValue::get($point, $axis);
@@ -80,7 +80,7 @@ final class FixedPlacementShape
         }
         $unknown = JsonValue::namesOutside($entry, self::FIELDS);
         if ($unknown !== []) {
-            throw self::malformed("{$where} does not carry " . CanonicalJson::spelling($unknown), $field);
+            throw self::malformed("{$where} cannot carry " . CanonicalJson::spelling($unknown), $field);
         }
         $missing = \array_values(\array_filter(self::REQUIRED, static fn(string $name): bool => !JsonValue::has($entry, $name)));
         if ($missing !== []) {

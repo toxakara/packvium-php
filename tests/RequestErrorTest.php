@@ -67,6 +67,14 @@ final class RequestErrorTest extends TestCase
                 'above_maximum', '/configuration/minimum_support_ratio', 'must be at most 1'],
             'unknown profile' => [static function (array &$r): void { $r['configuration']['solver_profile'] = 7; },
                 'not_allowed', '/configuration/solver_profile', 'must be one of ["fast","balanced","quality","exact_small"]'],
+            'unknown objective' => [static function (array &$r): void { $r['configuration']['objective'] = 'cheapest'; },
+                'not_allowed', '/configuration/objective', 'must be one of ["default","lowest_cost","shipping_cost","lowest_landed_cost","open_dimension_height","maximum_value"]'],
+            'unknown access direction' => [static function (array &$r): void { $r['containers'][0]['access_directions'] = ['upwards']; },
+                'not_allowed', '/containers/0/access_directions/0', 'must be one of ["+x","-x","+y","-y","+z","-z"]'],
+            'unknown configuration key' => [static function (array &$r): void { $r['configuration']['top_k'] = 2; $r['configuration']['profile'] = 'balanced'; },
+                'not_allowed', '/configuration/profile', 'is not a known field'],
+            'unknown effort key' => [static function (array &$r): void { $r['configuration']['effort_budget'] = ['max_nodes' => 1]; },
+                'not_allowed', '/configuration/effort_budget/max_nodes', 'is not a known field'],
             'configuration a list' => [static function (array &$r): void { $r['configuration'] = [1]; },
                 'wrong_type', '/configuration', 'must be an object'],
             'tag escaped' => [static function (array &$r): void { $r['containers'][0]['tag_limits'] = ['a/b~c' => 0]; },
@@ -103,6 +111,12 @@ final class RequestErrorTest extends TestCase
                 'below_minimum', '/containers/0/rate_table/fuel_surcharge_permille', 'must be at least 0'],
             'catalog reference not an object' => [static function (array &$r): void { $r['catalog_versions_used'] = [5]; },
                 'invalid_value', '', 'catalog_versions_used[0] must be an object'],
+            'catalog reference missing a field' => [static function (array &$r): void { $r['catalog_versions_used'] = [['catalog_id' => 'cartons', 'version' => 1]]; },
+                'invalid_value', '', 'catalog_versions_used[0] must contain exactly the canonical fields'],
+            'catalog id empty' => [static function (array &$r): void { $r['catalog_versions_used'] = [['catalog_id' => '', 'version' => 1, 'effective_at' => 0, 'resolved_at' => 0]]; },
+                'invalid_value', '', 'catalog_versions_used[0].catalog_id must be non-empty'],
+            'catalog version below one' => [static function (array &$r): void { $r['catalog_versions_used'] = [['catalog_id' => 'cartons', 'version' => 0, 'effective_at' => 0, 'resolved_at' => 0]]; },
+                'invalid_value', '', 'catalog_versions_used[0].version must be >= 1'],
         ];
         foreach ($cases as $name => [$edit, $reason, $field, $detail]) {
             $request = self::request();
@@ -144,6 +158,15 @@ final class RequestErrorTest extends TestCase
         $request['items'][0]['quantity'] = 2.0;
         RequestRules::check($request);
         self::assertTrue(true);
+    }
+
+    public static function testAWellFormedRateTablePassesTheRules(): void
+    {
+        $request = self::request();
+        $request['containers'][0]['rate_table'] = ['weight_brackets_g' => [1000, 5000], 'prices_minor' => [500, 900],
+            'minimum_charge_minor' => 100, 'fuel_surcharge_permille' => 50];
+        RequestRules::check($request);
+        self::assertContains(ArrayCodec::pack($request)['status'], ['feasible', 'optimal']);
     }
 
     public static function testWhatTheRulesDoNotNameIsStillARequestError(): void

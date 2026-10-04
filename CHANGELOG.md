@@ -4,6 +4,40 @@ What changed in `packvium/packvium` on Packagist, release by release. The format
 [Keep a Changelog](https://keepachangelog.com/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0]
+
+No API changes. The beam search is faster with identical placements, a block answer reports
+its real support, and a misspelt configuration key is now refused (see *Fixed*).
+
+### Changed
+
+- **Beam search 18–24% faster, same results.** The bound that ranks beam nodes reads prefix
+  sums built once per step, one binary search per node instead of a `BigInt` addition per
+  future item, and expansions that cannot beat the best plan so far are skipped early.
+
+### Fixed
+
+- **A block answer reports the support each item really has.** `HomogeneousBlockSolver` wrote
+  `supportRatio` 1.0 for every item, including those of a block set on a smaller one, which
+  overhang it. The bottom layer of each block now reports the share of its base that rests on
+  something. With `minimumSupportRatio` above zero the block solver is no longer tried at all;
+  its answer was built and then discarded by validation.
+- **A misspelt `configuration` key is refused.** A key the request schema does not declare in
+  `configuration` or its `effort_budget` (`profile` for `solver_profile`, `top_k` for
+  `alternatives`) was silently ignored, so the request ran on defaults. `ArrayCodec::pack` now
+  throws `InvalidRequestException` with reason `not_allowed` and the key's pointer, for example
+  `/configuration/profile`.
+- **A number past PHP's integer range is refused instead of changed.** A length or weight of
+  `9223372036854775808` became `9223372036854775807`, and a decimal whose scaled value overflowed
+  became a float, so the request was solved for a different size than the one sent. Both now
+  throw `InvalidArgumentException` ("Scaled unit value exceeds integer range").
+- **An unknown `objective` or access direction is refused with its pointer.** It was
+  `invalid_value` with an empty field; it is now `not_allowed` with, for example,
+  `/configuration/objective`.
+- **Compressible items are no longer laid out as rigid blocks** by `HomogeneousBlockSolver`.
+- **Refusal messages match the documentation**, e.g. a fixed placement with unknown keys says it
+  `cannot carry` them.
+
 ## [1.4.0]
 
 Replanning a job that has already started, and container ids that match the other engines.

@@ -10,6 +10,7 @@ use Packvium\Algorithm\RawSolution;
 use Packvium\Algorithm\SearchStats;
 use Packvium\Algorithm\SingleContainerSolution;
 use Packvium\Algorithm\SingleContainerSolver;
+use Packvium\Algorithm\TimeLimitReached;
 use Packvium\Config\PackingConfig;
 use Packvium\Config\SolverProfile;
 use Packvium\Constraint\ConstraintContext;
@@ -17,8 +18,11 @@ use Packvium\Constraint\ConstraintResult;
 use Packvium\Constraint\PlacementConstraint;
 use Packvium\Domain\Container;
 use Packvium\Domain\Dimensions;
+use Packvium\Domain\FixedPlacement;
 use Packvium\Domain\ItemInstance;
+use Packvium\Domain\Placement;
 use Packvium\Domain\Point;
+use Packvium\Domain\Rotation;
 use Packvium\Extension\CandidateScorer;
 use Packvium\Extension\ContainerSelector;
 use Packvium\Extension\ExtensionRegistry;
@@ -26,6 +30,7 @@ use Packvium\Extension\ItemOrderStrategy;
 use Packvium\Objective\ObjectiveScore;
 use Packvium\Objective\SolutionScorer;
 use Packvium\Packer;
+use Packvium\Result\PackingStatus;
 
 /**
  * The extension points: placement constraints, item orderings, solvers and the
@@ -217,6 +222,83 @@ final class ExtensionTest extends TestCase
 
         self::assertTrue($result->complete());
         self::assertFalse(str_starts_with($result->algorithm->solver, 'nothing'));
+    }
+
+    public static function testACustomSolverThatBreaksAPhysicalRuleNeverWins(): void
+    {
+        // Every item stacked into the same corner fits the count perfectly and overlaps
+        // everything. The independent validator must mark that start invalid so a built-in
+        // start wins instead, however well the overlapping answer scores.
+        $overlapping = new class implements SingleContainerSolver {
+            public function name(): string
+            {
+                return 'overlapping';
+            }
+
+            public function packOne(Container $container, int $sequence, array $items,
+                                    PackingConfig $config, SearchStats $stats, Deadline $deadline): SingleContainerSolution
+            {
+                $state = new ContainerState($container, $sequence);
+                $origin = new Point(0, 0, 0);
+                foreach ($items as $item) {
+                    $dimensions = $item->dimensions();
+                    $state->add(new Placement($item, $origin, Rotation::LWH, $dimensions, $origin, $dimensions));
+                }
+                return new SingleContainerSolution($state, []);
+            }
+        };
+        $items = [Support::item('a', 40, 40, 40, ['quantity' => 4])];
+        $containers = [Support::box('c', 100, 100, 100)];
+        $result = (new Packer(new PackingConfig(topK: 8), new ExtensionRegistry([], [], [$overlapping])))
+            ->pack($items, $containers);
+
+        self::assertNotSame(PackingStatus::InvalidResult, $result->status);
+        self::assertFalse(str_starts_with($result->algorithm->solver, 'overlapping'));
+        self::assertSame([], Support::problems($result, $items, $containers));
+        foreach ($result->alternatives as $alternative) {
+            self::assertNotSame(PackingStatus::InvalidResult, $alternative->status);
+        }
+    }
+
+    public static function testASolverThatRunsOutOfTimeOnAFixedContainerStillKeepsIt(): void
+    {
+        // A start whose solver gives up while filling a container that already holds a
+        // fixed item keeps that container with the fixed item alone -- dropping it would
+        // drop an item the request says is already loaded.
+        $givesUp = new class implements SingleContainerSolver {
+            public function name(): string
+            {
+                return 'gives_up';
+            }
+
+            public function packOne(Container $container, int $sequence, array $items,
+                                    PackingConfig $config, SearchStats $stats, Deadline $deadline): SingleContainerSolution
+            {
+                throw new TimeLimitReached('this solver never finishes');
+            }
+        };
+        $items = [Support::item('a', 40, 40, 40, ['quantity' => 3])];
+        $containers = [Support::box('c', 100, 100, 100)];
+        $fixed = [new FixedPlacement('a', 'c', new Point(0, 0, 0), Rotation::LWH)];
+        $result = (new Packer(new PackingConfig(topK: 8), new ExtensionRegistry([], [], [$givesUp])))
+            ->pack($items, $containers, $fixed);
+
+        // The packer validates every start against the request, fixed placements included.
+        self::assertTrue($result->complete());
+        self::assertNotSame(PackingStatus::InvalidResult, $result->status);
+        self::assertSame([], $result->warnings);
+        $keptAlone = false;
+        foreach ([$result, ...$result->alternatives] as $candidate) {
+            if (!str_starts_with($candidate->algorithm->solver, 'gives_up')) {
+                continue;
+            }
+            self::assertCount(1, $candidate->containers);
+            self::assertSame(['a#1'], array_map(static fn($p): string => $p->instance->id(), $candidate->containers[0]->placements));
+            self::assertTrue($candidate->containers[0]->placements[0]->fixed);
+            self::assertCount(2, $candidate->unpacked);
+            $keptAlone = true;
+        }
+        self::assertTrue($keptAlone, 'the giving-up start was never ranked');
     }
 
     // --------------------------------------------------------------------- scoring

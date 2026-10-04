@@ -38,9 +38,11 @@ use Packvium\Domain\PackedContainer;
 use Packvium\Domain\Placement;
 use Packvium\Domain\Point;
 use Packvium\Domain\Rotation;
+use Packvium\Domain\ShapeType;
 use Packvium\Extension\DefaultCandidateScorer;
 use Packvium\Support\BigInt;
 use Packvium\Unit\Length;
+use Packvium\Unit\Weight;
 
 /**
  * The search machinery: time budgets, seeded randomness, free-space bookkeeping and
@@ -338,6 +340,45 @@ final class SolverTest extends TestCase
         self::assertPhysicallySound($high->state);
     }
 
+    /** One 60x60x40 base and three 40x60x50 tops in a 100 mm crate: the base ends on two tops and overhangs them. */
+    private static function aBaseAndThreeTops(): array
+    {
+        return [...self::instances('base',60,60,40),...self::instances('top',40,60,50,['quantity'=>3])];
+    }
+
+    /** The share of a placement's base on the floor or on a top face, from geometry alone. */
+    private static function restingShare(array $placements,Placement $placement): float
+    {
+        $box=$placement->envelopeBox();
+        if($box->origin->z===0)return 1.0;
+        $resting=0;
+        foreach($placements as $other){
+            $below=$other->envelopeBox();
+            if($below->z2()===$box->origin->z)$resting+=$below->overlapAreaXY($box);
+        }
+        return $resting/$placement->envelopeDimensions->baseAreaTicks();
+    }
+
+    public static function testABlockSetOnASmallerOneReportsTheSupportItReallyHas(): void
+    {
+        $box=Container::create('crate',Dimensions::mm(100,100,100),quantity:1);
+        $solution=(new HomogeneousBlockSolver())->packOne($box,1,self::aBaseAndThreeTops(),PackingConfig::quality(),new SearchStats(),self::generous());
+        $placements=$solution->state->placements;
+        $base=array_values(array_filter($placements,static fn(Placement $p):bool=>$p->instance->item->id==='base'))[0];
+        self::assertTrue($base->envelopeOrigin->z>0);
+        self::assertTrue(abs($base->supportRatio-5/6)<1e-9);
+        self::assertSame(self::restingShare($placements,$base),$base->supportRatio);
+    }
+
+    public static function testTheBlockSolverLeavesARequestThatAsksForSupportToThePerItemSearch(): void
+    {
+        $box=Container::create('crate',Dimensions::mm(100,100,100),quantity:1);
+        $config=new PackingConfig(profile:SolverProfile::Quality,minimumSupportRatio:1.0,multiStartOrders:24,maxCandidatesPerItem:16,containerPlanBeamWidth:16,containerPlanNodeLimit:100_000);
+        $solution=(new HomogeneousBlockSolver())->packOne($box,1,self::aBaseAndThreeTops(),$config,new SearchStats(),self::generous());
+        self::assertTrue($solution->state->placements!==[]);
+        foreach($solution->state->placements as $placement)self::assertSame(1.0,self::restingShare($solution->state->placements,$placement));
+    }
+
     public static function testBlockSearchFallsBackWhenABusinessRuleCanDistinguishPlacements(): void
     {
         $box=Container::create('box',Dimensions::mm(100,100,200),quantity:1);
@@ -345,6 +386,21 @@ final class SolverTest extends TestCase
         $solution=(new HomogeneousBlockSolver())->packOne($box,1,$items,PackingConfig::quality(),new SearchStats(),self::generous());
         self::assertCount(1,$solution->state->placements);
         self::assertCount(1,$solution->unpacked);
+        self::assertPhysicallySound($solution->state);
+    }
+
+    public static function testBlockSearchFallsBackForCompressibleItems(): void
+    {
+        $box=Container::create('box',Dimensions::mm(100,100,200),quantity:1);
+        $items=self::instances('sponge',100,100,100,[
+            'quantity'=>2,
+            'shapeType'=>ShapeType::COMPRESSIBLE,
+            'compressionRatioPpm'=>200_000,
+            'maxCompressionPressureKpa'=>50,
+        ]);
+        $solution=(new HomogeneousBlockSolver())->packOne($box,1,$items,PackingConfig::quality(),new SearchStats(),self::generous());
+        self::assertCount(2,$solution->state->placements);
+        self::assertCount(0,$solution->unpacked);
         self::assertPhysicallySound($solution->state);
     }
 
@@ -367,6 +423,16 @@ final class SolverTest extends TestCase
         self::assertPhysicallySound($solution->state);
     }
 
+    public static function testBeamWeightBoundStaysExactAtIntegerMaximum(): void
+    {
+        $small = new ItemInstance(new Item('small', Dimensions::mm(1, 1, 1), new Weight(1)), 1);
+        $large = new ItemInstance(new Item('large', Dimensions::mm(1, 1, 1), new Weight(PHP_INT_MAX)), 1);
+        $future = (new ReflectionMethod(BeamPacker::class, 'precomputeFuture'))->invoke(null, [$small, $large], PHP_INT_MAX);
+        $count = new ReflectionMethod(BeamPacker::class, 'countWithWeightCapacity');
+        self::assertSame(1, $count->invoke(null, $future['weights'], PHP_INT_MAX));
+        self::assertSame(0, $count->invoke(null, $future['weights'], 0));
+    }
+
     public static function testBeamPackerPrecomputedFutureDropsTheVolumeBoundForNesting(): void
     {
         $box = Container::create('box', Dimensions::mm(300, 200, 200), quantity: 1);
@@ -374,6 +440,36 @@ final class SolverTest extends TestCase
         $solution = (new ExtremePointSolver())->packOne($box, 1, $items, new PackingConfig(profile: SolverProfile::Quality, maxCandidatesPerItem: 4, containerPlanBeamWidth: 4, containerPlanNodeLimit: 20), new SearchStats(), self::generous());
         self::assertTrue($solution->state->placements !== []);
         self::assertPhysicallySound($solution->state);
+    }
+
+    public static function testBeamPackerKeepsTheGreedyPrefixWhenEffortRunsOutMidGreedy(): void
+    {
+        // The greedy seed pass itself runs out of effort: every batch it had not placed is
+        // reported unplaced, and what it had placed stays physically sound.
+        $box = Container::create('box', Dimensions::mm(300, 200, 200), quantity: 1);
+        $items = self::instances('small', 50, 50, 50, ['quantity' => 10]);
+        $stats = new SearchStats();
+        $deadline = self::generous()->withEffort(new EffortBudget(maxCandidatesEvaluated: 1), $stats);
+        $config = new PackingConfig(profile: SolverProfile::Quality, maxCandidatesPerItem: 4, containerPlanBeamWidth: 4, containerPlanNodeLimit: 20);
+        $solution = (new ExtremePointSolver())->packOne($box, 1, $items, $config, $stats, $deadline);
+        self::assertSame(10, count($solution->state->placements) + count($solution->unpacked));
+        self::assertTrue($solution->unpacked !== [], 'a one-candidate budget cannot place all ten');
+        self::assertPhysicallySound($solution->state);
+    }
+
+    public static function testContainerPlanSearchBoundsTheContainersStillNeededByPayload(): void
+    {
+        // Every container has a payload ceiling, so the plan search's lower bound on the
+        // containers still to open counts weight as well as volume. Only one 600 g item fits
+        // under each 1 kg ceiling: three items need three containers.
+        $items = [Item::create('heavy', Dimensions::mm(40, 40, 40), weight: '600 g', quantity: 3)];
+        $containers = [Container::create('box', Dimensions::mm(100, 100, 100), maxPayload: '1 kg', quantity: 5)];
+        $config = new PackingConfig(timeLimitMs: 60_000, seed: 1, effortBudget: new EffortBudget(maxSearchNodes: 100_000),
+            containerPlanBeamWidth: 4, containerPlanNodeLimit: 64);
+        $result = (new \Packvium\Packer($config))->pack($items, $containers);
+        self::assertTrue($result->complete());
+        self::assertCount(3, $result->containers);
+        self::assertSame([], Support::problems($result, $items, $containers));
     }
 
     private static function assertPhysicallySound(ContainerState $state): void
@@ -495,6 +591,15 @@ final class SolverTest extends TestCase
         $expired = new Deadline(0);
         self::assertTrue($expired->expired());
         self::assertThrows(TimeLimitReached::class, static fn() => $expired->check());
+    }
+
+    public static function testADeadlineUntilAnAbsoluteInstantHonoursThatInstant(): void
+    {
+        // The forked starts share one absolute instant rather than a sliced budget.
+        self::assertTrue(Deadline::until(hrtime(true) - 1)->expired(), 'an instant already passed is expired');
+        $ample = Deadline::until(hrtime(true) + 60_000_000_000);
+        self::assertFalse($ample->expired());
+        self::assertTrue($ample->usesRealClock());
     }
 
     public static function testASliceIsNeverTooSmallToPlaceAnything(): void

@@ -72,6 +72,48 @@ final class IrregularItemsTest extends TestCase
         self::assertSame(75, Compression::effectiveHeight(100, 250000, 100, ['100', '1']));
     }
 
+    public static function testAnItemWithNoPressureHeadroomDoesNotCompress(): void
+    {
+        // A zero limit admits only zero pressure, so the item keeps its full height -- and
+        // the division by the limit below that early answer is never reached.
+        self::assertSame(100, Compression::effectiveHeight(100, 250000, 0, ['0', '1']));
+        self::assertSame(100, Compression::effectiveHeight(100, 250000, 0, ['100', '1']));
+    }
+
+    public static function testAVertexPartWayAlongAnEdgeIsWalkedPast(): void
+    {
+        // (5,0,0) lies on the cube's bottom front edge: collinear with two corners, so the
+        // face walk must step over it to the farther corner rather than turn back. The hull
+        // is the cube, with the cube's own volume, axes and contacts.
+        $withMidpoint = HullShape::of([
+            [0, 0, 0], [10, 0, 0], [0, 10, 0], [10, 10, 0],
+            [0, 0, 10], [10, 0, 10], [0, 10, 10], [10, 10, 10], [5, 0, 0],
+        ]);
+        $cube = self::cube(10);
+        self::assertSame($cube->volume, $withMidpoint->volume);
+        self::assertSame($cube->faceAxes, $withMidpoint->faceAxes);
+        self::assertSame($cube->edgeDirections, $withMidpoint->edgeDirections);
+        self::assertTrue(HullShape::collide($withMidpoint, [0, 0, 0], $cube, [9, 0, 0]));
+        self::assertFalse(HullShape::collide($withMidpoint, [0, 0, 0], $cube, [10, 0, 0]));
+    }
+
+    public static function testTheRotatedShapeMemoIsBoundedAndAnswersTheSameAfterClearing(): void
+    {
+        // More distinct shapes than the memo holds: it is cleared rather than grown, and a
+        // shape built again after that is the same shape.
+        $wedge = self::lowerWedge();
+        $before = HullShape::shapeFor($wedge, Rotation::HWL);
+        self::assertTrue($before === HullShape::shapeFor($wedge, Rotation::HWL), 'a repeated request is memoised');
+        for ($stretch = 1; $stretch <= 1025; $stretch++) {
+            HullShape::shapeFor([[0, 0, 0], [$stretch, 0, 0], [0, 1, 0], [0, 0, 1]], Rotation::LWH);
+        }
+        $after = HullShape::shapeFor($wedge, Rotation::HWL);
+        self::assertSame($before->volume, $after->volume);
+        self::assertSame($before->vertices, $after->vertices);
+        self::assertSame($before->faceAxes, $after->faceAxes);
+        self::assertSame($before->edgeDirections, $after->edgeDirections);
+    }
+
     public static function testTheCrushBoundaryIsInclusive(): void
     {
         self::assertFalse(Compression::exceeds(['100', '1'], 100), 'the limit itself is admissible');

@@ -1,6 +1,6 @@
 {
     "name": "packvium/packvium",
-    "description": "Deterministic, extensible 3D cartonization and container packing library with exact metric and imperial units.",
+    "description": "Deterministic 3D bin-packing and cartonization engine for pallets, containers, trucks and shipping cartons. Exact integer geometry, reproducible results.",
     "type": "library",
     "suggest": {
         "packvium/native-bridge": "Routes solves through the Rust core over FFI when a shared library is available, with identical results."
@@ -14,13 +14,19 @@
     ],
     "keywords": [
         "3d-bin-packing",
+        "bin-packing",
+        "3d-packing",
         "cartonization",
         "container-loading",
-        "packing",
-        "logistics"
+        "pallet-packing",
+        "truck-loading",
+        "packing-algorithm",
+        "logistics",
+        "deterministic"
     ],
     "homepage": "https://packvium.com",
     "support": {
+        "docs": "https://packvium.com/docs",
         "issues": "https://github.com/toxakara/packvium-php/issues",
         "source": "https://github.com/toxakara/packvium-php",
         "security": "https://github.com/toxakara/packvium-php/blob/main/SECURITY.md"

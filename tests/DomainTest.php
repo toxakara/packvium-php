@@ -145,6 +145,15 @@ final class DomainTest extends TestCase
         self::assertSame(1, Container::create('c', Dimensions::mm(1, 1, 1), maxItems: 1)->maxItems);
     }
 
+    public static function testTheBaseAreaKeysOrderTheLargestFootprintFirst(): void
+    {
+        $wide = Dimensions::mm(30, 20, 1);
+        $narrow = Dimensions::mm(10, 10, 50);
+        self::assertSame(30.0 * 20 * 16_000 * 16_000, $wide->baseAreaScore());
+        self::assertSame([-$wide->baseAreaTicks()], $wide->descendingBaseAreaKey());
+        self::assertTrue($wide->descendingBaseAreaKey() < $narrow->descendingBaseAreaKey());
+    }
+
     public static function testOuterDimensionsCannotBeSmallerThanInner(): void
     {
         self::assertThrows(InvalidArgumentException::class, static fn() => Container::create(

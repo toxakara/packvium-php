@@ -286,7 +286,7 @@ final class PlanRevisionTest extends TestCase
             'a placement does not carry ["item_id"]' => array_replace($lock, ['placement' => array_replace($placement, ['item_id' => 'x'])]),
             'placement.container_instance counts from 1' => array_replace($lock, ['placement' => array_replace($placement, ['container_instance' => '1'])]),
             'placement.position is a point object' => array_replace($lock, ['placement' => array_replace($placement, ['position' => [0, 0, 0]])]),
-            'placement.position does not carry ["w"]' => array_replace($lock, ['placement' => array_replace($placement, ['position' => ['w' => '5']])]),
+            'placement.position cannot carry ["w"]' => array_replace($lock, ['placement' => array_replace($placement, ['position' => ['w' => '5']])]),
             'placement.position.x is a measure' => array_replace($lock, ['placement' => array_replace($placement, ['position' => ['x' => true]])]),
             'placement.position.z is a measure' => array_replace($lock, ['placement' => array_replace($placement, ['position' => ['z' => null]])]),
             'placement.position.y is a measure' => array_replace($lock, ['placement' => array_replace($placement, ['position' => ['y' => ['1']]])]),

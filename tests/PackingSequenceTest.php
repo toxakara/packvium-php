@@ -354,6 +354,14 @@ final class PackingSequenceTest extends TestCase
         self::assertSame([], $reachability[0]->blockedByNeighbors);
     }
 
+    public static function testReachabilityNeedsOneStopEntryPerPlacement(): void
+    {
+        $container = Dimensions::mm(20, 10, 10);
+        $boxes = [self::box(0, 0, 0, 10, 10, 10), self::box(10, 0, 0, 10, 10, 10)];
+        self::assertThrows(\InvalidArgumentException::class,
+            static fn() => UnloadingDependencyGraph::placementReachability($boxes, $container, [0]));
+    }
+
     public static function testReachabilityIsReportedForEveryPlacementInInputOrder(): void
     {
         $container = Dimensions::mm(30, 10, 10);
@@ -950,6 +958,16 @@ final class PackingSequenceTest extends TestCase
         self::assertThrows(SequenceReplayError::class, static function () use ($placements, $container) {
             LoadingDependencyGraph::safeLoadingOrderForPlacements($placements, $container);
         });
+    }
+
+    public static function testComposedSafeLoadingApiReturnsTheOrderEveryRuleAdmits(): void
+    {
+        $bottom = Item::create('bottom', Dimensions::mm(10, 10, 5), weight: '1kg');
+        $top = Item::create('top', Dimensions::mm(10, 10, 5), weight: '1kg');
+        // Listed top first: the order must still load the supporting item before it.
+        $placements = [self::stackedPlacement($top, 0, 0, 5), self::stackedPlacement($bottom, 0, 0, 0)];
+        $container = Container::create('c', Dimensions::mm(10, 10, 20));
+        self::assertSame([1, 0], LoadingDependencyGraph::safeLoadingOrderForPlacements($placements, $container));
     }
 
     public static function testAMalformedBusinessRuleOrderIsRejectedBeforeAnyRuleCheck(): void

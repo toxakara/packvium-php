@@ -201,6 +201,12 @@ final class ObjectiveBoundsTest extends TestCase
                      'payload' => null, 'max_items' => null, 'quantity' => 1, 'cost_minor' => 0];
         self::assertSame(0, ObjectiveBounds::fromNormalised([$item], [$noFloor])[4]);
         self::assertSame(0, ObjectiveBounds::fromNormalised([$item], [$noHeight])[4]);
+
+        // A container so tall that the placed volume, stood on its widest floor, reaches
+        // less than one part per million of it: the height bound has nothing to claim.
+        $tall = ['usable' => '1000000000', 'inner' => '1000000000', 'base_area' => 100, 'height' => 10_000_000,
+                 'payload' => null, 'max_items' => null, 'quantity' => 1, 'cost_minor' => 0];
+        self::assertSame(0, ObjectiveBounds::fromNormalised([$item], [$tall])[4]);
     }
 
     /**

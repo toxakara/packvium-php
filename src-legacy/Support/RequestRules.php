@@ -21,6 +21,8 @@ use stdClass;
 final class RequestRules
 {
     public const SOLVER_PROFILES = ['fast', 'balanced', 'quality', 'exact_small'];
+    public const OBJECTIVES = ['default', 'lowest_cost', 'shipping_cost', 'lowest_landed_cost', 'open_dimension_height', 'maximum_value'];
+    public const ACCESS_DIRECTIONS = ['+x', '-x', '+y', '-y', '+z', '-z'];
 
     private const CONFIGURATION_INTEGERS = [
         'time_limit_ms' => 1, 'alternatives' => 1, 'max_containers' => 1, 'exact_item_limit' => 1,
@@ -28,6 +30,14 @@ final class RequestRules
         'container_plan_beam_width' => 1, 'container_plan_node_limit' => 1, 'dimensional_weight_divisor' => 1,
     ];
     private const EFFORT_LIMITS = ['max_candidates_evaluated', 'max_placement_attempts', 'max_search_nodes', 'max_restarts'];
+    /** Every key the request schema's `configuration` declares; it sets `additionalProperties: false`. */
+    private const CONFIGURATION_FIELDS = [
+        'alternatives', 'clearance', 'container_plan_beam_width', 'container_plan_node_limit',
+        'dimensional_weight_divisor', 'dimensional_weight_length_unit', 'dimensional_weight_weight_unit',
+        'effort_budget', 'exact_item_limit', 'max_candidate_points', 'max_candidates_per_item', 'max_containers',
+        'minimum_support_ratio', 'multi_start_orders', 'objective', 'require_placement_coordinates', 'seed',
+        'solver_profile', 'solvers', 'time_limit_ms',
+    ];
     private const SIDES = ['length', 'width', 'height'];
     private const WEIGHT_UNIT = 'g';
 
@@ -86,10 +96,16 @@ final class RequestRules
         }
         $where = '/configuration';
         $configuration = self::objectAt($raw, $where);
+        self::knownFields($configuration, $where, self::CONFIGURATION_FIELDS);
         $profile = JsonValue::get($configuration, 'solver_profile');
         if ($profile !== null && !\in_array($profile, self::SOLVER_PROFILES, true)) {
             throw self::refuse('not_allowed', "{$where}/solver_profile",
                 'must be one of ' . CanonicalJson::spelling(self::SOLVER_PROFILES));
+        }
+        $objective = JsonValue::get($configuration, 'objective');
+        if ($objective !== null && !\in_array($objective, self::OBJECTIVES, true)) {
+            throw self::refuse('not_allowed', "{$where}/objective",
+                'must be one of ' . CanonicalJson::spelling(self::OBJECTIVES));
         }
         foreach (self::CONFIGURATION_INTEGERS as $name => $minimum) {
             self::optionalInteger($configuration, $name, $where, $minimum);
@@ -99,6 +115,7 @@ final class RequestRules
         $effort = JsonValue::get($configuration, 'effort_budget');
         if ($effort !== null) {
             $budget = self::objectAt($effort, "{$where}/effort_budget");
+            self::knownFields($budget, "{$where}/effort_budget", self::EFFORT_LIMITS);
             foreach (self::EFFORT_LIMITS as $name) {
                 self::optionalInteger($budget, $name, "{$where}/effort_budget", 1);
             }
@@ -140,6 +157,10 @@ final class RequestRules
         self::optionalInteger($container, 'max_items', $where, 1);
         self::optionalInteger($container, 'cost_minor', $where, 0);
         self::optionalRatio($container, 'void_fill_reserve_ratio', $where, 1);
+        $accessDirections = JsonValue::get($container, 'access_directions');
+        if ($accessDirections !== null) {
+            self::accessDirections($accessDirections, "{$where}/access_directions");
+        }
         $tagLimits = JsonValue::get($container, 'tag_limits');
         if ($tagLimits !== null) {
             self::tagLimits($tagLimits, "{$where}/tag_limits");
@@ -151,6 +172,18 @@ final class RequestRules
         $obstacles = JsonValue::get($container, 'obstacles');
         if ($obstacles !== null) {
             self::obstacles($obstacles, "{$where}/obstacles", $unit);
+        }
+    }
+
+    /** @param mixed $raw */
+    private static function accessDirections($raw, string $where): void
+    {
+        $list = self::listAt($raw, $where);
+        foreach ($list as $index => $direction) {
+            if (!\in_array($direction, self::ACCESS_DIRECTIONS, true)) {
+                throw self::refuse('not_allowed', "{$where}/{$index}",
+                    'must be one of ' . CanonicalJson::spelling(self::ACCESS_DIRECTIONS));
+            }
         }
     }
 
@@ -303,6 +336,21 @@ final class RequestRules
     private static function isMeasureObject($value): bool
     {
         return $value instanceof stdClass || (\is_array($value) && !JsonValue::isList($value));
+    }
+
+    /**
+     * The schema closes this object: a key it does not name is refused, never ignored. The
+     * first unknown key in code-point order is named, the order every engine can share.
+     *
+     * @param stdClass|array<array-key,mixed> $object
+     * @param list<string> $known
+     */
+    private static function knownFields($object, string $where, array $known): void
+    {
+        $unknown = JsonValue::namesOutside($object, $known);
+        if ($unknown !== []) {
+            throw self::refuse('not_allowed', self::pointer($where, $unknown[0]), 'is not a known field');
+        }
     }
 
     /**

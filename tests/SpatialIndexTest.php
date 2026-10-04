@@ -48,6 +48,79 @@ final class SpatialIndexTest extends TestCase
         return [$x1, $y1, $z1, $x2, $y2, $z2];
     }
 
+    public static function testRepeatedRangesAreCachedAndDetachedOnMutation(): void
+    {
+        $index = new SpatialIndex(800, 800, 800);
+        $index->add(0, [0, 0, 0, 150, 150, 150]);
+        $query = [0, 0, 0, 160, 160, 160];
+        self::assertSame([0], $index->query(...$query));
+        $cache = new \ReflectionProperty(SpatialIndex::class, 'queryCache');
+        self::assertSame(1, count($cache->getValue($index)));
+        $fork = $index->copy();
+        $returned = $index->query(...$query);
+        $returned[] = 999;
+        $index->add(1, [100, 100, 100, 180, 180, 180]);
+        self::assertSame([0, 1], $index->query(...$query));
+        self::assertSame([0], $fork->query(...$query));
+        $fork->add(2, [100, 100, 100, 180, 180, 180]);
+        self::assertSame([0, 2], $fork->query(...$query));
+        self::assertSame([0, 1], $index->query(...$query));
+    }
+
+    public static function testQueryCacheHasABoundedRetention(): void
+    {
+        $index = new SpatialIndex(800, 800, 800);
+        $first = [0, 0, 0, 150, 150, 150];
+        $index->add(0, $first);
+        $queries = [];
+        for ($i = 0; $i < 1100; $i++) {
+            $query = [$i * 100, 0, 0, $i * 100 + 150, 150, 150];
+            $queries[] = $query;
+            $index->query(...$query);
+        }
+        $cache = new \ReflectionProperty(SpatialIndex::class, 'queryCache');
+        self::assertTrue(count($cache->getValue($index)) <= 64);
+        $fork = $index->copy();
+        $inserted = [100, 100, 100, 180, 180, 180];
+        $forkInserted = [700, 100, 100, 780, 180, 180];
+        $index->add(1, $inserted);
+        $fork->add(1, $forkInserted);
+        $fresh = SpatialIndex::build([$first, $inserted], 800, 800, 800);
+        $freshFork = SpatialIndex::build([$first, $forkInserted], 800, 800, 800);
+        foreach ([...$queries, $inserted, $forkInserted] as $query) {
+            self::assertSame($fresh->query(...$query), $index->query(...$query));
+            self::assertSame($freshFork->query(...$query), $fork->query(...$query));
+        }
+        self::assertTrue(count($cache->getValue($index)) <= 64);
+        self::assertTrue(count($cache->getValue($fork)) <= 64);
+    }
+
+    public static function testCachedQueriesMatchFreshIndexesAfterDivergentForks(): void
+    {
+        for ($seed = 0; $seed < 5; $seed++) {
+            $rng = new DeterministicRandom($seed);
+            $index = new SpatialIndex(800, 800, 800);
+            $bounds = [];
+            $queries = [];
+            for ($q = 0; $q < 20; $q++) { $queries[] = self::randomBound($rng, 800); }
+            for ($step = 0; $step < 20; $step++) {
+                foreach ($queries as $query) { $index->query(...$query); }
+                $fork = $index->copy();
+                $originalBound = self::randomBound($rng, 800);
+                $forkBound = self::randomBound($rng, 800);
+                $fork->add($step, $forkBound);
+                $freshFork = SpatialIndex::build([...$bounds, $forkBound], 800, 800, 800);
+                $bounds[] = $originalBound;
+                $index->add($step, $originalBound);
+                $fresh = SpatialIndex::build($bounds, 800, 800, 800);
+                foreach ($queries as $query) {
+                    self::assertSame($fresh->query(...$query), $index->query(...$query));
+                    self::assertSame($freshFork->query(...$query), $fork->query(...$query));
+                }
+            }
+        }
+    }
+
     public static function testAnEmptyIndexFindsNothing(): void
     {
         $index = new SpatialIndex(1000, 1000, 1000);

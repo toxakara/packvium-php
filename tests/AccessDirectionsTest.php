@@ -81,6 +81,10 @@ final class AccessDirectionsTest extends TestCase
 
     // ------------------------------------------------ the same rules through a request
 
+    /** Counted work, not a clock, decides where the search stops: under the default wall-clock
+     * limit a loaded host truncated one of two otherwise identical solves, and the
+     * comparisons below reported the host rather than the engine. The time limit is only
+     * a fuse, far above what one cube needs. */
     private static function request(?array $doors): array
     {
         $container = ['id' => 'van',
@@ -89,6 +93,8 @@ final class AccessDirectionsTest extends TestCase
             $container['access_directions'] = $doors;
         }
         return ['units' => ['length' => 'mm'],
+                'configuration' => ['effort_budget' => ['max_search_nodes' => 20000],
+                                    'time_limit_ms' => 60000],
                 'items' => [['id' => 'cube', 'quantity' => 1,
                              'dimensions' => ['length' => '100', 'width' => '100', 'height' => '100']]],
                 'containers' => [$container]];
