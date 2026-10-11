@@ -4,7 +4,8 @@ declare(strict_types=1);
 namespace Packvium\Result;
 
 use Packvium\Constraint\{AxleLoad, LoadCalculator, VolumeReserve};
-use Packvium\Domain\{PackedContainer, UnpackedItem};
+use Packvium\Domain\{Dimensions, PackedContainer, Point, UnpackedItem};
+use Packvium\Unit\Length;
 
 final class PackingResult
 {
@@ -158,6 +159,15 @@ final class PackingResult
         string $weightUnit = 'g',
         bool $includeAlternatives = true
     ): array {
+        // Equal quantities share one array: placements repeat a type's dimensions, a lattice
+        // coordinate and a zero top load, and a shared array serializes to the same bytes.
+        $shared = ['length' => [], 'weight' => [], 'dimensions' => []];
+        return $this->serialized($lengthUnit, $weightUnit, $includeAlternatives, $shared);
+    }
+
+    /** @param array{length:array<int,array>,weight:array<int,array>,dimensions:array<int,array<int,array<int,array>>>} $shared */
+    private function serialized(string $lengthUnit, string $weightUnit, bool $includeAlternatives, array &$shared): array
+    {
         $containers = [];
         foreach ($this->containers as $container) {
             $placements = [];
@@ -165,11 +175,11 @@ final class PackingResult
                 $placements[] = [
                     'item_id' => $placement->instance->id(),
                     'item_type' => $placement->instance->item->id,
-                    'position' => $placement->position->toArray($lengthUnit),
-                    'dimensions' => $placement->dimensions->toArray($lengthUnit),
+                    'position' => self::point($placement->position, $lengthUnit, $shared),
+                    'dimensions' => self::dimensions($placement->dimensions, $lengthUnit, $shared),
                     'orientation' => $placement->rotation,
                     'support_ratio' => sprintf('%.6f', $placement->supportRatio),
-                    'top_load' => $placement->topLoad->toArray($weightUnit),
+                    'top_load' => $shared['weight'][$placement->topLoad->ticks] = $shared['weight'][$placement->topLoad->ticks] ?? $placement->topLoad->toArray($weightUnit),
                 ];
                 // Absent unless true, so a request without fixed placements keeps its bytes.
                 if ($placement->fixed) {
@@ -190,6 +200,20 @@ final class PackingResult
                 'void_fill_reserve_ticks3' => VolumeReserve::reserved($container->container),
                 'placements' => $placements,
             ];
+            // Present exactly when the container conforms to its contents, so a
+            // rigid container's bytes are unchanged.
+            $achieved = $container->achievedDimensions();
+            if ($achieved !== null) {
+                $serialized['achieved_dimensions'] = $achieved->toArray($lengthUnit);
+            }
+            // A packed made-to-measure container is the fabricated box, so its own price and
+            // tare are the box's; absent for every other container.
+            if ($container->container->madeToMeasure !== null) {
+                $serialized['made_to_measure'] = [
+                    'cost_minor' => $container->container->costMinor,
+                    'tare_weight' => $container->container->tareWeight->toArray($weightUnit),
+                ];
+            }
             if ($container->latticeSummary !== null) {
                 // Compact form: when `configuration.require_placement_coordinates`
                 // was false and GridSolver's lattice fast path applied, `placements` stays
@@ -238,6 +262,13 @@ final class PackingResult
             ];
         }
 
+        $alternatives = [];
+        if ($includeAlternatives) {
+            foreach ($this->alternatives as $alternative) {
+                $alternatives[] = $alternative->serialized($lengthUnit, $weightUnit, false, $shared);
+            }
+        }
+
         return [
             'status' => $this->status,
             'feasibility' => $this->feasibility->toArray(),
@@ -266,11 +297,23 @@ final class PackingResult
             'unpacked_items' => $unpacked,
             'catalog_versions_used' => [],
             'warnings' => $this->warnings,
-            'alternatives' => $includeAlternatives
-                ? array_map(function (self $alternative) use ($lengthUnit, $weightUnit) {
-                    return $alternative->toArray($lengthUnit, $weightUnit, false);
-                }, $this->alternatives)
-                : [],
+            'alternatives' => $alternatives,
         ];
+    }
+
+    /** `Point::toArray`, from shared length arrays. */
+    private static function point(Point $point, string $unit, array &$shared): array
+    {
+        return [
+            'x' => $shared['length'][$point->x] = $shared['length'][$point->x] ?? (new Length($point->x))->toArray($unit),
+            'y' => $shared['length'][$point->y] = $shared['length'][$point->y] ?? (new Length($point->y))->toArray($unit),
+            'z' => $shared['length'][$point->z] = $shared['length'][$point->z] ?? (new Length($point->z))->toArray($unit),
+        ];
+    }
+
+    /** `Dimensions::toArray`, one shared array per distinct size. */
+    private static function dimensions(Dimensions $dimensions, string $unit, array &$shared): array
+    {
+        return $shared['dimensions'][$dimensions->length->ticks][$dimensions->width->ticks][$dimensions->height->ticks] = $shared['dimensions'][$dimensions->length->ticks][$dimensions->width->ticks][$dimensions->height->ticks] ?? $dimensions->toArray($unit);
     }
 }

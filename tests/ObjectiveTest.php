@@ -854,4 +854,94 @@ final class ObjectiveTest extends TestCase
         self::assertThrows(\InvalidArgumentException::class, static fn() =>
             Item::create('a', Dimensions::mm(10, 10, 10), value: -1));
     }
+
+    // --------------------------------------------------------- maximum volume
+
+    /** @param list<Item> $items @return list<int> */
+    private static function volumeScoreOfLeavingBehind(array $items): array
+    {
+        $unpacked = [];
+        foreach ($items as $item) {
+            foreach ($item->instances() as $instance) {
+                $unpacked[] = new UnpackedItem($instance, 'no_feasible_placement');
+            }
+        }
+        return (new \Packvium\Objective\MaximumVolumeSolutionScorer())
+            ->score(new RawSolution('test', [], $unpacked, new SearchStats()))->components;
+    }
+
+    /** @return list<string> */
+    private static function keptItemTypes(\Packvium\Result\PackingResult $result): array
+    {
+        return array_values(array_unique(array_map(
+            static fn($p) => $p->instance->item->id,
+            array_merge([], ...array_map(static fn($c) => $c->placements, $result->containers)),
+        )));
+    }
+
+    /** @return list<Item> */
+    private static function fiveSmallAndOneLarge(): array
+    {
+        return [Support::item('small', 40, 40, 40, ['quantity' => 5]), Support::item('large', 100, 100, 90)];
+    }
+
+    public static function testMaximumVolumeRanksTheVolumeLeftBehindAheadOfThePieceCount(): void
+    {
+        self::assertSame([1_000_000, 1, 0, 0, 0], self::volumeScoreOfLeavingBehind([Support::item('large', 100, 100, 90)]));
+        self::assertSame([1_000_000, 5, 0, 0, 0], self::volumeScoreOfLeavingBehind([Support::item('small', 40, 40, 40, ['quantity' => 5])]));
+        self::assertSame([0, 0, 0, 0, 0], self::volumeScoreOfLeavingBehind([]));
+    }
+
+    public static function testMaximumVolumeRoundsTheShareUpSoAnIncompleteAnswerNeverScoresZero(): void
+    {
+        $result = Support::pack(
+            [Support::item('freight', 12000, 2300, 2400), Support::item('speck', 1, 1, 1)],
+            [Support::box('c', 12000, 2300, 2400, ['quantity' => 1])],
+            new PackingConfig(objective: 'maximum_volume'),
+        );
+        self::assertSame(['speck'], array_map(static fn($u) => $u->instance->item->id, $result->unpacked));
+        self::assertSame([1, 1], array_slice($result->score, 0, 2));
+    }
+
+    public static function testMaximumVolumeCountsACompactLatticesItemsAsRequested(): void
+    {
+        // The compact path carries no per-item placements; the packed volume must still
+        // come from the instances the lattice consumed.
+        $result = Support::pack(
+            [Support::item('cube', 100, 100, 100, ['quantity' => 3])],
+            [Support::box('tower', 100, 100, 200, ['quantity' => 1])],
+            new PackingConfig(profile: SolverProfile::Fast, multiStartOrders: 1, objective: 'maximum_volume', requirePlacementCoordinates: false),
+        );
+        self::assertNotNull($result->containers[0]->latticeSummary);
+        self::assertSame([333_334, 1], array_slice($result->score, 0, 2));
+    }
+
+    public static function testMaximumVolumeKeepsTheOneLargeItemInEveryProfile(): void
+    {
+        $box = [Support::box('c', 100, 100, 100, ['quantity' => 1])];
+        foreach ([
+            new PackingConfig(profile: SolverProfile::Fast, multiStartOrders: 1, objective: 'maximum_volume'),
+            new PackingConfig(objective: 'maximum_volume'),
+            new PackingConfig(profile: SolverProfile::Quality, multiStartOrders: 24, maxCandidatesPerItem: 16, objective: 'maximum_volume', containerPlanBeamWidth: 16, containerPlanNodeLimit: 100_000),
+        ] as $config) {
+            $result = Support::pack(self::fiveSmallAndOneLarge(), $box, $config);
+            self::assertSame(['large'], self::keptItemTypes($result));
+            self::assertSame([262_296, 5], array_slice($result->score, 0, 2));
+        }
+    }
+
+    public static function testDefaultKeepsMorePiecesOnTheSceneMaximumVolumeFills(): void
+    {
+        $result = Support::pack(self::fiveSmallAndOneLarge(), [Support::box('c', 100, 100, 100, ['quantity' => 1])], PackingConfig::quality());
+        self::assertSame(['small'], self::keptItemTypes($result));
+    }
+
+    public static function testMaximumVolumeOpensTheContainerThatLoadsTheMostVolume(): void
+    {
+        $containers = [Support::box('snug', 90, 90, 90, ['quantity' => 1]), Support::box('tall', 100, 100, 95, ['quantity' => 1])];
+        $byVolume = Support::pack(self::fiveSmallAndOneLarge(), $containers, new PackingConfig(maxContainers: 1, objective: 'maximum_volume'));
+        $byCount = Support::pack(self::fiveSmallAndOneLarge(), $containers, new PackingConfig(maxContainers: 1));
+        self::assertSame(['tall'], array_map(static fn($c) => $c->container->id, $byVolume->containers));
+        self::assertSame(['snug'], array_map(static fn($c) => $c->container->id, $byCount->containers));
+    }
 }

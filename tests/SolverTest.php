@@ -210,12 +210,13 @@ final class SolverTest extends TestCase
         ];
     }
 
-    public static function testThePortfolioDropsFromSixteenStartsToNineOnAThreeTypeOrder(): void
+    public static function testThePortfolioDropsFromSixteenStartsToNineAndAddsOneBlockStart(): void
     {
         // The acceptance criterion, made executable rather than only claimed in prose:
         // this scene naively runs 2 solvers (extreme_points, layer) x 8 orders = 16
         // starts; declaring LayerSolver order-insensitive collapses its eight down to
-        // one, leaving 8 + 1 = 9.
+        // one, leaving 8 + 1 = 9. The block start `balanced` adds where the lattice can
+        // express the request is the tenth, and the last.
         $items=self::threeTypeOrderScenario();
         $container=Container::create('box',Dimensions::mm(100,100,100));
         $config=PackingConfig::balanced();
@@ -223,14 +224,15 @@ final class SolverTest extends TestCase
 
         $run=(new SolverOrchestrator())->solvePortfolio($items,[$container],$config,self::generous());
 
-        self::assertCount(9,$run->starts);
-        $bySolver=['extreme_points'=>0,'layer'=>0];
+        self::assertCount(10,$run->starts);
+        $bySolver=['extreme_points'=>0,'layer'=>0,'homogeneous_blocks'=>0];
         foreach($run->starts as $start){
             [$solverName]=explode(':',$start->id,2);
             self::assertTrue(array_key_exists($solverName,$bySolver),"unexpected solver in start id: {$start->id}");
             $bySolver[$solverName]++;
         }
-        self::assertSame(['extreme_points'=>8,'layer'=>1],$bySolver);
+        self::assertSame(['extreme_points'=>8,'layer'=>1,'homogeneous_blocks'=>1],$bySolver);
+        self::assertTrue(str_starts_with($run->starts[9]->id,'homogeneous_blocks:'));
     }
 
     public static function testALayerSolverProducesTheIdenticalPackingRegardlessOfTheOrderItIsHanded(): void
@@ -402,6 +404,140 @@ final class SolverTest extends TestCase
         self::assertCount(2,$solution->state->placements);
         self::assertCount(0,$solution->unpacked);
         self::assertPhysicallySound($solution->state);
+    }
+
+    // ------------------------------------------- the block start of `fast` and `balanced`
+
+    /** @return list<ItemInstance> */
+    private static function fourSimilarCartons(): array
+    {
+        return [...self::instances('b1',350,250,140),...self::instances('b2',350,250,140),...self::instances('b3',350,230,130),...self::instances('b4',350,250,140)];
+    }
+
+    /** @return array{0:list<string>,1:\Packvium\Algorithm\PortfolioRun} */
+    private static function startSolvers(array $items,array $containers,PackingConfig $config): array
+    {
+        $run=(new SolverOrchestrator())->solvePortfolio($items,$containers,$config,self::generous());
+        return [array_map(static fn($start):string=>explode(':',$start->id,2)[0],$run->starts),$run];
+    }
+
+    private static function blockStart(array $items,PackingConfig $config,array $containers): ?HomogeneousBlockSolver
+    {
+        return (new ReflectionMethod(SolverOrchestrator::class,'blockStart'))->invoke(new SolverOrchestrator(),$items,$config,$containers);
+    }
+
+    public static function testFastAndBalancedEndWithABlockStartWhereTheLatticeCanExpressTheRequest(): void
+    {
+        $containers=[Container::create('box',Dimensions::mm(600,400,250))];
+        foreach([PackingConfig::fast(),PackingConfig::balanced()] as $config){
+            [$solvers]=self::startSolvers(self::fourSimilarCartons(),$containers,$config);
+            self::assertSame('homogeneous_blocks',$solvers[count($solvers)-1]);
+            self::assertCount(1,array_keys($solvers,'homogeneous_blocks',true));
+        }
+    }
+
+    public static function testTheBlockStartWinsOnlyByAStrictlyBetterScore(): void
+    {
+        // The per-item search needs a second box for these four cartons; the lattice does not.
+        $containers=[Container::create('box',Dimensions::mm(600,400,250))];
+        [,$improved]=self::startSolvers(self::fourSimilarCartons(),$containers,PackingConfig::balanced());
+        self::assertSame(1,min(array_map(static fn($solution):int=>count($solution->containers),$improved->solutions)));
+        $inOneBox=array_values(array_filter($improved->solutions,static fn($solution):bool=>count($solution->containers)===1));
+        self::assertSame(['homogeneous_blocks:volume'],array_map(static fn($solution):string=>$solution->solverName,$inOneBox));
+
+        // Two cubes that any start stacks into one box: the lattice ties, so its answer is dropped.
+        $cubes=[...self::instances('light',100,100,100,['weight'=>1]),...self::instances('heavy',100,100,100,['weight'=>3])];
+        $tower=[Container::create('box',Dimensions::mm(100,100,200))];
+        [$solvers,$tied]=self::startSolvers($cubes,$tower,PackingConfig::fast());
+        self::assertSame('homogeneous_blocks',$solvers[count($solvers)-1]);
+        foreach($tied->solutions as $solution)self::assertFalse(str_starts_with($solution->solverName,'homogeneous_blocks'));
+    }
+
+    public static function testTheBlockStartStaysOutWhereTheLatticeCannotHonourTheRequest(): void
+    {
+        $box=[Container::create('box',Dimensions::mm(600,400,250))];
+        $cartons=self::fourSimilarCartons();
+        $oneType=self::instances('only',100,100,100,['quantity'=>4]);
+        $prioritised=[...self::instances('first',350,250,140,['priority'=>5]),...self::instances('rest',350,230,130,['quantity'=>3])];
+        $floorOnly=[...self::instances('floor',350,250,140,['mustBeOnFloor'=>true]),...self::instances('free',350,230,130)];
+        $starts=new ReflectionMethod(SolverOrchestrator::class,'starts');
+        foreach([
+            [$cartons,PackingConfig::quality()],
+            [$cartons,new PackingConfig(solvers:['extreme_points'])],
+            [$oneType,PackingConfig::balanced()],
+            [$prioritised,PackingConfig::balanced()],
+            [$floorOnly,PackingConfig::balanced()],
+        ] as [$items,$config]){
+            $added=array_filter(
+                $starts->invoke(new SolverOrchestrator(),$items,$config,$box),
+                static fn(array $start):bool=>$start[0] instanceof HomogeneousBlockSolver&&$start[0]->nodeLimit!==null,
+            );
+            self::assertSame([],$added);
+        }
+    }
+
+    public static function testACountedLimitStopsTheBlockSolverOnTheNodeThePerNodeWalkStoppedAt(): void
+    {
+        // The solver counts a whole lattice group in one step and ranks only groups that can
+        // lead. Each row is [limit, placements, stopped]: the limit from which that outcome
+        // holds, pinned from the per-node walk over every limit from 1 to 7000, so a stop
+        // must land on the same node, in a node limit and in an effort budget alike.
+        $items=[...self::instances('a',108,76,30,['quantity'=>40]),...self::instances('b',110,43,25,['quantity'=>33]),
+            ...self::instances('c',92,81,55,['quantity'=>39]),...self::instances('d',61,47,33,['quantity'=>12])];
+        $box=Container::create('box',Dimensions::mm(587,233,220));
+        $steps=[
+            'count'=>[[1,0,true],[727,40,true],[1580,73,true],[2120,87,true],[2723,99,true],[3065,105,true],[3397,108,true],[3721,108,false]],
+            'volume'=>[[1,0,true],[727,36,true],[1578,54,true],[2809,86,true],[3642,94,true],[4508,101,true],[5271,105,true],[5829,106,true],[6350,107,true],[6837,107,false]],
+        ];
+        foreach($steps as $mode=>$rows){
+            $total=$rows[count($rows)-1][0];
+            foreach($rows as $row=>[$from,$placed,$stopped]){
+                foreach(array_unique([$from-1,$from,$from+1]) as $limit){
+                    if($limit<1)continue;
+                    [$expectedPlaced,$expectedStopped]=$limit<$from?[$rows[$row-1][1],$rows[$row-1][2]]:[$placed,$stopped];
+                    if($limit>$from&&isset($rows[$row+1])&&$limit>=$rows[$row+1][0])continue;
+                    $stats=new SearchStats();
+                    $solution=(new HomogeneousBlockSolver([],null,[$mode],$limit))->packOne($box,1,$items,PackingConfig::fast(),$stats,self::generous());
+                    self::assertSame(min($limit,$total),$stats->searchNodesExpanded,"{$mode} node limit {$limit}");
+                    self::assertSame($expectedPlaced,count($solution->state->placements),"{$mode} node limit {$limit}");
+                    self::assertSame($expectedStopped,$solution->timeLimitReached,"{$mode} node limit {$limit}");
+                    $effort=new SearchStats();
+                    $budget=self::generous()->withEffort(new EffortBudget(maxSearchNodes:$limit),$effort);
+                    $limited=(new HomogeneousBlockSolver([],null,[$mode],1_000_000))->packOne($box,1,$items,PackingConfig::fast(),$effort,$budget);
+                    self::assertSame(min($limit,$total),$effort->searchNodesExpanded,"{$mode} effort budget {$limit}");
+                    self::assertSame($expectedPlaced,count($limited->state->placements),"{$mode} effort budget {$limit}");
+                }
+            }
+        }
+    }
+
+    public static function testLatticeNodeCountsAndLargestBlocksMatchTheWalk(): void
+    {
+        // The closed-form node count and the early-stopping largest block, against the
+        // per-node walk they replace: every (X, Y, Z, capacity) up to 9, 9, 6 and 120.
+        $nodes=new ReflectionMethod(HomogeneousBlockSolver::class,'latticeNodes');
+        $largest=new ReflectionMethod(HomogeneousBlockSolver::class,'largestBlock');
+        for($x=1;$x<=9;$x++)for($y=1;$y<=9;$y++)for($z=1;$z<=6;$z++)for($capacity=1;$capacity<=120;$capacity++){
+            $walked=0;$best=[0,0,0,0];
+            for($nx=1;$nx<=min($x,$capacity);$nx++)for($ny=1;$ny<=min($y,intdiv($capacity,$nx));$ny++){
+                $walked++;
+                $nz=min($z,intdiv($capacity,$nx*$ny));
+                if($nx*$ny*$nz>$best[0])$best=[$nx*$ny*$nz,$nx,$ny,$nz];
+            }
+            self::assertSame($walked,$nodes->invoke(null,$x,$y,$capacity));
+            $expected=$capacity>=$x*$y*$z?[$x*$y*$z,$x,$y,$z]:$largest->invoke(null,$x,$y,$z,$capacity);
+            self::assertSame($best,$expected,"{$x} {$y} {$z} {$capacity}");
+        }
+    }
+
+    public static function testTheFastBlockStartEnumeratesOneModeAndBalancedBoth(): void
+    {
+        $box=[Container::create('box',Dimensions::mm(600,400,250))];
+        $cartons=self::fourSimilarCartons();
+        $fastByVolume=new PackingConfig(profile:SolverProfile::Fast,timeLimitMs:200,topK:1,multiStartOrders:1,objective:'maximum_volume');
+        self::assertSame(['count'],self::blockStart($cartons,PackingConfig::fast(),$box)->modes);
+        self::assertSame(['volume'],self::blockStart($cartons,$fastByVolume,$box)->modes);
+        self::assertSame(['count','volume'],self::blockStart($cartons,PackingConfig::balanced(),$box)->modes);
     }
 
     public static function testBeamPackerPrecomputedFutureMatchesStandardEvaluation(): void
@@ -976,6 +1112,29 @@ final class SolverTest extends TestCase
         }
     }
 
+    public static function testTheFreeSpaceOrderIsPinned(): void
+    {
+        // Both solvers that carve read spaces in this order, so a faster carve must keep it
+        // exactly: origin z, y, x, then largest first among spaces sharing an origin, then
+        // first seen, with the budget cut applied. The digest is of the order the
+        // per-object implementation produced on 90 two-box carves that reach the budget and
+        // share origins 7011 times.
+        $spaces = [self::space(0, 0, 0, 3000, 2000, 1500)];
+        $trace = '';
+        $stats = new SearchStats();
+        for ($k = 0; $k < 90; $k++) {
+            [$l, $w, $h] = [40 + ($k * 37) % 300, 30 + ($k * 53) % 250, 20 + ($k * 71) % 200];
+            [$x, $y, $z] = [($k * 131) % 2700, $k % 3 === 0 ? 0 : ($k * 277) % 1750, $k % 4 === 0 ? 0 : ($k * 419) % 1300];
+            $spaces = MaximalSpaceSolver::subtractAll($spaces, [self::solid($x, $y, $z, $l, $w, $h), self::solid($x, $y, $z, $l, $w, intdiv($h, 2))], $stats);
+            foreach ($spaces as $space) {
+                $trace .= "{$space->origin->x},{$space->origin->y},{$space->origin->z},{$space->dimensions->length->ticks},{$space->dimensions->width->ticks},{$space->dimensions->height->ticks};";
+            }
+            $trace .= '|';
+        }
+        self::assertSame('c31307d3e1c0344553ca30788d4fe779', md5($trace));
+        self::assertSame(50816, $stats->spacePartitions);
+    }
+
     public static function testAnAdversarialItemMixStillPlacesCompletelyWithinTheSpaceBudget(): void
     {
         // The same growth pattern, driven through the real solver: varied item sizes
@@ -1186,6 +1345,35 @@ final class SolverTest extends TestCase
         foreach ($solution->state->placements as $placement) {
             self::assertEquals($placement->instance->item->dimensions->rotated($placement->rotation), $placement->dimensions);
         }
+    }
+
+    public static function testTheLatticeKeepsAnItemThatRefusesItsOwnGroupOnTheFloor(): void
+    {
+        // Every lattice edge joins two items of one type, so a type whose list omits its
+        // own group caps the lattice at one layer; accepting it restores the column.
+        $box = Container::create('c', Dimensions::mm(100, 100, 100));
+        $refusing = self::instances('a', 40, 40, 40, ['quantity' => 8, 'stackingGroup' => 'A', 'acceptsStackingGroups' => ['B']]);
+        $solution = (new GridSolver())->packOne($box, 1, $refusing, PackingConfig::fast(), new SearchStats(), self::generous());
+        foreach ($solution->state->placements as $placement) {
+            self::assertSame(0, $placement->envelopeOrigin->z);
+        }
+        self::assertPhysicallySound($solution->state);
+        $accepting = self::instances('a', 40, 40, 40, ['quantity' => 8, 'stackingGroup' => 'A', 'acceptsStackingGroups' => ['A']]);
+        $stacked = (new GridSolver())->packOne($box, 1, $accepting, PackingConfig::fast(), new SearchStats(), self::generous());
+        self::assertTrue(max(array_map(static fn($p) => $p->envelopeOrigin->z, $stacked->state->placements)) > 0);
+        $other = self::instances('b', 40, 40, 40, ['stackingGroup' => 'B']);
+        self::assertFalse((new GridSolver())->supports([...self::instances('a', 40, 40, 40, ['stackingGroup' => 'A']), ...$other]));
+    }
+
+    public static function testBlockSearchDelegatesWhenAnItemDeclaresAStackingGroupList(): void
+    {
+        $box = Container::create('box', Dimensions::mm(100, 100, 200), quantity: 1);
+        $items = [...self::instances('a', 100, 100, 100, ['acceptsStackingGroups' => ['A']]),
+                  ...self::instances('b', 100, 100, 100, ['stackingGroup' => 'B'])];
+        $solution = (new HomogeneousBlockSolver())->packOne($box, 1, $items, PackingConfig::quality(), new SearchStats(), self::generous());
+        self::assertSame(1, count($solution->state->placements));
+        self::assertSame(1, count($solution->unpacked));
+        self::assertPhysicallySound($solution->state);
     }
 
     public static function testTheLatticeKeepsNonStackableItemsOnTheFloor(): void
@@ -1477,6 +1665,22 @@ final class SolverTest extends TestCase
         ));
     }
 
+    public static function testTheExactSolverRanksVolumeFirstWhenTheObjectiveDoes(): void
+    {
+        $box = Container::create('c', Dimensions::mm(10, 10, 10));
+        $items = [...self::instances('small', 3, 10, 10, ['quantity' => 2]), ...self::instances('large', 8, 10, 10)];
+
+        foreach (['default' => ['small', 'small'], 'maximum_volume' => ['large']] as $objective => $kept) {
+            $solution = (new ExactSmallSolver())->packOne(
+                $box, 1, $items, new PackingConfig(profile: SolverProfile::ExactSmall, objective: $objective),
+                new SearchStats(), self::generous(),
+            );
+            $ids = array_map(static fn(Placement $placement): string => $placement->instance->item->id, $solution->state->placements);
+            sort($ids);
+            self::assertSame($kept, $ids, $objective);
+        }
+    }
+
     public static function testIsBetterStateComparesPlacedPhysicalVolumeExactlyBeyondFloatPrecision(): void
     {
         $twoToThe53 = 9_007_199_254_740_992;
@@ -1544,5 +1748,63 @@ final class SolverTest extends TestCase
         $solution = (new ExactSmallSolver())
             ->packOne($box, 1, $items, PackingConfig::exactSmall(), new SearchStats(), self::generous());
         self::assertFalse($solution->exhaustive);
+    }
+
+    public static function testContainerStateIncrementalPlacementSignature(): void
+    {
+        $box = Container::create('c', Dimensions::mm(300, 300, 300));
+        $state = new ContainerState($box, 1);
+        self::assertSame('', $state->placementSignature());
+
+        $items = self::instances('item', 100, 100, 100, ['quantity' => 2]);
+        $p1 = new Placement(
+            $items[0],
+            new Point(0, 0, 0),
+            Rotation::LWH,
+            $items[0]->item->dimensions,
+            new Point(0, 0, 0),
+            $items[0]->item->dimensions,
+            1.0
+        );
+        $state->add($p1);
+        $expected1 = $items[0]->id() . '@0,0,0';
+        self::assertSame($expected1, $state->placementSignature());
+
+        $p2 = new Placement(
+            $items[1],
+            new Point(100 * 16000, 0, 0),
+            Rotation::LWH,
+            $items[1]->item->dimensions,
+            new Point(100 * 16000, 0, 0),
+            $items[1]->item->dimensions,
+            1.0
+        );
+        $state->add($p2);
+        $expected2 = $expected1 . '|' . $items[1]->id() . '@1600000,0,0';
+        self::assertSame($expected2, $state->placementSignature());
+
+        // Cloning preserves signature and branches independently
+        $clone = $state->copy();
+        self::assertSame($expected2, $clone->placementSignature());
+
+        // Reflection test for BeamPacker::signature
+        $sigMethod = new ReflectionMethod(BeamPacker::class, 'signature');
+        self::assertSame($expected2, $sigMethod->invoke(null, $state));
+    }
+
+    public static function testDirectPlacementsBuildSignatureOnlyWhenRequested(): void
+    {
+        $box = Container::create('c', Dimensions::mm(300, 100, 100));
+        $items = self::instances('item', 100, 100, 100, ['quantity' => 2]);
+        $state = new ContainerState($box, 1);
+        foreach ($items as $index => $item) {
+            $origin = new Point($index * 1600000, 0, 0);
+            $state->addDirect(new Placement(
+                $item, $origin, Rotation::LWH, $item->dimensions(), $origin, $item->dimensions()
+            ));
+        }
+        $expected = $items[0]->id() . '@0,0,0|' . $items[1]->id() . '@1600000,0,0';
+        self::assertSame($expected, $state->placementSignature());
+        self::assertSame($expected, $state->copy()->placementSignature());
     }
 }

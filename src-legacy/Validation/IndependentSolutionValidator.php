@@ -3,7 +3,7 @@ declare(strict_types=1);
 namespace Packvium\Validation;
 use Packvium\Constraint\{AxleLoad,CompatibilityConstraint,ConstraintContext,LoadCalculator,SupportConstraint,TagCountConstraint};
 use Packvium\Constraint\Internal\LoadSupportGraph;
-use Packvium\Domain\{AxisAlignedBox,Nesting,PackedContainer,PackingRequest,Placement,Point,UnpackedItem};
+use Packvium\Domain\{AxisAlignedBox,FlatBag,Nesting,PackedContainer,PackingRequest,Placement,Point,UnpackedItem};
 use Packvium\Sequence\{RouteSequenceError,UnloadingDependencyGraph};
 use Packvium\Unit\Length;
 /**
@@ -30,7 +30,8 @@ final class IndependentSolutionValidator
                 $item=$placement->instance->item;
                 if($item->tags!==[]||$item->incompatibleTags!==[])$compatibilitySensitive=true;
                 if($item->minimumSupportRatio>0||($item->groundContactRule!==null&&$item->groundContactRule!=='free'))$supportSensitive=true;
-                if(!$item->stackable)$stackSensitive=true;
+                // A stacking-group list refuses load on the same edges `stackable` does.
+                if(!$item->stackable||$item->acceptsStackingGroups!==[])$stackSensitive=true;
             }
             $stackGraph=$stackSensitive?new LoadSupportGraph(LoadCalculator::units($placements)):null;
             foreach(self::collisionPairs($placements) as [$left,$right])
@@ -88,6 +89,11 @@ final class IndependentSolutionValidator
                 );
                 if($axleFailure!==null)$issues[]=new ValidationIssue($axleFailure[0],$packed->id().': '.$axleFailure[1]);
             }
+            if($packed->container->isFlatBag()){
+                // The girth rule over the envelopes alone; the frame is checked above.
+                [$a,$b,$c]=FlatBag::extentOf($packed->placements);
+                if(!FlatBag::girthAdmits($packed->container->innerDimensions,$a,$b,$c))$issues[]=new ValidationIssue('bag_girth_exceeded',$packed->id());
+            }
             $onRoute=false;foreach($placements as $p)if($p->instance->item->stopIndex!==null){$onRoute=true;break;}
             if($onRoute){
                 $routeIssue=self::unloadingOrderViolation($packed);
@@ -115,10 +121,36 @@ final class IndependentSolutionValidator
         sort($unknown);
         foreach($unknown as $id)$issues[]=new ValidationIssue('unknown_item',$id);
         foreach(self::splitGroups($containers) as $detail)$issues[]=new ValidationIssue('group_split',$detail);
+        array_push($issues,...self::madeToMeasureIssues($request,$containers));
         array_push($issues,...self::fixedPlacementIssues($request,$containers));
         if($unpacked!==null)
             foreach(self::partialGroups($request,$containers) as $detail)$issues[]=new ValidationIssue('group_partial',$detail);
         return new ValidationReport($issues===[],$issues);
+    }
+
+    /**
+     * Every made-to-measure box is the one its placements call for. Containment in
+     * the box was checked above like any container's; this re-cuts it from the declared
+     * machine and the achieved extent, so a trial committed with a stale or mixed-up box is
+     * caught. O(p) per container.
+     *
+     * @param list<PackedContainer> $containers @return list<ValidationIssue>
+     */
+    private static function madeToMeasureIssues(PackingRequest $request,array $containers):array
+    {
+        $declared=[];foreach($request->containers as $container)$declared[$container->id]=$container;
+        $issues=[];
+        foreach($containers as $packed){
+            $machine=$declared[$packed->container->id]??null;
+            if($machine===null||$machine->madeToMeasure===null||$packed->container->madeToMeasure===null)continue;
+            $expected=$machine->fabricate(FlatBag::extentOf($packed->placements));
+            $box=$packed->container;
+            if($box->innerDimensions!=$expected->innerDimensions)$issues[]=new ValidationIssue('fabricated_dimensions_mismatch',$packed->id());
+            if($box->outerDimensions!=$expected->outerDimensions)$issues[]=new ValidationIssue('outer_dimensions_mismatch',$packed->id());
+            if($box->costMinor!==$expected->costMinor)$issues[]=new ValidationIssue('made_to_measure_cost_mismatch',$packed->id());
+            if($box->tareWeight->ticks!==$expected->tareWeight->ticks)$issues[]=new ValidationIssue('made_to_measure_tare_mismatch',$packed->id());
+        }
+        return $issues;
     }
 
     /**

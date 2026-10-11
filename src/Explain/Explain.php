@@ -58,6 +58,8 @@ final class Explain
             'was not placed because the exact search ended before proving a final answer',
         'container_inventory_exhausted' =>
             'requires another compatible container, but the declared inventory is exhausted',
+        'axle_overloaded' =>
+            'would overload an axle wherever it stood alone in any container that otherwise admits it',
     ];
 
     /**

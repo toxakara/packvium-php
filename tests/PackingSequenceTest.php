@@ -893,6 +893,26 @@ final class PackingSequenceTest extends TestCase
         }
     }
 
+    public static function testALoadingPrefixThatBreaksTheStackingGroupRuleIsCaught(): void
+    {
+        $base = Item::create('base', Dimensions::mm(10, 10, 5), acceptsStackingGroups: ['A']);
+        $rider = Item::create('rider', Dimensions::mm(10, 10, 5), stackingGroup: 'C');
+        $placements = [self::stackedPlacement($base, 0, 0, 0), self::stackedPlacement($rider, 0, 0, 5)];
+        $container = Container::create('c', Dimensions::mm(10, 10, 20));
+        foreach ([[0, 1], [1, 0]] as $order) {
+            try {
+                LoadingDependencyGraph::verifyLoadingPrefixBusinessRules($placements, $order, $container);
+                self::assertTrue(false, 'expected SequenceReplayError');
+            } catch (SequenceReplayError $error) {
+                self::assertSame(1, $error->step);
+                self::assertSame('stacking_group_incompatible: base', $error->reason);
+            }
+        }
+        $accepted = Item::create('rider', Dimensions::mm(10, 10, 5), stackingGroup: 'A');
+        LoadingDependencyGraph::verifyLoadingPrefixBusinessRules(
+            [self::stackedPlacement($base, 0, 0, 0), self::stackedPlacement($accepted, 0, 0, 5)], [0, 1], $container);
+    }
+
     public static function testALoadingPrefixThatViolatesAGroundContactRuleIsCaught(): void
     {
         // "single" requires resting on exactly one supporter; two half-width bases
@@ -1028,5 +1048,39 @@ final class PackingSequenceTest extends TestCase
             ],
             $error->toArray(),
         );
+    }
+
+    public static function testSafeRemovalOrderTieBreaksByLowestIndexAmongUnblocked(): void
+    {
+        $container = Dimensions::mm(40, 20, 20);
+        $b0 = self::box(0, 0, 0, 10, 10, 10);
+        $b1 = self::box(10, 0, 0, 10, 10, 10);
+        $b2 = self::box(20, 0, 0, 10, 10, 10);
+        $order = UnloadingDependencyGraph::safeRemovalOrder([$b0, $b1, $b2], $container, ['+z']);
+        self::assertSame([0, 1, 2], $order);
+    }
+
+    public static function testSafeRouteRemovalOrderMultipleUnblockedAtSameStop(): void
+    {
+        $container = Dimensions::mm(40, 20, 20);
+        $b0 = self::box(0, 0, 0, 10, 10, 10);
+        $b1 = self::box(10, 0, 0, 10, 10, 10);
+        $b2 = self::box(20, 0, 0, 10, 10, 10);
+        $order = UnloadingDependencyGraph::safeRouteRemovalOrder([$b0, $b1, $b2], [0, 0, 0], $container, ['+z']);
+        self::assertSame([0, 1, 2], $order);
+    }
+
+    public static function testSafeRouteRemovalOrderDeadlockReportsStuckBoxes(): void
+    {
+        $container = Dimensions::mm(20, 10, 10);
+        $b0 = self::box(0, 0, 0, 10, 10, 10);
+        $b1 = self::box(10, 0, 0, 10, 10, 10);
+        try {
+            UnloadingDependencyGraph::safeRouteRemovalOrder([$b0, $b1], [1, 0], $container, ['-x']);
+            self::fail('expected RouteSequenceError');
+        } catch (\Packvium\Sequence\RouteSequenceError $e) {
+            self::assertSame(0, $e->stop);
+            self::assertContains(1, $e->stuck);
+        }
     }
 }

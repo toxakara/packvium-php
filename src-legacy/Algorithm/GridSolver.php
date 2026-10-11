@@ -31,6 +31,7 @@ final class GridSolver implements SingleContainerSolver
         $tags=$item->tags;sort($tags);
         $incompatibleTags=$item->incompatibleTags;sort($incompatibleTags);
         $eligibleContainerTags=$item->eligibleContainerTags;sort($eligibleContainerTags);
+        $acceptsStackingGroups=$item->acceptsStackingGroups;sort($acceptsStackingGroups,SORT_STRING);
         return json_encode([
             $footprints,$item->weight->ticks,$item->stackable,$item->mustBeOnFloor,
             ($nullsafeVariable1 = $item->maxTopLoad) ? $nullsafeVariable1->ticks : null,$tags,$incompatibleTags,$eligibleContainerTags,
@@ -45,6 +46,9 @@ final class GridSolver implements SingleContainerSolver
             // with an unlimited item, or stop 0 with stop 1, produces a tiling neither
             // one allows.
             $item->maxStackedItems,$item->stopIndex,
+            // A lattice joins same-type items only, so two types may share one exactly when
+            // they share the stacking rule as well.
+            $item->stackingGroup,$acceptsStackingGroups,
         ]);
     }
 
@@ -76,6 +80,10 @@ final class GridSolver implements SingleContainerSolver
             return (new ExtremePointSolver())->packOne($container,$sequence,$items,$config,$stats,$deadline);
         if($container->voidFillReserveRatio>0)
             return (new ExtremePointSolver())->packOne($container,$sequence,$items,$config,$stats,$deadline);
+        if($container->isFlatBag())
+            // The lattice counts cells against the rigid frame alone; a bag's girth rule
+            // couples the axes, which the per-candidate check applies exactly.
+            return (new ExtremePointSolver())->packOne($container,$sequence,$items,$config,$stats,$deadline);
         if($container->maxStackDensity!==null)
             // The single-layer heuristic below only ever reasons about one item
             // resting on one other, never the cumulative load a tall column presses
@@ -98,7 +106,9 @@ final class GridSolver implements SingleContainerSolver
         // Every non-floor lattice cell has one full-area direct supporter, including
         // an exact nesting predecessor. That satisfies ratio=1, covered and single;
         // multiple is satisfiable only on the floor, so cap instead of delegating.
-        $singleLayer=$prototype->mustBeOnFloor||!$prototype->stackable||$prototype->groundContactRule==='multiple';
+        // Every lattice edge joins two items of this type, so the stacking-group rule holds
+        // for the whole lattice exactly when the type carries itself.
+        $singleLayer=$prototype->mustBeOnFloor||!$prototype->carriesItself()||$prototype->groundContactRule==='multiple';
         // How much less than the full height each layer above the first consumes:
         // zero (the ordinary lattice) unless the item declares it sinks into an
         // identical one beneath it. Reduces to the original nz/z formulas

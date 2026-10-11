@@ -2,8 +2,10 @@
 declare(strict_types=1);
 namespace Packvium\Tests;
 
+use Packvium\Algorithm\{BeamPacker, ContainerState, SolverOrchestrator};
 use Packvium\Constraint\LoadCalculator;
-use Packvium\Domain\{AxisAlignedBox, Compression, Dimensions, HullShape, Item, Nesting, Placement, Point, Rotation, ShapeType};
+use Packvium\Domain\{AxisAlignedBox, Compression, Container, Dimensions, HullShape, Item, Nesting, Placement, Point, Rotation, ShapeType};
+use ReflectionMethod;
 use Packvium\Serialization\ArrayCodec;
 use Packvium\Unit\{Length, Weight};
 use Packvium\Support\SignedBigInt;
@@ -227,6 +229,34 @@ final class IrregularItemsTest extends TestCase
         $upper = self::placedWedge('upper', self::upperWedge(), 0, 0, 0);
         self::assertFalse(Placement::collide($lower, $upper), 'complementary halves only touch');
         self::assertTrue(Placement::collide($lower, self::placedWedge('other', self::lowerWedge(), 0, 0, 0)));
+    }
+
+    public static function testTheBeamOrderingBoundLetsTheSecondWedgeFit(): void
+    {
+        // With one wedge placed, half the crate is free and the other wedge occupies
+        // exactly that half. Its declared box is the whole crate, and counting that against
+        // occupied free space claimed it could never fit.
+        $state = new ContainerState(new Container('cube', Dimensions::mm(100, 100, 100)), 1);
+        $state->add(self::placedWedge('lower', self::lowerWedge(), 0, 0, 0));
+        [$upper] = self::hullItem('upper', self::upperWedge())->instances();
+        $precompute = new ReflectionMethod(BeamPacker::class, 'precomputeFuture');
+        $precompute->setAccessible(true);
+        $bound = new ReflectionMethod(BeamPacker::class, 'unpackedLowerBoundPrecomputed');
+        $bound->setAccessible(true);
+        self::assertSame(0, $bound->invoke(null, $state, 0, $precompute->invoke(null, [$upper], null)));
+    }
+
+    public static function testTheContainerPlanBoundCountsAWedgePairAsOneCrate(): void
+    {
+        // Two wedges that fill one crate between them have boxes worth two crates.
+        // Counted by box, the plan bound said a second crate was unavoidable.
+        $crate = new Container('cube', Dimensions::mm(100, 100, 100));
+        [$lower] = self::hullItem('lower', self::lowerWedge())->instances();
+        [$upper] = self::hullItem('upper', self::upperWedge())->instances();
+        $bound = new ReflectionMethod(SolverOrchestrator::class, 'additionalContainerLowerBound');
+        $bound->setAccessible(true);
+        $plan = ['remaining' => [$lower, $upper], 'inventory' => ['cube' => 2]];
+        self::assertSame(1, $bound->invoke(null, $plan, [$crate]));
     }
 
     public static function testARouteBoundHullFallsBackToItsBox(): void

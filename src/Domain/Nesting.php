@@ -102,6 +102,23 @@ final class Nesting
     }
 
     /**
+     * The volume `occupiedVolume` counts for this item before it is placed, in any orientation.
+     *
+     * A hull occupies its authored solid and a proper rotation keeps that volume, so one
+     * orientation answers for all six through the memoised shape. A compressible item keeps
+     * its declared box: collision and support use the uncompressed box, so placed boxes never
+     * share space and their declared volumes stay additive.
+     */
+    public static function itemOccupiedVolume(ItemInstance $instance): string
+    {
+        $item = $instance->item;
+        if ($item->shapeType === ShapeType::CONVEX_HULL) {
+            return HullShape::shapeFor($item->hullVertices, Rotation::LWH)->volume;
+        }
+        return $instance->dimensions()->volumeString();
+    }
+
+    /**
      * Physical volume actually occupied by `$placements`, nesting overlap removed.
      *
      * @param list<Placement> $placements

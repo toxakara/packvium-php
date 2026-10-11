@@ -57,13 +57,7 @@ final class ExactSmallSolver implements SingleContainerSolver
     private static function landedCharge(ContainerState $state,PackingConfig $config):int
     {
         $container=$state->container;
-        $dimensions=$container->outerDimensions??$container->innerDimensions;
-        $dimensional=$dimensions->dimensionalWeight(
-            $config->dimensionalWeightDivisor,
-            $config->dimensionalWeightLengthUnit,
-            $config->dimensionalWeightWeightUnit,
-        )->ticks;
-        $billed=max($container->tareWeight->ticks+$state->payloadTicks,$dimensional);
+        $billed=max($container->tareWeight->ticks+$state->payloadTicks,$state->billedDimensionalWeight($config));
         return $container->rateTable?->chargeMinorOrNull(
             LandedCostSolutionScorer::grams($billed),
         )??LandedCostSolutionScorer::UNPRICEABLE_MINOR;
@@ -76,6 +70,11 @@ final class ExactSmallSolver implements SingleContainerSolver
     ):bool {
         $candidateCount=count($candidate->placements);
         $incumbentCount=count($incumbent->placements);
+        if(self::ranksByVolume($config)){
+            // `maximum_volume` fills volume before it counts pieces.
+            $byVolume=BigInt::compare($candidateVolume,$incumbentVolume);
+            return $byVolume!==0?$byVolume>0:$candidateCount>$incumbentCount;
+        }
         if($candidateCount!==$incumbentCount)return $candidateCount>$incumbentCount;
         if($config->objective==='lowest_landed_cost'){
             $candidateCharge=self::landedCharge($candidate,$config);
@@ -83,6 +82,11 @@ final class ExactSmallSolver implements SingleContainerSolver
             if($candidateCharge!==$incumbentCharge)return $candidateCharge<$incumbentCharge;
         }
         return BigInt::compare($candidateVolume,$incumbentVolume)>0;
+    }
+
+    private static function ranksByVolume(PackingConfig $config):bool
+    {
+        return $config->objective==='maximum_volume';
     }
 
     public function packOne(Container $container,int $sequence,array $items,PackingConfig $config,SearchStats $stats,Deadline $deadline):SingleContainerSolution
@@ -116,8 +120,13 @@ final class ExactSmallSolver implements SingleContainerSolver
             if($index>=count($batches))return;
             $potentialCount=$stateCount+$reachable;
             $bestCount=count($best->placements);
-            if($potentialCount<$bestCount)return;
-            if($config->objective!=='lowest_landed_cost'&&$potentialCount===$bestCount&&BigInt::compare(BigInt::add($stateVolume,$suffixVolumes[$index]),$bestVolume)<=0)return;
+            if(self::ranksByVolume($config)){
+                // Fewer pieces can still be more volume, so only the volume bound cuts;
+                // an equal bound wins only on a strictly larger count.
+                $bound=BigInt::compare(BigInt::add($stateVolume,$suffixVolumes[$index]),$bestVolume);
+                if($bound<0||($bound===0&&$potentialCount<=$bestCount))return;
+            }elseif($potentialCount<$bestCount)return;
+            elseif($config->objective!=='lowest_landed_cost'&&$potentialCount===$bestCount&&BigInt::compare(BigInt::add($stateVolume,$suffixVolumes[$index]),$bestVolume)<=0)return;
             $batch=$batches[$index];
             $remaining=$reachable-count($batch);
             foreach(BeamPacker::placeBatch($state,$batch,$config,$constraints,$stats,$deadline,$scorer,null) as $child){

@@ -579,6 +579,37 @@ final class ValidationTest extends TestCase
         self::assertContains('non_stackable', Support::issues([$base, $load], [$box], [$reversed]));
     }
 
+    public static function testAnItemOnOneThatDoesNotAcceptItsStackingGroupIsCaught(): void
+    {
+        $base = self::item('base', 100, 100, 50, ['stackingGroup' => 'A', 'acceptsStackingGroups' => ['A', 'B']]);
+        $drum = self::item('load', 100, 100, 50, ['stackingGroup' => 'C']);
+        $carton = self::item('load', 100, 100, 50, ['stackingGroup' => 'B']);
+        $box = self::shelf();
+        [$baseInstance] = $base->instances();
+        foreach ([$drum, $carton] as $load) {
+            [$loadInstance] = $load->instances();
+            foreach ([false, true] as $loadFirst) {
+                $placements = [self::place($baseInstance), self::place($loadInstance, z: 50 * self::MM)];
+                $packed = new PackedContainer($box, 1, $loadFirst ? array_reverse($placements) : $placements);
+                $issues = Support::issues([$base, $load], [$box], [$packed]);
+                self::assertSame($load === $drum, in_array('stacking_group_incompatible', $issues, true));
+            }
+        }
+    }
+
+    public static function testANonStackableItemWithAListReportsOnlyNonStackable(): void
+    {
+        $base = self::item('base', 100, 100, 50, ['stackable' => false, 'acceptsStackingGroups' => ['B']]);
+        $load = self::item('load', 100, 100, 50, ['stackingGroup' => 'C']);
+        $box = self::shelf();
+        [$baseInstance] = $base->instances();
+        [$loadInstance] = $load->instances();
+        $packed = new PackedContainer($box, 1, [self::place($baseInstance), self::place($loadInstance, z: 50 * self::MM)]);
+        $issues = Support::issues([$base, $load], [$box], [$packed]);
+        self::assertContains('non_stackable', $issues);
+        self::assertFalse(in_array('stacking_group_incompatible', $issues, true));
+    }
+
     // --------------------------------------------------------- ground contact
 
     public static function testARatioThatWouldPassIsStillCaughtByTheCornerRule(): void

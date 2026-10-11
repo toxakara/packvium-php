@@ -96,24 +96,28 @@ final class UnloadingDependencyGraph
         $present = array_fill_keys(array_keys($boxes), true);
         $order = [];
         while ($present !== []) {
-            $removable = [];
+            $unblocked = [];
             foreach (array_keys($present) as $index) {
                 $blockedBySupport = false;
                 foreach (array_keys($dependsOn[$index] ?? []) as $dependency) {
                     if (isset($present[$dependency])) { $blockedBySupport = true; break; }
                 }
                 if ($blockedBySupport) { continue; }
+                $unblocked[] = $index;
+            }
+            sort($unblocked);
+            $chosen = null;
+            foreach ($unblocked as $index) {
                 if (SequenceGeometry::clearDirection($index, $boxes[$index], $boxes, $present, $container, $directions) !== null) {
-                    $removable[] = $index;
+                    $chosen = $index;
+                    break;
                 }
             }
-            if ($removable === []) {
+            if ($chosen === null) {
                 throw new SequenceError(array_keys($present));
             }
             // Deterministic: the lowest index among this step's candidates, not
             // arbitrary array iteration order.
-            sort($removable);
-            $chosen = $removable[0];
             $order[] = $chosen;
             unset($present[$chosen]);
         }
@@ -166,24 +170,28 @@ final class UnloadingDependencyGraph
                 if ($stops[$index] === $stop) { $due[$index] = true; }
             }
             while ($due !== []) {
-                $removable = [];
+                $unblocked = [];
                 foreach (array_keys($due) as $index) {
                     $blockedBySupport = false;
                     foreach (array_keys($dependsOn[$index] ?? []) as $dependency) {
                         if (isset($remaining[$dependency])) { $blockedBySupport = true; break; }
                     }
                     if ($blockedBySupport) { continue; }
+                    $unblocked[] = $index;
+                }
+                sort($unblocked);
+                $chosen = null;
+                foreach ($unblocked as $index) {
                     if (SequenceGeometry::clearDirection($index, $boxes[$index], $boxes, $remaining, $container, $directions) !== null) {
-                        $removable[] = $index;
+                        $chosen = $index;
+                        break;
                     }
                 }
-                if ($removable === []) {
+                if ($chosen === null) {
                     throw new RouteSequenceError($stop, array_keys($due));
                 }
                 // Deterministic: the lowest index among this step's candidates, not
                 // arbitrary array iteration order.
-                sort($removable);
-                $chosen = $removable[0];
                 $order[] = $chosen;
                 unset($remaining[$chosen]);
                 unset($due[$chosen]);

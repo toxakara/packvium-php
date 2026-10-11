@@ -51,7 +51,7 @@ final class LandedCostSolutionScorer extends ShippingCostSolutionScorer
                     . "'{$container->container->id}' has none",
                 );
             }
-            $dimensions = $container->container->outerDimensions ?? $container->container->innerDimensions;
+            $dimensions = $container->billedDimensions();
             $dimensionalWeight = $dimensions->dimensionalWeight($this->divisor, $this->lengthUnit, $this->weightUnit);
             $billedTicks = max($container->grossWeight()->ticks, $dimensionalWeight->ticks);
             $charge = $table->chargeMinorOrNull(self::grams($billedTicks));
@@ -82,7 +82,7 @@ final class LandedCostSolutionScorer extends ShippingCostSolutionScorer
             return null;
         }
         foreach ($containers as $container) {
-            $dimensions = $container->container->outerDimensions ?? $container->container->innerDimensions;
+            $dimensions = $container->billedDimensions();
             $dimensional = $dimensions->dimensionalWeight(
                 $config->dimensionalWeightDivisor,
                 $config->dimensionalWeightLengthUnit,

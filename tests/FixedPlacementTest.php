@@ -131,6 +131,20 @@ final class FixedPlacementTest extends TestCase
         }
     }
 
+    public static function testAFixedSetThatBreaksTheStackingGroupRuleIsRefusedBeforeSearch(): void
+    {
+        // Admission runs the validator over the fixed set alone, so the new code arrives
+        // with no admission code of its own.
+        $pallet = self::cube(1) + ['accepts_stacking_groups' => ['A']];
+        $drum = ['id' => 'drum', 'quantity' => 1, 'stacking_group' => 'C',
+            'dimensions' => ['length' => '100', 'width' => '100', 'height' => '100']];
+        $onTop = ['item_type' => 'drum'] + self::fixed('0', '0', '100');
+        $message = self::refusal(self::request([$pallet, $drum], null, [self::fixed(), $onTop]));
+        self::assertSame('invalid_fixed_placement: stacking_group_incompatible: cube#1: cube', $message);
+        $drum['stacking_group'] = 'A';
+        self::assertNull(self::refusal(self::request([$pallet, $drum], null, [self::fixed(), $onTop])));
+    }
+
     public static function testAFixedPlacementOutOfShapeIsRefusedBeforeAnythingIsCoerced(): void
     {
         $entry = self::fixed('100');

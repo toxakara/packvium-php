@@ -125,8 +125,8 @@ final class StopAccessibilityConstraint implements PlacementConstraint
     {
         if(!$c->routeSensitive)return ConstraintResult::allow();
         // The container's own doors win; the configured list is what a container that
-        // states none inherits.
-        $directions=$c->container->accessDirections!==[]?$c->container->accessDirections:$this->defaultDirections;
+        // states none inherits. A flat bag has no walls, so it inherits none.
+        $directions=$c->container->isFlatBag()?[]:($c->container->accessDirections!==[]?$c->container->accessDirections:$this->defaultDirections);
         if($directions===[])return ConstraintResult::allow();
         $candidateStop=$c->item->item->stopIndex??INF;
         $inner=$c->container->innerDimensions;

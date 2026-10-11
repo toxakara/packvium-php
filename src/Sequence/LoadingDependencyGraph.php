@@ -207,6 +207,13 @@ final class LoadingDependencyGraph
             throw new SequenceReplayError(-1, -1, 'order is not a permutation of every placement index exactly once');
         }
         $maxDensityTicks = $container->maxStackDensity?->ticks;
+        // A caller may hand this any scene, validated or not, so the stacking-group rule is
+        // re-checked here too -- only when some item declares a list, and only on the edges
+        // of the step's own new placement, since every earlier edge was judged at its step.
+        $grouped = false;
+        foreach ($placements as $placement) {
+            $grouped = $grouped || $placement->instance->item->acceptsStackingGroups !== [];
+        }
         $present = [];
         foreach ($order as $step => $index) {
             $present[] = $placements[$index];
@@ -222,6 +229,10 @@ final class LoadingDependencyGraph
                         break;
                     }
                 }
+            }
+            if ($problem === null && $grouped) {
+                $last = count($present) - 1;
+                $problem = (new LoadSupportGraph($units))->nonStackableFailure($present, $present[$last]->instance, $last);
             }
             if ($problem === null) {
                 $candidate = $present[count($present) - 1];

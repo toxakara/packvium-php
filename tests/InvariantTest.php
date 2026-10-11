@@ -120,7 +120,8 @@ final class InvariantTest extends TestCase
     {
         // A caller acts on these strings, so an unexplained failure is a failure.
         $known = ['no_compatible_container_dimensions', 'payload_exceeded', 'no_feasible_placement',
-                  'group_cannot_fit_together', 'time_limit', 'insufficient_support'];
+                  'group_cannot_fit_together', 'time_limit', 'insufficient_support',
+            'container_inventory_exhausted', 'axle_overloaded'];
         for ($seed = 0; $seed < self::TRIALS; $seed++) {
             [$items, $containers] = self::generate($seed);
             foreach (Support::pack($items, $containers, self::budget())->unpacked as $unpacked) {

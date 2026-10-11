@@ -120,4 +120,20 @@ final class AxleLoadTest extends TestCase
         self::assertNull(AxleLoad::exceeded($axles, [...$aboard, $atFront]));
         self::assertNull(AxleLoad::exceeded($axles, [...$aboard, $atRear]));
     }
+
+    public static function testAnItemAloneIsAdmittedExactlyWhereBothAxlesHold(): void
+    {
+        // Axles at 0 and 100, limits 400 front / 700 rear, a 1000-tick item centred at c:
+        // the front needs c >= 60 and the rear c <= 70. A 10-long box holds at origins
+        // 55..65; a 100-long one has the single centre 50, outside that window.
+        $axles = [new Axle(new Length(0), new Weight(400)), new Axle(new Length(100), new Weight(700))];
+        self::assertTrue(AxleLoad::admitsAlone($axles, 0, 100, 1000, 10));
+        self::assertFalse(AxleLoad::admitsAlone($axles, 0, 100, 1000, 100));
+        $weak = [new Axle(new Length(0), new Weight(400)), new Axle(new Length(100), new Weight(400))];
+        self::assertFalse(AxleLoad::admitsAlone($weak, 0, 100, 1000, 10));
+        self::assertFalse(AxleLoad::admitsAlone([new Axle(new Length(0), null), new Axle(new Length(100), null)], 0, 100, 1, 101));
+        // Tare 800 at the centre puts 400 on each axle.
+        self::assertTrue(AxleLoad::admitsAlone([new Axle(new Length(0), new Weight(400)), new Axle(new Length(100), null)], 800, 100, 0, 10));
+        self::assertFalse(AxleLoad::admitsAlone([new Axle(new Length(0), new Weight(399)), new Axle(new Length(100), null)], 800, 100, 0, 10));
+    }
 }

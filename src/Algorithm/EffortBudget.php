@@ -39,3 +39,9 @@ final class EffortBudget
             || ($this->maxSearchNodes!==null && $stats->searchNodesExpanded>=$this->maxSearchNodes);
     }
 }
+
+// The public name of this class is `Packvium\Config\EffortBudget`: one class under
+// two names, so an instance from either spelling satisfies a type declared with the other.
+// Registered here, beside the declaration, because PHP does not autoload for a type check:
+// a budget decoded by `ArrayCodec` must already answer to the public name.
+\class_alias(EffortBudget::class, \Packvium\Config\EffortBudget::class);

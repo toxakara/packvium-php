@@ -3,7 +3,10 @@ declare(strict_types=1);
 
 namespace Packvium\Tests;
 
+use Packvium\Config\PackingConfig;
+use Packvium\Domain\{Container, Dimensions, Item};
 use Packvium\Domain\ReasonProof;
+use Packvium\Packer;
 use Packvium\Serialization\ArrayCodec;
 use Packvium\Serialization\InvalidRequestException;
 use Packvium\Unit\Length;
@@ -57,6 +60,35 @@ final class SerializationTest extends TestCase
         // No custom types leak out: every caller can hand this straight to json_encode.
         $result = ArrayCodec::pack(self::request([self::cube('a', 50)], [self::box('c')]));
         self::assertEquals($result, json_decode(json_encode($result), true));
+    }
+
+    public static function testEveryPlacementReadsAsItsOwnQuantitiesSerialize(): void
+    {
+        // Equal lengths, sizes and top loads share one array in the result; each must still
+        // read exactly as that placement's own Point, Dimensions and Weight serialize, in the
+        // winner and in every alternative, in whatever units were asked for.
+        $items = [
+            Item::create('a', Dimensions::mm(30, 20, 10), 5, 9),
+            Item::create('b', Dimensions::mm(25, 25, 15), 7, 6),
+        ];
+        $box = Container::create('c', Dimensions::mm(100, 60, 40));
+        $result = (new Packer(new PackingConfig(topK: 3)))->pack($items, [$box]);
+        $serialized = $result->toArray('in', 'kg');
+        self::assertTrue($result->alternatives !== []);
+        $placements = 0;
+        foreach ([[$result, $serialized], ...array_map(null, $result->alternatives, $serialized['alternatives'])] as [$answer, $array]) {
+            foreach ($answer->containers as $c => $container) {
+                self::assertSame($container->container->innerDimensions->toArray('in'), $array['containers'][$c]['inner_dimensions']);
+                foreach ($container->placements as $p => $placement) {
+                    $row = $array['containers'][$c]['placements'][$p];
+                    self::assertSame($placement->position->toArray('in'), $row['position']);
+                    self::assertSame($placement->dimensions->toArray('in'), $row['dimensions']);
+                    self::assertSame($placement->topLoad->toArray('kg'), $row['top_load']);
+                    $placements++;
+                }
+            }
+        }
+        self::assertTrue($placements > 15);
     }
 
     public static function testTheDocumentedTopLevelKeysAreAllPresent(): void

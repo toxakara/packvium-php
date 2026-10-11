@@ -2,7 +2,7 @@
 declare(strict_types=1);
 namespace Packvium\Constraint\Internal;
 use Packvium\Constraint\{ContactEdge,ContactGraph,LoadUnit};
-use Packvium\Domain\{AxisAlignedBox,ItemInstance,Placement};
+use Packvium\Domain\{AxisAlignedBox,Item,ItemInstance,Placement};
 
 /**
  * Direct load support: ordinary face contact plus exact adjacent nesting contact.
@@ -164,20 +164,37 @@ final class LoadSupportGraph
     public function children(int $index):array{return $this->nested?$this->children[$index]:$this->face->children($index);}
 
     /**
-     * A direct-support edge may never originate at a non-stackable item.
+     * The first direct-support edge at the candidate its lower item refuses, or null.
+     *
+     * Supporters ascending, then children ascending. `non_stackable` is tested before the
+     * stacking-group rule on every edge, so a scene invalid before keeps its code;
+     * the group test rides this same walk, one keyed lookup per edge and no pass of its own.
      *
      * @param list<Placement> $placements
      * @return array{0:string,1:string}|null
      */
     public function nonStackableFailure(array $placements,ItemInstance $item,int $candidateIndex):?array
     {
+        $upperGroup=$item->item->stackingGroup;
         foreach($this->supporters($candidateIndex) as $edge){
-            $supporter=$placements[$edge->index];
-            if(!$supporter->instance->item->stackable)
-                return ['non_stackable',$supporter->instance->item->id];
+            $lower=$placements[$edge->index]->instance->item;
+            $code=self::stackingRefusal($lower,$upperGroup);
+            if($code!==null)return [$code,$lower->id];
         }
-        if(!$item->item->stackable&&$this->children($candidateIndex)!==[])
-            return ['non_stackable',$item->item->id];
+        $lower=$item->item;
+        if($lower->stackable&&$lower->acceptsStackingGroups===[])return null;
+        foreach($this->children($candidateIndex) as $child){
+            $code=self::stackingRefusal($lower,$placements[$child]->instance->item->stackingGroup);
+            if($code!==null)return [$code,$lower->id];
+        }
+        return null;
+    }
+
+    /** Why `$lower` refuses an item of `$upperGroup` resting directly on it, or null. O(1). */
+    private static function stackingRefusal(Item $lower,?string $upperGroup):?string
+    {
+        if(!$lower->stackable)return 'non_stackable';
+        if(!$lower->acceptsStackingGroup($upperGroup))return 'stacking_group_incompatible';
         return null;
     }
 

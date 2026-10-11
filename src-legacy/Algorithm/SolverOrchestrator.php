@@ -3,8 +3,8 @@ declare(strict_types=1);
 namespace Packvium\Algorithm;
 
 use Packvium\Config\{PackingConfig,SolverProfile};
-use Packvium\Constraint\{ConstraintSet,ProvenRejection,SupportConstraint};
-use Packvium\Domain\{Container,ItemInstance,PackedContainer,Rotation,UnpackedItem};
+use Packvium\Constraint\{AxleLoad,ConstraintSet,ProvenRejection,SupportConstraint};
+use Packvium\Domain\{Container,Dimensions,FlatBag,ItemInstance,MadeToMeasure,Nesting,PackedContainer,Rotation,UnpackedItem};
 use Packvium\Extension\{CandidateScorer,ContainerSelector,DefaultCandidateScorer,DefaultContainerSelector,ItemOrderStrategy};
 use Packvium\Result\StartRecord;
 use Packvium\Support\{BigInt,StableSorter};
@@ -57,13 +57,45 @@ final class SolverOrchestrator
      */
     public function solvePortfolio(array $items,array $containers,PackingConfig $config,Deadline $deadline,array $preloaded=[]):PortfolioRun
     {
-        $starts=$this->starts($items,$config);
+        $starts=$this->starts($items,$config,$containers);
         $effortBudget=$config->effortBudget;
         if($effortBudget!==null&&$effortBudget->maxRestarts!==null)$starts=array_slice($starts,0,$effortBudget->maxRestarts);
-        if($this->eligibleForConcurrentExecution($deadline,$config)&&count($starts)>1){
-            return $this->solveConcurrent($items,$containers,$config,$deadline,$starts,$effortBudget,$preloaded);
+        $run=$this->eligibleForConcurrentExecution($deadline,$config)&&count($starts)>1
+            ? $this->solveConcurrent($items,$containers,$config,$deadline,$starts,$effortBudget,$preloaded)
+            : $this->solveSequential($items,$containers,$config,$deadline,$starts,$effortBudget,$preloaded);
+        return self::withoutABlockStartThatOnlyTies($run,$starts,$config);
+    }
+
+    /**
+     * Drop the added block start's answer unless it strictly beats the profile's own.
+     *
+     * The start is there to improve an answer, not to replace an equal one: on a tie
+     * the ranking falls to the solver name, which would hand the result to a lattice
+     * that knows nothing of the orderings the profile's own starts honour.
+     *
+     * @param list<array{0:SingleContainerSolver,1:string,2:list<ItemInstance>}> $starts
+     */
+    private static function withoutABlockStartThatOnlyTies(PortfolioRun $run,array $starts,PackingConfig $config):PortfolioRun
+    {
+        if($starts===[])return $run;
+        [$solver,$orderName]=$starts[array_key_last($starts)];
+        if(!$solver instanceof HomogeneousBlockSolver||$solver->nodeLimit===null)return $run;
+        $scorer=ObjectiveRegistry::resolve($config->objective,$config);
+        $added=$solver->name().':'.$orderName;
+        $bestOwn=null;
+        foreach($run->solutions as $solution){
+            if($solution->solverName===$added)continue;
+            $score=$scorer->score($solution);
+            if($bestOwn===null||$score->compare($bestOwn)<0)$bestOwn=$score;
         }
-        return $this->solveSequential($items,$containers,$config,$deadline,$starts,$effortBudget,$preloaded);
+        if($bestOwn===null)return $run;
+        $kept=array_values(array_filter(
+            $run->solutions,
+            static function (RawSolution $solution) use ($added, $scorer, $bestOwn): bool {
+                return $solution->solverName!==$added||$scorer->score($solution)->compare($bestOwn)<0;
+            },
+        ));
+        return new PortfolioRun($kept,$run->starts);
     }
 
     /**
@@ -334,6 +366,15 @@ final class SolverOrchestrator
         return new PortfolioRun($results,$records);
     }
 
+    /**
+     * Whether one box of these dimensions fits this container empty: the frame, and for a flat
+     * bag the girth rule too, so a bag too thin for an item proves it unplaceable.
+     */
+    private static function fitsAlone(Container $container,Dimensions $dimensions):bool
+    {
+        return $container->isFlatBag()?FlatBag::fitsAlone($container->innerDimensions,$dimensions):$dimensions->fitsInside($container->innerDimensions);
+    }
+
     /** @param list<Container> $containers */
     /** @return array{0:string,1:list<string>} */
     private function unpackedReason(ItemInstance $item,array $containers,bool $reached):array
@@ -341,7 +382,7 @@ final class SolverOrchestrator
         $dimension=false;$weight=false;
         foreach($containers as $container){
             foreach($item->dimensions()->uniqueRotations($item->item->allowedRotations) as [,$dimensions])
-                if($dimensions->fitsInside($container->innerDimensions)){$dimension=true;break 2;}
+                if(self::fitsAlone($container,$dimensions)){$dimension=true;break 2;}
         }
         // Same geometric check with every physical orientation allowed, not only the
         // item's own restricted set -- distinguishes "genuinely too big in any
@@ -351,7 +392,7 @@ final class SolverOrchestrator
         $fitsAnyRotation=false;
         foreach($containers as $container){
             foreach($item->dimensions()->uniqueRotations(Rotation::all()) as [,$dimensions])
-                if($dimensions->fitsInside($container->innerDimensions)){$fitsAnyRotation=true;break 2;}
+                if(self::fitsAlone($container,$dimensions)){$fitsAnyRotation=true;break 2;}
         }
         foreach($containers as $container)
             if($container->maxPayload===null||$item->weight()->ticks<=$container->maxPayload->ticks){$weight=true;break;}
@@ -379,6 +420,66 @@ final class SolverOrchestrator
         if($reached)return ['time_limit',[]];
         if($item->item->group!==null)return ['group_cannot_fit_together',[]];
         return ['no_feasible_placement',[]];
+    }
+
+    /**
+     * The container limit that left `$item` out, for the `no_feasible_placement`
+     * fallback, or null when no limit explains it.
+     *
+     * Only containers that admit the item on every structural count -- a fitting
+     * rotation, its weight, its eligibility tags -- are asked. When an axle refuses the
+     * item alone in every one of them, the axle is the reason. Otherwise, when every one
+     * that would take it alone is out of stock, or `maxContainers` is reached, the reason
+     * is the inventory: `max_items`, cumulative `max_payload`, `tag_limits`, the
+     * stop-accessibility rule and an axle's share of a full load can only refuse an item
+     * a fresh container would take, so they surface here too. `$opened` is
+     * `openedByType()` of the final layout. O(C*R).
+     *
+     * @param list<Container> $containers @param array<string,int> $opened
+     */
+    private static function limitReason(ItemInstance $item,array $containers,array $opened,PackingConfig $config):?string
+    {
+        $envelopes=[];
+        foreach($item->dimensions()->uniqueRotations($item->item->allowedRotations) as [,$dimensions])$envelopes[]=$dimensions->expand($config->clearance);
+        $weight=$item->weight()->ticks;$eligibleTags=$item->item->eligibleContainerTags;
+        $admitting=[];$compatible=false;
+        foreach($containers as $container){
+            $fitting=array_values(array_filter($envelopes,static function (Dimensions $envelope) use ($container): bool {
+                return self::fitsAlone($container,$envelope);
+            }));
+            if($fitting===[])continue;
+            if($container->maxPayload!==null&&$weight>$container->maxPayload->ticks)continue;
+            if($eligibleTags!==[]&&array_intersect($eligibleTags,$container->tags)===[])continue;
+            $compatible=true;
+            if(self::axlesAdmitAlone($container,$fitting,$weight))$admitting[]=$container;
+        }
+        if(!$compatible)return null;
+        if($admitting===[])return 'axle_overloaded';
+        if($config->maxContainers!==null&&array_sum($opened)>=$config->maxContainers)return 'container_inventory_exhausted';
+        foreach($admitting as $container)
+            if($container->quantity===null||($opened[$container->id]??0)<$container->quantity)return null;
+        return 'container_inventory_exhausted';
+    }
+
+    /**
+     * How many containers of each template a layout opened. O(P), once per layout.
+     *
+     * @param list<PackedContainer> $packed @return array<string,int>
+     */
+    private static function openedByType(array $packed):array
+    {
+        $opened=[];
+        foreach($packed as $packedContainer)$opened[$packedContainer->container->id]=($opened[$packedContainer->container->id]??0)+1;
+        return $opened;
+    }
+
+    /** @param list<Dimensions> $envelopes envelopes that already fit `$container` */
+    private static function axlesAdmitAlone(Container $container,array $envelopes,int $weight):bool
+    {
+        if($container->axles===null)return true;
+        foreach($envelopes as $envelope)
+            if(AxleLoad::admitsAlone($container->axles,$container->tareWeight->ticks,$container->innerDimensions->length->ticks,$weight,$envelope->length->ticks))return true;
+        return false;
     }
 
     /**
@@ -423,8 +524,48 @@ final class SolverOrchestrator
         return false;
     }
 
-    /** @return list<array{0:SingleContainerSolver,1:string,2:list<ItemInstance>}> */
-    private function starts(array $items,PackingConfig $config):array
+    /**
+     * Lattice nodes the block start added to `fast` and `balanced` may enumerate per mode --
+     * the bound `quality` gives the same solver through `containerPlanNodeLimit`.
+     */
+    private const BLOCK_START_NODE_LIMIT=100000;
+
+    /**
+     * The block start `fast` and `balanced` add to their own, or `null`.
+     *
+     * Single-type blocks fill a carton load in milliseconds where a per-item search
+     * spends its whole budget, so the low-latency profiles run them as one more start
+     * and let the score decide. Only where the lattice can express the whole request:
+     * a start that fell back to the per-item solver would repeat one already in the
+     * portfolio. One item type is `GridSolver`'s case, and it is exact there.
+     *
+     * @param list<ItemInstance> $items
+     * @param list<Container> $containers
+     */
+    private function blockStart(array $items,PackingConfig $config,array $containers):?HomogeneousBlockSolver
+    {
+        $fast=$config->profile===SolverProfile::Fast;
+        if((!$fast&&$config->profile!==SolverProfile::Balanced)||$config->solvers!==[])return null;
+        if($this->customSolvers!==[]||$this->customConstraints!==[])return null;
+        $types=[];foreach($items as $instance)$types[$instance->item->id]=true;
+        if(count($types)<2)return null;
+        // A lattice takes whichever type fills best; it cannot honour a caller's say over
+        // which item goes first, so it stays out when the items do not all lead alike.
+        $lead=ItemOrdering::lead($items[0],$config);
+        foreach($items as $instance)if(ItemOrdering::lead($instance,$config)!=$lead)return null;
+        // One enumeration, the one the objective ranks by: `fast` is latency-bound.
+        $modes=!$fast?HomogeneousBlockSolver::MODES:($config->objective==='maximum_volume'?['volume']:['count']);
+        $solver=new HomogeneousBlockSolver([],null,$modes,self::BLOCK_START_NODE_LIMIT);
+        if($containers===[])return null;
+        foreach($containers as $container)if(!$solver->supports($container,$items,$config))return null;
+        return $solver;
+    }
+
+    /**
+     * @param list<Container> $containers
+     * @return list<array{0:SingleContainerSolver,1:string,2:list<ItemInstance>}>
+     */
+    private function starts(array $items,PackingConfig $config,array $containers=[]):array
     {
         $orders=$this->orders($items,$config);
         $starts=[];
@@ -433,6 +574,8 @@ final class SolverOrchestrator
             $chosen=(method_exists($solver,'orderInsensitive')&&$solver->orderInsensitive())?array_slice($orders,0,1):$orders;
             foreach($chosen as [$name,$order])$starts[]=[$solver,$name,$order];
         }
+        // Last, so a restart budget drops it first and the profile's own starts keep theirs.
+        if($orders!==[]&&($blocks=$this->blockStart($items,$config,$containers))!==null)$starts[]=array_merge([$blocks], is_array($orders[0]) ? $orders[0] : iterator_to_array(is_array($orders[0]) ? new \ArrayIterator($orders[0]) : $orders[0]));
         if($config->containerPlanBeamWidth<=1||$config->profile!==SolverProfile::Quality)return $starts;
         $greedy=array_map(static function (array $start): array {
             return $start[0]->name()==='homogeneous_blocks'?$start:[$start[0],$start[1].':greedy',$start[2]];
@@ -450,6 +593,19 @@ final class SolverOrchestrator
             $config->effortBudget,$config->dimensionalWeightDivisor,$config->dimensionalWeightLengthUnit,
             $config->dimensionalWeightWeightUnit,$config->requirePlacementCoordinates,1,
             1,1,
+        );
+    }
+
+    /** The same configuration with placement coordinates required: no compact lattice form (D12). */
+    private static function withCoordinates(PackingConfig $config):PackingConfig
+    {
+        return new PackingConfig(
+            $config->profile,$config->timeLimitMs,$config->topK,$config->seed,$config->maxContainers,
+            $config->clearance,$config->minimumSupportRatio,$config->exactItemLimit,$config->multiStartOrders,
+            $config->validateResult,$config->maxCandidatesPerItem,$config->maxCandidatePoints,$config->solvers,$config->objective,
+            $config->effortBudget,$config->dimensionalWeightDivisor,$config->dimensionalWeightLengthUnit,
+            $config->dimensionalWeightWeightUnit,true,$config->parallelStarts,
+            $config->containerPlanBeamWidth,$config->containerPlanNodeLimit,$config->accessDirections,
         );
     }
 
@@ -498,8 +654,7 @@ final class SolverOrchestrator
     {
         // Every strategy is keyed behind `ItemOrdering::lead`, which carries priority
         // and, under `maximum_value`, the item's own value.
-        $strategies=[];
-        if($config->profile===SolverProfile::Quality)$strategies=[
+        $smallFirst=$config->profile!==SolverProfile::Quality?[]:[
             ['small_edge',static function (ItemInstance $i) use ($config): array {
                 return array_merge(ItemOrdering::lead($i,$config), [$i->dimensions()->maxEdge()], $i->dimensions()->volumeKey(), [$i->id()]);
             }],
@@ -507,7 +662,7 @@ final class SolverOrchestrator
                 return array_merge(ItemOrdering::lead($i,$config), $i->dimensions()->volumeKey(), [$i->dimensions()->maxEdge(), $i->id()]);
             }],
         ];
-        $strategies=array_merge($strategies, [
+        $largeFirst=[
             ['volume',static function (ItemInstance $i) use ($config): array {
                 return array_merge(ItemOrdering::lead($i,$config), $i->dimensions()->descendingVolumeKey(), [-$i->dimensions()->maxEdge(), -$i->weight()->ticks, $i->id()]);
             }],
@@ -520,7 +675,10 @@ final class SolverOrchestrator
             ['constrained',static function (ItemInstance $i) use ($config): array {
                 return array_merge(ItemOrdering::lead($i,$config), [count($i->item->allowedRotations), -$i->item->minimumSupportRatio], $i->dimensions()->descendingVolumeKey(), [$i->id()]);
             }],
-        ]);
+        ];
+        // Small items first places the most pieces; large items first fills the most space.
+        // The objective decides which family gets the early, fully funded starts.
+        $strategies=$config->objective==='maximum_volume'?array_merge($largeFirst, $smallFirst):array_merge($smallFirst, $largeFirst);
         $limit=$config->profile===SolverProfile::Fast?1:$config->multiStartOrders;
         $out=[];$seen=[];
         foreach($strategies as [$name,$key]){
@@ -572,7 +730,118 @@ final class SolverOrchestrator
         if($stats->objectiveLowerBound!==null)return;
         if(!$beam&&$solver->name()!=='exact_small')return;
         if($config->objective!=='default')return;
+        // Its unused-volume and height keys are ratios against a declared size, and a
+        // made-to-measure box has none until it is cut: the bound would not be admissible.
+        foreach($containers as $container)if($container->madeToMeasure!==null)return;
         $stats->objectiveLowerBound=ObjectiveBounds::compute($items,$containers);
+    }
+
+    /**
+     * The greedy round's key for one trial, read from the container the trial built: a
+     * made-to-measure trial carries its fabricated box, so the key prices the box that ships,
+     * never the machine maximum the loop declared. The trial chain ranks an
+     * incomplete round's rungs by this same key.
+     *
+     * @param list<ItemInstance> $roundItems
+     * @return list<mixed>
+     */
+    private static function roundScore(SingleContainerSolution $one,array $roundItems,PackingConfig $config,ContainerSelector $selector):array
+    {
+        $container=$one->state->container;
+        if(($config->objective==='shipping_cost'||$config->objective==='lowest_landed_cost')&&$config->dimensionalWeightDivisor!==null){
+            $dimensional=$one->state->billedDimensionalWeight($config);
+            $gross=$container->tareWeight->ticks+$one->state->payloadTicks;
+            $billed=max($gross,$dimensional);
+            $placed=$one->state->placementCount();
+            if($config->objective==='shipping_cost'){
+                $candidateScore=[-$placed,$billed,$container->id];
+            }else{
+                // Landed cost ranks the round by the money the finished score will
+                // charge, not by the grams it is derived from. This loop commits the
+                // trial verbatim, so its billed weight is already final and the tariff
+                // can be read now; a bracket step or a minimum charge makes the cheaper
+                // shipment the heavier one, and a trial the tariff cannot price is
+                // unshippable rather than merely dear, so it sorts behind every
+                // priceable alternative. Keys after the charge mirror Rust's
+                // and Python's, so the three engines pick the same container.
+                $charge=($nullsafeVariable1 = $container->rateTable) ? $nullsafeVariable1->chargeMinorOrNull(LandedCostSolutionScorer::grams($billed)) : null;
+                $candidateScore=[
+                    $charge??LandedCostSolutionScorer::UNPRICEABLE_MINOR,
+                    intdiv(count($roundItems)+max($placed,1)-1,max($placed,1)),
+                    -$placed,
+                    $container->id,
+                ];
+            }
+        }elseif($config->objective==='maximum_volume'&&$selector instanceof DefaultContainerSelector){
+            // The round keeps the trial that loaded the most volume, not the one
+            // that seated the most pieces. A caller's own selector is left alone.
+            $used=$one->state->usedVolume;
+            $leftover=BigInt::chunks(BigInt::subtract($container->innerDimensions->volumeString(),$used));
+            $candidateScore=array_merge(array_map(static function (int $c): int {
+                return -$c;
+            },BigInt::chunks($used)), [$container->costMinor], $leftover, [$container->id]);
+        }else{
+            $candidateScore=$selector->score($container,$one);
+        }
+        return $candidateScore;
+    }
+
+    /**
+     * One container's trial for a round, and how many single-container solves it spent. A
+     * declared container is one solve; a made-to-measure one runs the rung chain and returns
+     * its trial already fabricated.
+     *
+     * @param list<ItemInstance> $items
+     * @return array{0:SingleContainerSolution,1:int}
+     */
+    private function trial(SingleContainerSolver $solver,Container $container,int $sequence,array $items,PackingConfig $config,SearchStats $stats,Deadline $deadline):array
+    {
+        if($container->madeToMeasure===null)return [$solver->packOne($container,$sequence,$items,$config,$stats,$deadline),1];
+        return $this->madeToMeasureTrial($solver,$container,$sequence,$items,$config,$stats,$deadline);
+    }
+
+    /**
+     * Try each solving envelope in ascending order and keep the first that places every item;
+     * failing that, the trial this round's own key prefers, the smaller rung on a tie.
+     *
+     * At most four solves, two trial states alive. A compact lattice cannot describe a box cut
+     * to the achieved extent, so the rung solves always report coordinates (D12), and a rung
+     * choice is a heuristic, so the trial is never exhaustive (D13).
+     *
+     * @param list<ItemInstance> $items
+     * @return array{0:SingleContainerSolution,1:int}
+     */
+    private function madeToMeasureTrial(SingleContainerSolver $solver,Container $container,int $sequence,array $items,PackingConfig $config,SearchStats $stats,Deadline $deadline):array
+    {
+        $machine=$container->madeToMeasure;
+        $maximum=[$container->innerDimensions->length->ticks,$container->innerDimensions->width->ticks,$container->innerDimensions->height->ticks];
+        $rungs=$machine->solvingEnvelopes($maximum,MadeToMeasure::instanceEdges($items,$config->clearance->ticks));
+        $rungConfig=$config->requirePlacementCoordinates?$config:self::withCoordinates($config);
+        $selector=$this->containerSelector??new DefaultContainerSelector();
+        $best=null;$bestKey=null;$last=null;$stopped=false;$trials=0;
+        foreach($rungs as $rung){
+            try{$one=$solver->packOne($container->withEnvelope($rung),$sequence,$items,$rungConfig,$stats,$deadline);}
+            catch(TimeLimitReached $limit){if($best===null)throw $limit;$stopped=true;break;}
+            $trials++;
+            $stopped=$one->timeLimitReached;
+            $last=$one;
+            if($one->state->placementCount()>0){
+                $trial=self::fabricated($container,$one);
+                if($one->state->placementCount()===count($items))return [$trial,$trials];
+                $key=self::roundScore($trial,$items,$config,$selector);
+                if($best===null||($key<=>$bestKey)<0){$best=$trial;$bestKey=$key;}
+            }
+            if($stopped||$deadline->expired()){$stopped=true;break;}
+        }
+        $chosen=$best??$last;
+        return [new SingleContainerSolution($chosen->state,$chosen->unpacked,$chosen->exhaustive,$chosen->timeLimitReached||$stopped,$chosen->dominantLattice),$trials];
+    }
+
+    /** A rung trial as the box cut for it: the achieved extent of its placements, envelope far faces with clearance, rounded up onto the machine grid (D14). O(p). */
+    private static function fabricated(Container $declared,SingleContainerSolution $one):SingleContainerSolution
+    {
+        $box=$declared->fabricate(FlatBag::extentOf($one->state->placements));
+        return new SingleContainerSolution($one->state->withContainer($box),$one->unpacked,false,$one->timeLimitReached,false);
     }
 
     /** @param list<PackedContainer> $preloaded */
@@ -598,42 +867,11 @@ final class SolverOrchestrator
             $candidates=[];
             foreach($ordered as $container){
                 if($inventory[$container->id]!==null&&$inventory[$container->id]<=0)continue;
-                try{$one=$solver->packOne($container,$seq[$container->id]+1,$remaining,$config,$stats,$deadline);}
+                try{[$one]=$this->trial($solver,$container,$seq[$container->id]+1,$remaining,$config,$stats,$deadline);}
                 catch(TimeLimitReached $exception){$reached=true;break;}
                 if($one->timeLimitReached)$reached=true;
                 if($one->state->placementCount()===0){if($reached)break;continue;}
-                if(($config->objective==='shipping_cost'||$config->objective==='lowest_landed_cost')&&$config->dimensionalWeightDivisor!==null){
-                    $dimensions=$container->outerDimensions??$container->innerDimensions;
-                    $dimensional=$dimensions->dimensionalWeight(
-                        $config->dimensionalWeightDivisor,
-                        $config->dimensionalWeightLengthUnit,
-                        $config->dimensionalWeightWeightUnit,
-                    )->ticks;
-                    $gross=$container->tareWeight->ticks+$one->state->payloadTicks;
-                    $billed=max($gross,$dimensional);
-                    $placed=$one->state->placementCount();
-                    if($config->objective==='shipping_cost'){
-                        $candidateScore=[-$placed,$billed,$container->id];
-                    }else{
-                        // Landed cost ranks the round by the money the finished score will
-                        // charge, not by the grams it is derived from. This loop commits the
-                        // trial verbatim, so its billed weight is already final and the tariff
-                        // can be read now; a bracket step or a minimum charge makes the cheaper
-                        // shipment the heavier one, and a trial the tariff cannot price is
-                        // unshippable rather than merely dear, so it sorts behind every
-                        // priceable alternative. Keys after the charge mirror Rust's
-                        // and Python's, so the three engines pick the same container.
-                        $charge=($nullsafeVariable1 = $container->rateTable) ? $nullsafeVariable1->chargeMinorOrNull(LandedCostSolutionScorer::grams($billed)) : null;
-                        $candidateScore=[
-                            $charge??LandedCostSolutionScorer::UNPRICEABLE_MINOR,
-                            intdiv(count($remaining)+max($placed,1)-1,max($placed,1)),
-                            -$placed,
-                            $container->id,
-                        ];
-                    }
-                }else{
-                    $candidateScore=$selector->score($container,$one);
-                }
+                $candidateScore=self::roundScore($one,$remaining,$config,$selector);
                 $candidates[]=[$candidateScore,$one];
                 if($reached)break;
             }
@@ -652,10 +890,11 @@ final class SolverOrchestrator
             }));
             if($reached)break;
         }
-        $unpacked=[];
+        $unpacked=[];$opened=self::openedByType($packed);
         foreach($remaining as $i){
             [$reason,$details]=$this->unpackedReason($i,$containers,$reached);
             if($reason==='no_feasible_placement'&&$this->supportIsTheBlocker($i,$packed,$config))$reason='insufficient_support';
+            if($reason==='no_feasible_placement')$reason=self::limitReason($i,$containers,$opened,$config)??$reason;
             $unpacked[]=new UnpackedItem($i,$reason,$details);
         }
         // Optimality may only be claimed when an exhaustive search filled a single
@@ -738,7 +977,7 @@ final class SolverOrchestrator
         })){
             $capacity='0';foreach($available as $container)if(BigInt::compare($container->innerDimensions->volumeString(),$capacity)>0)$capacity=$container->innerDimensions->volumeString();
             if($capacity!=='0'){
-                $required='0';foreach($plan['remaining'] as $item)$required=BigInt::add($required,$item->dimensions()->volumeString());
+                $required='0';foreach($plan['remaining'] as $item)$required=BigInt::add($required,Nesting::itemOccupiedVolume($item));
                 $lower=max($lower,(int)BigInt::divide(BigInt::add($required,BigInt::subtract($capacity,'1')),$capacity));
             }
         }
@@ -788,8 +1027,10 @@ final class SolverOrchestrator
                     if($nodes>=$config->containerPlanNodeLimit)break;
                     if($deadline->expired()){$reached=true;break;}
                     if($plan['inventory'][$container->id]!==null&&$plan['inventory'][$container->id]<=0)continue;
-                    $nodes++;
-                    try{$one=$solver->packOne($container,$plan['sequences'][$container->id]+1,$plan['remaining'],$config,$stats,$deadline);}catch(TimeLimitReached $exception){$reached=true;break;}
+                    // Each rung is one single-container solve, so the node limit keeps bounding
+                    // the work of a made-to-measure chain.
+                    try{[$one,$trials]=$this->trial($solver,$container,$plan['sequences'][$container->id]+1,$plan['remaining'],$config,$stats,$deadline);}catch(TimeLimitReached $exception){$nodes++;$reached=true;break;}
+                    $nodes+=$trials;
                     $reached=$reached||$one->timeLimitReached;if($one->state->placementCount()===0)continue;
                     [$committed,$ids]=self::commitState($one->state);$child=$plan;$child['packed'][]=$committed;$child['remaining']=array_values(array_filter($plan['remaining'],static function (ItemInstance $item) use ($ids): bool {
                         return !isset($ids[$item->id()]);
@@ -816,7 +1057,7 @@ final class SolverOrchestrator
                 0,$config->containerPlanBeamWidth,
             );
         }
-        $unpacked=[];foreach($incumbent['remaining'] as $item){[$reason,$details]=$this->unpackedReason($item,$containers,$reached);if($reason==='no_feasible_placement'&&$this->supportIsTheBlocker($item,$incumbent['packed'],$config))$reason='insufficient_support';$unpacked[]=new UnpackedItem($item,$reason,$details);}
+        $unpacked=[];$opened=self::openedByType($incumbent['packed']);foreach($incumbent['remaining'] as $item){[$reason,$details]=$this->unpackedReason($item,$containers,$reached);if($reason==='no_feasible_placement'&&$this->supportIsTheBlocker($item,$incumbent['packed'],$config))$reason='insufficient_support';if($reason==='no_feasible_placement')$reason=self::limitReason($item,$containers,$opened,$config)??$reason;$unpacked[]=new UnpackedItem($item,$reason,$details);}
         $proven=$incumbent['exhaustive']&&!$reached&&$unpacked===[]&&count($incumbent['packed'])===1;
         return [$incumbent['packed'],$unpacked,$proven,$reached,$incumbent['dominant']];
     }
