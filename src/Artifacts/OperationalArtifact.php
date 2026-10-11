@@ -36,7 +36,7 @@ final class OperationalArtifact
      * The engine's own name is deliberately not recorded: four correct builders naming
      * themselves would emit four different documents.
      */
-    public const SUITE_VERSION = '1.5.0';
+    public const SUITE_VERSION = '1.6.0';
 
     /** The deterministic part of `result.algorithm`; `duration_ms` is wall-clock time. */
     private const SOLVER_FIELDS = ['profile', 'solver', 'seed', 'time_limit_reached', 'effort_limit_reached'];
@@ -126,6 +126,22 @@ final class OperationalArtifact
         } catch (JsonException $error) {
             throw new OperationalArtifactException('invalid_json', 'not JSON text: ' . $error->getMessage(), $error);
         }
+    }
+
+    /**
+     * `exact` or `not_guaranteed`: the replay promise an artifact of this result would make,
+     * without building the artifact. The same rule {@see build()} records under
+     * `provenance.replay.level`, and the twin of Python's `packvium.artifacts.replay_level`.
+     *
+     * @param mixed $result a JSON object: a `stdClass` or an associative array
+     * @throws OperationalArtifactException `invalid_result` when `algorithm` is malformed
+     */
+    public static function replayLevel($result): string
+    {
+        if (!JsonValue::isObject($result)) {
+            throw new OperationalArtifactException('invalid_result', 'a result is a JSON object');
+        }
+        return self::replay(self::solver(JsonValue::get($result, 'algorithm')))['level'];
     }
 
     /**

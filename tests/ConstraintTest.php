@@ -1406,6 +1406,92 @@ final class ConstraintTest extends TestCase
         self::assertTrue((new TopLoadConstraint())->evaluate(self::context($candidate, 0, [$beside]))->allowed);
     }
 
+    // ------------------------------------------------------ stacking groups
+
+    /**
+     * @param array<string,mixed> $lower
+     * @param array<string,mixed> $upper
+     */
+    private static function stackingVerdict(array $lower, array $upper): \Packvium\Constraint\ConstraintResult
+    {
+        $base = self::placed(self::instance('lower', options: $lower));
+        return (new TopLoadConstraint())->evaluate(self::context(self::instance('upper', options: $upper), 10 * self::MM, [$base]));
+    }
+
+    public static function testAnItemWhoseGroupTheLowerItemAcceptsMayRestOnIt(): void
+    {
+        $lower = ['stackingGroup' => 'A', 'acceptsStackingGroups' => ['A', 'B']];
+        self::assertTrue(self::stackingVerdict($lower, ['stackingGroup' => 'B'])->allowed);
+        $refused = self::stackingVerdict($lower, ['stackingGroup' => 'C']);
+        self::assertSame(['stacking_group_incompatible', 'lower'], [$refused->code, $refused->detail]);
+    }
+
+    public static function testAnEmptyListIsUnconstrainedAndANonEmptyOneIsClosed(): void
+    {
+        self::assertTrue(self::stackingVerdict(['stackingGroup' => 'A'], ['stackingGroup' => 'C'])->allowed);
+        self::assertTrue(self::stackingVerdict(['acceptsStackingGroups' => []], [])->allowed);
+        self::assertSame('stacking_group_incompatible',
+            self::stackingVerdict(['acceptsStackingGroups' => ['A']], [])->code);
+        self::assertSame('stacking_group_incompatible',
+            self::stackingVerdict(['acceptsStackingGroups' => ['B']], ['stackingGroup' => 'b'])->code);
+    }
+
+    public static function testAnItemNeedNotAcceptItsOwnGroup(): void
+    {
+        $lower = ['stackingGroup' => 'A', 'acceptsStackingGroups' => ['B']];
+        self::assertSame('stacking_group_incompatible', self::stackingVerdict($lower, ['stackingGroup' => 'A'])->code);
+        self::assertTrue(self::stackingVerdict($lower, ['stackingGroup' => 'B'])->allowed);
+    }
+
+    public static function testEverySupporterOfABridgingItemMustAccept(): void
+    {
+        $left = self::placed(self::instance('left', 50, 100, 10, ['acceptsStackingGroups' => ['A']]));
+        $right = self::placed(self::instance('right', 50, 100, 10), 50 * self::MM);
+        $bridge = self::instance('bridge', 100, 100, 10, ['stackingGroup' => 'B']);
+        $result = (new TopLoadConstraint())->evaluate(self::context($bridge, 10 * self::MM, [$right, $left]));
+        self::assertSame(['stacking_group_incompatible', 'left'], [$result->code, $result->detail]);
+    }
+
+    public static function testTheStackingRuleIsDirectNotTransitive(): void
+    {
+        $a = self::placed(self::instance('a', options: ['acceptsStackingGroups' => ['B']]));
+        $b = self::placed(self::instance('b', options: ['stackingGroup' => 'B']), 0, 0, 10 * self::MM);
+        $c = self::instance('c', options: ['stackingGroup' => 'C']);
+        self::assertTrue((new TopLoadConstraint())->evaluate(self::context($c, 20 * self::MM, [$a, $b]))->allowed);
+    }
+
+    public static function testACandidateSlidUnderAnItemIsJudgedByItsOwnList(): void
+    {
+        $above = self::placed(self::instance('above', options: ['stackingGroup' => 'C']), 0, 0, 10 * self::MM);
+        $refusing = self::instance('under', options: ['acceptsStackingGroups' => ['A']]);
+        $result = (new TopLoadConstraint())->evaluate(self::context($refusing, 0, [$above]));
+        self::assertSame(['stacking_group_incompatible', 'under'], [$result->code, $result->detail]);
+        $accepting = self::instance('under', options: ['acceptsStackingGroups' => ['C']]);
+        self::assertTrue((new TopLoadConstraint())->evaluate(self::context($accepting, 0, [$above]))->allowed);
+    }
+
+    public static function testNonStackableDominatesAListNamingTheUpperGroup(): void
+    {
+        $lower = ['stackable' => false, 'acceptsStackingGroups' => ['B']];
+        self::assertSame('non_stackable', self::stackingVerdict($lower, ['stackingGroup' => 'B'])->code);
+    }
+
+    public static function testANestedColumnIsRefusedWhenTheListOmitsItsOwnGroup(): void
+    {
+        $crate = Item::create('crate', Dimensions::mm(100, 100, 50), quantity: 2,
+            nestingHeight: Length::mm(25), stackingGroup: 'A', acceptsStackingGroups: ['B']);
+        [$lower, $upper] = $crate->instances();
+        $result = (new TopLoadConstraint())->evaluate(self::context($upper, 25 * self::MM, [self::placed($lower)]));
+        self::assertSame('stacking_group_incompatible', $result->code);
+    }
+
+    public static function testOnlyANonEmptyListMakesAnItemStackSensitive(): void
+    {
+        self::assertTrue(self::instance('a', options: ['acceptsStackingGroups' => ['A']])->item->isStackSensitive());
+        self::assertFalse(self::instance('a', options: ['stackingGroup' => 'A'])->item->isStackSensitive());
+        self::assertFalse(self::instance('a', options: ['acceptsStackingGroups' => []])->item->isStackSensitive());
+    }
+
     public static function testACandidateThatWouldCrushTheStackBelowIsRefused(): void
     {
         $base = self::placed(self::instance('base', options: ['weight' => '1 kg', 'maxTopLoad' => '1.5 kg']));

@@ -11,14 +11,23 @@ namespace Packvium\Support;
  */
 final class BigInt
 {
+    /** Decimal digits of one limb: a limb product plus two limbs stays below PHP_INT_MAX. */
+    private const LIMB_DIGITS=9;
+    private const LIMB=1_000_000_000;
+    /** Digits of the largest value whose sum or product with another of its size is a native integer. */
+    private const NATIVE_DIGITS=18;
+
     public static function add(string $a, string $b): string
     {
-        $i = strlen($a) - 1; $j = strlen($b) - 1; $carry = 0; $out = '';
-        while ($i >= 0 || $j >= 0 || $carry > 0) {
-            $sum = ($i >= 0 ? ord($a[$i--]) - 48 : 0) + ($j >= 0 ? ord($b[$j--]) - 48 : 0) + $carry;
-            $out = (string)($sum % 10) . $out; $carry = intdiv($sum, 10);
+        if (strlen($a) <= self::NATIVE_DIGITS && strlen($b) <= self::NATIVE_DIGITS) { return (string)((int)$a + (int)$b); }
+        $x = self::limbs($a); $y = self::limbs($b); $sum = []; $carry = 0;
+        for ($i = 0, $n = max(count($x), count($y)); $i < $n; ++$i) {
+            $limb = ($x[$i] ?? 0) + ($y[$i] ?? 0) + $carry;
+            $carry = $limb >= self::LIMB ? 1 : 0;
+            $sum[] = $limb - $carry * self::LIMB;
         }
-        return ltrim($out, '0') ?: '0';
+        if ($carry > 0) { $sum[] = $carry; }
+        return self::fromLimbs($sum);
     }
 
     /**
@@ -43,16 +52,21 @@ final class BigInt
 
     public static function multiply(string|int $a, string|int $b): string
     {
-        $a = ltrim((string)$a, '0') ?: '0'; $b = ltrim((string)$b, '0') ?: '0';
-        if ($a === '0' || $b === '0') { return '0'; }
-        $digits = array_fill(0, strlen($a) + strlen($b), 0);
-        for ($i = strlen($a)-1; $i >= 0; --$i) {
-            for ($j = strlen($b)-1; $j >= 0; --$j) {
-                $p = (ord($a[$i])-48) * (ord($b[$j])-48) + $digits[$i+$j+1];
-                $digits[$i+$j+1] = $p % 10; $digits[$i+$j] += intdiv($p,10);
+        $a = (string)$a; $b = (string)$b;
+        if (strlen($a) + strlen($b) <= self::NATIVE_DIGITS) { return (string)((int)$a * (int)$b); }
+        $x = self::limbs($a); $y = self::limbs($b);
+        $product = array_fill(0, count($x) + count($y), 0);
+        foreach ($x as $i => $left) {
+            if ($left === 0) { continue; }
+            $carry = 0;
+            foreach ($y as $j => $right) {
+                $limb = $product[$i + $j] + $left * $right + $carry;
+                $carry = intdiv($limb, self::LIMB);
+                $product[$i + $j] = $limb - $carry * self::LIMB;
             }
+            $product[$i + count($y)] += $carry;
         }
-        return ltrim(implode('', $digits), '0') ?: '0';
+        return self::fromLimbs($product);
     }
 
     /** Compare two non-negative decimal strings: -1, 0 or 1. */
@@ -74,13 +88,14 @@ final class BigInt
         if (self::compare($a, $b) < 0) {
             throw new \InvalidArgumentException("BigInt::subtract would be negative: {$a} - {$b}");
         }
-        $i = strlen($a) - 1; $j = strlen($b) - 1; $borrow = 0; $out = '';
-        while ($i >= 0) {
-            $digit = (ord($a[$i--]) - 48) - $borrow - ($j >= 0 ? ord($b[$j--]) - 48 : 0);
-            if ($digit < 0) { $digit += 10; $borrow = 1; } else { $borrow = 0; }
-            $out = (string)$digit . $out;
+        if (strlen($a) <= self::NATIVE_DIGITS) { return (string)((int)$a - (int)$b); }
+        $x = self::limbs($a); $y = self::limbs($b); $difference = []; $borrow = 0;
+        foreach ($x as $i => $limb) {
+            $limb -= ($y[$i] ?? 0) + $borrow;
+            $borrow = $limb < 0 ? 1 : 0;
+            $difference[] = $limb + $borrow * self::LIMB;
         }
-        return ltrim($out, '0') ?: '0';
+        return self::fromLimbs($difference);
     }
 
     /**
@@ -93,6 +108,42 @@ final class BigInt
         $a = self::normalize($a); $b = self::normalize($b);
         if ($b === '0') { throw new \DivisionByZeroError('BigInt::divide by zero'); }
         if (self::compare($a, $b) < 0) { return '0'; }
+        if (strlen($a) <= self::NATIVE_DIGITS) { return (string)intdiv((int)$a, (int)$b); }
+        if (strlen($b) <= self::LIMB_DIGITS) { return self::divideByLimb($a, (int)$b); }
+        return self::divideByEstimate($a, $b);
+    }
+
+    /** Short division by a divisor below one limb: each step divides a value below LIMB^2. */
+    private static function divideByLimb(string $a, int $b): string
+    {
+        $quotient = []; $remainder = 0;
+        foreach (array_reverse(self::limbs($a)) as $limb) {
+            $remainder = $remainder * self::LIMB + $limb;
+            $quotient[] = intdiv($remainder, $b);
+            $remainder %= $b;
+        }
+        return self::fromLimbs(array_reverse($quotient));
+    }
+
+    /**
+     * A float quotient corrected until q * b <= a < (q + 1) * b, which only the floor meets.
+     *
+     * Below 2^50 the float estimate is within a few units of the floor, so the correction
+     * takes a step or two; a larger quotient falls back to digit-by-digit long division.
+     */
+    private static function divideByEstimate(string $a, string $b): string
+    {
+        $estimate = floor((float)$a / (float)$b);
+        if (!($estimate < 2 ** 50)) { return self::longDivide($a, $b); }
+        $quotient = (int)$estimate;
+        $product = self::multiply($quotient, $b);
+        while (self::compare($product, $a) > 0) { --$quotient; $product = self::subtract($product, $b); }
+        while (self::compare($next = self::add($product, $b), $a) <= 0) { ++$quotient; $product = $next; }
+        return (string)$quotient;
+    }
+
+    private static function longDivide(string $a, string $b): string
+    {
         $quotient = ''; $remainder = '0';
         for ($i = 0, $n = strlen($a); $i < $n; ++$i) {
             // Schoolbook long division: shift the next digit in, then find the largest
@@ -107,6 +158,27 @@ final class BigInt
             $quotient .= (string)$digit;
         }
         return ltrim($quotient, '0') ?: '0';
+    }
+
+    /** @return list<int> The value's base-LIMB digits, least significant first. */
+    private static function limbs(string $digits): array
+    {
+        $limbs = [];
+        for ($end = strlen($digits); $end > 0; $end -= self::LIMB_DIGITS) {
+            $start = $end > self::LIMB_DIGITS ? $end - self::LIMB_DIGITS : 0;
+            $limbs[] = (int)substr($digits, $start, $end - $start);
+        }
+        return $limbs;
+    }
+
+    /** @param non-empty-list<int> $limbs Least significant first. */
+    private static function fromLimbs(array $limbs): string
+    {
+        $top = count($limbs) - 1;
+        while ($top > 0 && $limbs[$top] === 0) { --$top; }
+        $out = (string)$limbs[$top];
+        for ($i = $top - 1; $i >= 0; --$i) { $out .= str_pad((string)$limbs[$i], self::LIMB_DIGITS, '0', STR_PAD_LEFT); }
+        return $out;
     }
 
     private static function normalize(string|int $value): string

@@ -87,6 +87,19 @@ final class PackingTest extends TestCase
         }
     }
 
+    public static function testThePublicEffortBudgetIsTheSolversOwnTypeAndBoundsTheSearch(): void
+    {
+        $public = new \Packvium\Config\EffortBudget(maxSearchNodes: 5);
+        self::assertTrue($public instanceof EffortBudget);
+        self::assertTrue(new EffortBudget() instanceof \Packvium\Config\EffortBudget);
+
+        $items = [Support::item('cube', 20, 20, 20, ['quantity' => 20])];
+        $config = new PackingConfig(timeLimitMs: 60_000, solvers: ['grid'], effortBudget: $public);
+        $result = Support::pack($items, [Support::box('box', 200, 200, 200)], $config);
+        self::assertSame(5, $result->packedItemCount());
+        self::assertSame('effort_limit', $result->termination->code);
+    }
+
     public static function testAnItemLargerThanEveryContainerIsReportedWithAReason(): void
     {
         $items = [Support::item('slab', 200, 200, 200)];

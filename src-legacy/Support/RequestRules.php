@@ -2,6 +2,8 @@
 declare(strict_types=1);
 namespace Packvium\Support;
 
+use Packvium\Domain\FlatBag;
+use Packvium\Domain\MadeToMeasure;
 use Packvium\Serialization\InvalidRequestException;
 use Packvium\Unit\Length;
 use Packvium\Unit\Weight;
@@ -21,7 +23,7 @@ use stdClass;
 final class RequestRules
 {
     public const SOLVER_PROFILES = ['fast', 'balanced', 'quality', 'exact_small'];
-    public const OBJECTIVES = ['default', 'lowest_cost', 'shipping_cost', 'lowest_landed_cost', 'open_dimension_height', 'maximum_value'];
+    public const OBJECTIVES = ['default', 'lowest_cost', 'shipping_cost', 'lowest_landed_cost', 'open_dimension_height', 'maximum_value', 'maximum_volume'];
     public const ACCESS_DIRECTIONS = ['+x', '-x', '+y', '-y', '+z', '-z'];
 
     private const CONFIGURATION_INTEGERS = [
@@ -39,6 +41,12 @@ final class RequestRules
         'solver_profile', 'solvers', 'time_limit_ms',
     ];
     private const SIDES = ['length', 'width', 'height'];
+    /** Container fields a flat bag refuses, in reporting order (docs/DEFORMABLE-CONTAINERS.md). */
+    private const BAG_EXCLUSIONS = ['obstacles', 'axles', 'access_directions', 'max_stack_density',
+        'outer_dimensions', 'void_fill_reserve_ratio', 'made_to_measure'];
+    /** Every key the request schema's `made_to_measure` declares; it sets `additionalProperties: false`. */
+    private const MADE_TO_MEASURE_FIELDS = ['cost_per_square_metre_minor', 'increment', 'minimum', 'outer_allowance',
+        'tare_per_square_metre'];
     private const WEIGHT_UNIT = 'g';
 
     /**
@@ -138,6 +146,27 @@ final class RequestRules
         self::optionalInteger($item, 'max_compression_pressure_kpa', $where, 0);
         self::optionalRatio($item, 'minimum_support_ratio', $where, 1);
         self::optionalRatio($item, 'compression_ratio', $where, null);
+        $stackingGroup = JsonValue::get($item, 'stacking_group');
+        if ($stackingGroup !== null) {
+            self::stackingGroupName($stackingGroup, "{$where}/stacking_group");
+        }
+        $accepts = JsonValue::get($item, 'accepts_stacking_groups');
+        if ($accepts !== null) {
+            foreach (self::listAt($accepts, "{$where}/accepts_stacking_groups") as $index => $name) {
+                self::stackingGroupName($name, "{$where}/accepts_stacking_groups/{$index}");
+            }
+        }
+    }
+
+    /** @param mixed $value */
+    private static function stackingGroupName($value, string $field): void
+    {
+        if (!\is_string($value)) {
+            throw self::refuse('wrong_type', $field, 'must be a string');
+        }
+        if ($value === '') {
+            throw self::refuse('invalid_value', $field, 'must not be empty');
+        }
     }
 
     /** @param mixed $raw */
@@ -173,6 +202,116 @@ final class RequestRules
         if ($obstacles !== null) {
             self::obstacles($obstacles, "{$where}/obstacles", $unit);
         }
+        $boundary = JsonValue::get($container, 'deformable_boundary');
+        if ($boundary !== null) {
+            self::deformableBoundary($container, $boundary, $where);
+        }
+        $machine = JsonValue::get($container, 'made_to_measure');
+        if ($machine !== null) {
+            self::madeToMeasure($container, $machine, $where, $unit);
+        }
+    }
+
+    /**
+     * The made-to-measure block's shape top to bottom, then each axis's four rules,
+     * then the price ceiling. Run after every other container field, so an existing error
+     * always wins. O(1).
+     *
+     * @param stdClass|array<array-key,mixed> $container
+     * @param mixed $raw
+     */
+    private static function madeToMeasure($container, $raw, string $where, string $unit): void
+    {
+        $field = "{$where}/made_to_measure";
+        $machine = self::objectAt($raw, $field);
+        self::knownFields($machine, $field, self::MADE_TO_MEASURE_FIELDS);
+        foreach (['minimum', 'increment'] as $name) {
+            self::required($machine, $name, $field);
+        }
+        foreach (['minimum', 'increment', 'outer_allowance'] as $name) {
+            $sides = JsonValue::get($machine, $name);
+            if ($sides !== null) {
+                self::dimensions($sides, "{$field}/{$name}", $unit);
+            }
+        }
+        self::optionalInteger($machine, 'cost_per_square_metre_minor', $field, 0);
+        self::optionalMeasure($machine, 'tare_per_square_metre', $field, Weight::class, self::WEIGHT_UNIT);
+        if (JsonValue::get($container, 'outer_dimensions') !== null) {
+            throw self::refuse('not_allowed', "{$where}/outer_dimensions", 'cannot be combined with made_to_measure');
+        }
+        $inner = self::sideTicks(JsonValue::get($container, 'inner_dimensions'), $unit);
+        $minimum = self::sideTicks(JsonValue::get($machine, 'minimum'), $unit);
+        $increment = self::sideTicks(JsonValue::get($machine, 'increment'), $unit);
+        foreach (self::SIDES as $axis => $side) {
+            if ($minimum[$axis] === 0) {
+                throw self::refuse('invalid_value', "{$field}/minimum/{$side}", 'must be positive');
+            }
+            if ($increment[$axis] === 0) {
+                throw self::refuse('invalid_value', "{$field}/increment/{$side}", 'must be positive');
+            }
+            if ($minimum[$axis] > $inner[$axis]) {
+                throw self::refuse('invalid_value', "{$field}/minimum/{$side}", 'exceeds inner_dimensions');
+            }
+            if (($inner[$axis] - $minimum[$axis]) % $increment[$axis] !== 0) {
+                throw self::refuse('invalid_value', "{$field}/increment/{$side}", 'does not divide inner_dimensions minus minimum');
+            }
+        }
+        $price = JsonValue::integer(JsonValue::get($machine, 'cost_per_square_metre_minor') ?? 0);
+        $fee = JsonValue::integer(JsonValue::get($container, 'cost_minor') ?? 0);
+        if (BigInt::compare(MadeToMeasure::boxCostFor((int) $price, (int) $fee, $inner), MadeToMeasure::MAX_EXACT_INTEGER) > 0) {
+            throw self::refuse('invalid_value', "{$field}/cost_per_square_metre_minor", 'prices the largest box above ' . CanonicalJson::MAX_EXACT_MAGNITUDE);
+        }
+    }
+
+    /**
+     * @param stdClass|array<array-key,mixed> $sides
+     * @return array{0:int,1:int,2:int}
+     */
+    private static function sideTicks($sides, string $unit): array
+    {
+        $ticks = [];
+        foreach (self::SIDES as $side) {
+            $ticks[] = MeasureReading::ticks(JsonValue::get($sides, $side), Length::class, $unit);
+        }
+        return $ticks;
+    }
+
+    /**
+     * The bag's own shape, then every container field a flat bag refuses, in the
+     * order of `BAG_EXCLUSIONS`.
+     *
+     * @param stdClass|array<array-key,mixed> $container
+     * @param mixed $raw
+     */
+    private static function deformableBoundary($container, $raw, string $where): void
+    {
+        $field = "{$where}/deformable_boundary";
+        $boundary = self::objectAt($raw, $field);
+        if (!\in_array(self::required($boundary, 'kind', $field), FlatBag::KINDS, true)) {
+            throw self::refuse('not_allowed', "{$field}/kind", 'must be one of ' . CanonicalJson::spelling(FlatBag::KINDS));
+        }
+        self::knownFields($boundary, $field, ['kind']);
+        foreach (self::BAG_EXCLUSIONS as $name) {
+            if (self::setBesideABag($name, JsonValue::get($container, $name))) {
+                throw self::refuse('not_allowed', "{$where}/{$name}", 'cannot be combined with deformable_boundary');
+            }
+        }
+    }
+
+    /**
+     * An empty obstacle list and a zero reserve change nothing, so only they are let through.
+     *
+     * @param mixed $value
+     */
+    private static function setBesideABag(string $name, $value): bool
+    {
+        if ($name === 'obstacles') {
+            return $value !== null && $value !== [];
+        }
+        if ($name === 'void_fill_reserve_ratio') {
+            return $value !== null && $value > 0;
+        }
+        return $value !== null;
     }
 
     /** @param mixed $raw */

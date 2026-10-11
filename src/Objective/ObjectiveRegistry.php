@@ -28,6 +28,7 @@ final class ObjectiveRegistry
             'lowest_landed_cost' => LandedCostSolutionScorer::fromConfig(...),
             'open_dimension_height' => static fn(?PackingConfig $config) => new OpenDimensionSolutionScorer(),
             'maximum_value' => static fn(?PackingConfig $config) => new MaximumValueSolutionScorer(),
+            'maximum_volume' => static fn(?PackingConfig $config) => new MaximumVolumeSolutionScorer(),
         ];
         $factory = self::$factories[$name] ?? null;
         if ($factory === null) {

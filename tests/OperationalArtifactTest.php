@@ -230,6 +230,24 @@ final class OperationalArtifactTest extends TestCase
         self::assertSame(['level' => 'not_guaranteed', 'because' => 'provenance.solver'], $provenance['replay']);
     }
 
+    public static function testReplayLevelAnswersWhatTheArtifactWouldRecordWithoutBuildingIt(): void
+    {
+        foreach ([self::result(), self::result(['time_limit_reached' => true] + self::algorithm()), self::result(null)] as $result) {
+            self::assertSame(
+                OperationalArtifact::build(self::REQUEST, $result)['provenance']['replay']['level'],
+                OperationalArtifact::replayLevel($result)
+            );
+        }
+        $effortStopped = '{"algorithm": {"profile": "fast", "solver": "x", "seed": 1, '
+            . '"time_limit_reached": false, "effort_limit_reached": true}}';
+        self::assertSame('exact', OperationalArtifact::replayLevel(OperationalArtifact::parse($effortStopped)));
+        foreach (['text', [1, 2], ['algorithm' => ['profile' => 'fast']]] as $malformed) {
+            self::assertSame('invalid_result', self::code(static function () use ($malformed): void {
+                OperationalArtifact::replayLevel($malformed);
+            }));
+        }
+    }
+
     // ---------------------------------------------------------------------------- refusals
 
     public static function testARequestOrResultThatIsNotAnObjectIsRefused(): void

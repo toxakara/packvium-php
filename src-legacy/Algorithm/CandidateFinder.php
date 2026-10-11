@@ -32,6 +32,10 @@ final class CandidateFinder
         }
         $inner=$container->innerDimensions;
         $limitX=$inner->length->ticks;$limitY=$inner->width->ticks;$limitZ=$inner->height->ticks;
+        // A flat bag also needs a + c <= L and b + c <= W over the running extents grown by
+        // the candidate: O(1), and the extents only grow, so no verdict flips.
+        $bag=$container->isFlatBag();
+        $bagX=$state->maxX;$bagY=$state->maxY;$bagZ=$state->maxZ;
         $clearance=$config->clearance->ticks;
         // Envelope and extents depend only on the rotation, so they are built once
         // instead of once per (point, rotation) pair.
@@ -94,6 +98,11 @@ final class CandidateFinder
                 $stats->placementsAttempted++;
                 $x2=$x1+$dx;$y2=$y1+$dy;$z2=$z1+$dz;
                 if($x2>$limitX||$y2>$limitY||$z2>$limitZ)continue;
+                if($bag){
+                    // Ternaries rather than max(): the call made this test dearer (44 ns against 74 ns).
+                    $thickness=$z2>$bagZ?$z2:$bagZ;
+                    if(($x2>$bagX?$x2:$bagX)+$thickness>$limitX||($y2>$bagY?$y2:$bagY)+$thickness>$limitY)continue;
+                }
                 $tentative=null;
                 if($nesting){
                     $position=new Point($x1+$clearance,$y1+$clearance,$z1+$clearance);

@@ -53,7 +53,8 @@ final class ConstraintActivity
             return !$routeSensitive;
         }
         if ($constraint instanceof StopAccessibilityConstraint) {
-            return !$routeSensitive
+            // A flat bag has no walls, so it inherits no doors either.
+            return !$routeSensitive || $container->isFlatBag()
                 || ($container->accessDirections === [] && $defaultAccessDirections === []);
         }
         if ($constraint instanceof AxleLoadConstraint) {

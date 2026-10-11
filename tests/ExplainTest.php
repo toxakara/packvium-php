@@ -36,7 +36,8 @@ final class ExplainTest extends TestCase
         $produced = [
             'no_compatible_container_dimensions', 'rotation_restricted', 'payload_exceeded',
             'no_eligible_container', 'time_limit', 'effort_limit', 'group_cannot_fit_together',
-            'insufficient_support', 'no_feasible_placement',
+            'insufficient_support', 'no_feasible_placement', 'container_inventory_exhausted',
+            'axle_overloaded',
         ];
         foreach ($produced as $reason) {
             self::assertTrue(array_key_exists($reason, Explain::REASON_MESSAGES), "missing message for {$reason}");

@@ -165,6 +165,29 @@ final class AxleLoad
         return $origins;
     }
 
+    /**
+     * Whether one item, alone in an empty container, has an x-origin that overloads
+     * neither axle.
+     *
+     * Each limit is linear in the item's doubled centre, so the feasible origins form
+     * one interval whose two ends `axleBalancedOrigins()` gives exactly. O(1). A
+     * statement about an empty container, not a proof: a counterweight behind the rear
+     * axle can relieve the front one.
+     *
+     * @param array{0:Axle,1:Axle} $axles
+     */
+    public static function admitsAlone(array $axles, int $tareWeightTicks, int $innerLengthTicks, int $itemWeightTicks, int $envelopeLengthTicks): bool
+    {
+        $lastOrigin = $innerLengthTicks - $envelopeLengthTicks;
+        if ($lastOrigin < 0) { return false; }
+        if ($itemWeightTicks <= 0) { return self::exceeded($axles, [], $tareWeightTicks, $innerLengthTicks) === null; }
+        [$front, $rear] = $axles;
+        $origins = self::axleBalancedOrigins($axles, [], $tareWeightTicks, $innerLengthTicks, $itemWeightTicks, $envelopeLengthTicks);
+        $lowest = $front->maxLoad !== null ? $origins[0] : 0;
+        $highest = $rear->maxLoad !== null ? $origins[count($origins) - 1] : $lastOrigin;
+        return max(0, $lowest) <= min($lastOrigin, $highest);
+    }
+
     private static function sNeg(string $v): string
     {
         if ($v === '0') { return '0'; }

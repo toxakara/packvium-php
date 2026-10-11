@@ -36,6 +36,9 @@ final class ObjectiveRegistry
             'maximum_value' => static function (?PackingConfig $config) {
                 return new MaximumValueSolutionScorer();
             },
+            'maximum_volume' => static function (?PackingConfig $config) {
+                return new MaximumVolumeSolutionScorer();
+            },
         ];
         $factory = self::$factories[$name] ?? null;
         if ($factory === null) {

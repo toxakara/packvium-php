@@ -130,7 +130,22 @@ final class Item
      * @var int|null
      */
     public $maxCompressionPressureKpa;
-    public function __construct(string $id,Dimensions $dimensions,?Weight $weight=null,int $quantity=1,array $allowedRotations=[Rotation::LWH,Rotation::LHW,Rotation::WLH,Rotation::WHL,Rotation::HLW,Rotation::HWL],bool $keepUpright=false,bool $stackable=true,bool $mustBeOnFloor=false,?Weight $maxTopLoad=null,float $minimumSupportRatio=0.0,?string $group=null,array $tags=[],array $incompatibleTags=[],int $priority=0,array $metadata=[],?int $maxStackedItems=null,array $eligibleContainerTags=[],?string $groundContactRule=null,?Length $nestingHeight=null,?int $stopIndex=null,?int $value=null,string $shapeType=ShapeType::RIGID_CUBOID,?array $hullVertices=null,?int $compressionRatioPpm=null,?int $maxCompressionPressureKpa=null)
+    // Which stacking class this item belongs to, and which classes it may carry directly on
+    // its top face (docs/STACKING-GROUPS.md). An empty list is unconstrained, like
+    // tags; a non-empty one is closed, so an item with no class rests on no constrained
+    // item -- a forgotten classification fails closed, never open.
+    /**
+     * @readonly
+     * @var string|null
+     */
+    public $stackingGroup;
+    /** @var list<string>
+     * @readonly */
+    public $acceptsStackingGroups;
+    /** @var array<string,true> the same list keyed, so each support edge costs one lookup
+     * @readonly */
+    private $acceptedStackingGroups;
+    public function __construct(string $id,Dimensions $dimensions,?Weight $weight=null,int $quantity=1,array $allowedRotations=[Rotation::LWH,Rotation::LHW,Rotation::WLH,Rotation::WHL,Rotation::HLW,Rotation::HWL],bool $keepUpright=false,bool $stackable=true,bool $mustBeOnFloor=false,?Weight $maxTopLoad=null,float $minimumSupportRatio=0.0,?string $group=null,array $tags=[],array $incompatibleTags=[],int $priority=0,array $metadata=[],?int $maxStackedItems=null,array $eligibleContainerTags=[],?string $groundContactRule=null,?Length $nestingHeight=null,?int $stopIndex=null,?int $value=null,string $shapeType=ShapeType::RIGID_CUBOID,?array $hullVertices=null,?int $compressionRatioPpm=null,?int $maxCompressionPressureKpa=null,?string $stackingGroup=null,array $acceptsStackingGroups=[])
     {
         if($id==='')throw new InvalidArgumentException('Item id is required');if($quantity<=0)throw new InvalidArgumentException('Item quantity must be positive');if($minimumSupportRatio<0||$minimumSupportRatio>1)throw new InvalidArgumentException('Minimum support ratio must be between 0 and 1');if($maxStackedItems!==null&&$maxStackedItems<1)throw new InvalidArgumentException('max_stacked_items must be at least 1');if($groundContactRule!==null&&!in_array($groundContactRule,self::GROUND_CONTACT_RULES,true))throw new InvalidArgumentException('ground_contact_rule must be one of '.implode(', ',self::GROUND_CONTACT_RULES));
         if($nestingHeight!==null&&!($nestingHeight->ticks>=0&&$nestingHeight->ticks<$dimensions->height->ticks))throw new InvalidArgumentException("nesting_height must be at least zero and strictly less than the item's own height");
@@ -143,12 +158,14 @@ final class Item
         $this->shapeType=$shapeType;
         $this->hullVertices=self::admitShape($shapeType,$hullVertices,$compressionRatioPpm,$maxCompressionPressureKpa,$dimensions,$nestingHeight);
         $this->compressionRatioPpm=$compressionRatioPpm;$this->maxCompressionPressureKpa=$maxCompressionPressureKpa;
+        $this->stackingGroup=$stackingGroup;$this->acceptsStackingGroups=array_values(array_unique($acceptsStackingGroups));
+        $this->acceptedStackingGroups=array_fill_keys($this->acceptsStackingGroups,true);
     }
     /**
      * @param \Packvium\Unit\Weight|int|string|mixed[] $weight
      * @param \Packvium\Unit\Weight|int|string|mixed[]|null $maxTopLoad
      */
-    public static function create(string $id,Dimensions $dimensions,$weight=0,int $quantity=1,array $allowedRotations=[Rotation::LWH,Rotation::LHW,Rotation::WLH,Rotation::WHL,Rotation::HLW,Rotation::HWL],bool $keepUpright=false,bool $stackable=true,bool $mustBeOnFloor=false,$maxTopLoad=null,float $minimumSupportRatio=0.0,?string $group=null,array $tags=[],array $incompatibleTags=[],int $priority=0,array $metadata=[],?int $maxStackedItems=null,array $eligibleContainerTags=[],?string $groundContactRule=null,?Length $nestingHeight=null,?int $stopIndex=null,?int $value=null,string $shapeType=ShapeType::RIGID_CUBOID,?array $hullVertices=null,?int $compressionRatioPpm=null,?int $maxCompressionPressureKpa=null):self{return new self($id,$dimensions,Weight::parse($weight),$quantity,$allowedRotations,$keepUpright,$stackable,$mustBeOnFloor,$maxTopLoad===null?null:Weight::parse($maxTopLoad),$minimumSupportRatio,$group,$tags,$incompatibleTags,$priority,$metadata,$maxStackedItems,$eligibleContainerTags,$groundContactRule,$nestingHeight,$stopIndex,$value,$shapeType,$hullVertices,$compressionRatioPpm,$maxCompressionPressureKpa);}
+    public static function create(string $id,Dimensions $dimensions,$weight=0,int $quantity=1,array $allowedRotations=[Rotation::LWH,Rotation::LHW,Rotation::WLH,Rotation::WHL,Rotation::HLW,Rotation::HWL],bool $keepUpright=false,bool $stackable=true,bool $mustBeOnFloor=false,$maxTopLoad=null,float $minimumSupportRatio=0.0,?string $group=null,array $tags=[],array $incompatibleTags=[],int $priority=0,array $metadata=[],?int $maxStackedItems=null,array $eligibleContainerTags=[],?string $groundContactRule=null,?Length $nestingHeight=null,?int $stopIndex=null,?int $value=null,string $shapeType=ShapeType::RIGID_CUBOID,?array $hullVertices=null,?int $compressionRatioPpm=null,?int $maxCompressionPressureKpa=null,?string $stackingGroup=null,array $acceptsStackingGroups=[]):self{return new self($id,$dimensions,Weight::parse($weight),$quantity,$allowedRotations,$keepUpright,$stackable,$mustBeOnFloor,$maxTopLoad===null?null:Weight::parse($maxTopLoad),$minimumSupportRatio,$group,$tags,$incompatibleTags,$priority,$metadata,$maxStackedItems,$eligibleContainerTags,$groundContactRule,$nestingHeight,$stopIndex,$value,$shapeType,$hullVertices,$compressionRatioPpm,$maxCompressionPressureKpa,$stackingGroup,$acceptsStackingGroups);}
     /**
      * Admit this item's shape, or refuse it with the reason.
      *
@@ -210,7 +227,21 @@ final class Item
      */
     public function isStackSensitive():bool
     {
-        return !$this->stackable||$this->maxTopLoad!==null||$this->maxStackedItems!==null||$this->maxCompressionPressureKpa!==null;
+        // A stacking group alone does not count: such an item is refused only by a
+        // constrained item beneath it, which already switched the graph on.
+        return !$this->stackable||$this->acceptsStackingGroups!==[]||$this->maxTopLoad!==null||$this->maxStackedItems!==null||$this->maxCompressionPressureKpa!==null;
+    }
+
+    /** Whether an item of `$group` may rest directly on this one, ignoring `stackable`. O(1). */
+    public function acceptsStackingGroup(?string $group):bool
+    {
+        return $this->acceptsStackingGroups===[]||($group!==null&&isset($this->acceptedStackingGroups[$group]));
+    }
+
+    /** Whether a column of this one item type passes every stacking edge. */
+    public function carriesItself():bool
+    {
+        return $this->stackable&&$this->acceptsStackingGroup($this->stackingGroup);
     }
 
     /** @return list<ItemInstance> */ public function instances():array{$out=[];for($i=1;$i<=$this->quantity;$i++)$out[]=new ItemInstance($this,$i);return $out;}

@@ -4,7 +4,7 @@ declare(strict_types=1);
 namespace Packvium;
 
 use Packvium\Algorithm\{Deadline, FixedPlacementAdmission, SolverOrchestrator};
-use Packvium\Support\StableSorter;
+use Packvium\Support\{StableSorter, UnsupportedPlacements};
 use Packvium\Config\PackingConfig;
 use Packvium\Domain\{Container, FixedPlacement, Item, PackingRequest, UnratedWeightException};
 use Packvium\Extension\ExtensionRegistry;
@@ -141,6 +141,10 @@ final class Packer
                         $warnings[] = $issue->code . ': ' . $issue->detail;
                     }
                 }
+            }
+            $unsupported = UnsupportedPlacements::warning($raw->containers, $this->config->minimumSupportRatio);
+            if ($unsupported !== null) {
+                $warnings[] = $unsupported;
             }
             $starts = [];
             $winnerMarked = false;

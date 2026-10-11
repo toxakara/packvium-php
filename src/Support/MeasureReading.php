@@ -45,6 +45,18 @@ final class MeasureReading
         return self::READABLE;
     }
 
+    /**
+     * The ticks of a value `verdict` already found readable, for a rule that compares measures.
+     * An unreadable one reaches the parser as null and is refused there as a `TypeError`.
+     *
+     * @param mixed $value
+     * @param class-string<Length>|class-string<Weight> $kind
+     */
+    public static function ticks($value, string $kind, string $unit): int
+    {
+        return $kind::parse(self::normalised($value), $unit)->ticks;
+    }
+
     /** @param class-string<Length>|class-string<Weight> $kind */
     public static function knowsUnit(string $kind, string $unit): bool
     {

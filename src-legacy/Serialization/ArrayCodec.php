@@ -5,11 +5,11 @@ use ArithmeticError;
 use InvalidArgumentException;
 use Packvium\Algorithm\EffortBudget;
 use Packvium\Config\{PackingConfig,SolverProfile};
-use Packvium\Domain\{Axle,AxisAlignedBox,Compression,Container,Dimensions,FixedPlacement,Item,Obstacle,Point,RateTable,Rotation,ShapeType};
+use Packvium\Domain\{Axle,AxisAlignedBox,Compression,Container,Dimensions,FixedPlacement,Item,MadeToMeasure,Obstacle,Point,RateTable,Rotation,ShapeType};
 use Packvium\Extension\ExtensionRegistry;
 use Packvium\Packer;
 use Packvium\Policy\PolicyRuleSet;
-use Packvium\Support\{FixedPlacementShape,JsonValue,RequestRules};
+use Packvium\Support\{FixedPlacementShape,JsonValue,MeasureReading,RequestRules};
 use Packvium\Unit\{Length,Weight};
 use Throwable;
 use TypeError;
@@ -103,6 +103,7 @@ final class ArrayCodec
                 }
             }
         }
+        foreach(self::madeToMeasureCombinations($data) as $name)$found[$name]=true;
         foreach(self::entries($data,'items') as $entry){
             if(!is_array($entry))continue;
             $shape=$entry['shape_type']??null;
@@ -116,6 +117,36 @@ final class ArrayCodec
             'unsupported_feature: the PHP engine does not yet implement '.implode(', ',$names)
             .'; the request was rejected instead of silently ignoring public fields'
         );
+    }
+
+    /**
+     * The made-to-measure combinations 1.6 refuses (D10, docs/MADE-TO-MEASURE-CONTAINERS.md).
+     * Each reads a container dimension or position the fabricated box does not keep. Checked on
+     * the raw request, before any request error. O(containers + fixed placements).
+     *
+     * @param array<string,mixed> $data
+     * @return list<string>
+     */
+    public static function madeToMeasureCombinations(array $data):array
+    {
+        $found=[];$measured=[];
+        foreach(self::entries($data,'containers') as $entry){
+            if(!is_array($entry)||($entry['made_to_measure']??null)===null)continue;
+            if(is_string($entry['id']??null))$measured[$entry['id']]=true;
+            if(($entry['axles']??null)!==null)$found['container.made_to_measure+axles']=true;
+            $obstacles=$entry['obstacles']??null;
+            if(JsonValue::isList($obstacles)&&$obstacles!==[])$found['container.made_to_measure+obstacles']=true;
+            $reserve=$entry['void_fill_reserve_ratio']??null;
+            if((is_int($reserve)||is_float($reserve))&&$reserve>0)$found['container.made_to_measure+void_fill_reserve_ratio']=true;
+        }
+        $fixed=$data['fixed_placements']??null;
+        if($measured!==[]&&is_array($fixed)){
+            foreach($fixed as $entry){
+                $type=is_array($entry)?($entry['container_type']??null):null;
+                if(is_string($type)&&isset($measured[$type])){$found['fixed_placements+container.made_to_measure']=true;break;}
+            }
+        }
+        return array_keys($found);
     }
 
     /** @return array<array-key,mixed> a collection to scan, or nothing when it is not one */
@@ -229,7 +260,8 @@ final class ArrayCodec
     },Rotation::all()));return new Item((string)$r['id'],Dimensions::fromArray($r['dimensions'],$unit),Weight::parse($r['weight']??0), (int)($r['quantity']??1),$rot,(bool)($r['keep_upright']??false),(bool)($r['stackable']??true),(bool)($r['must_be_on_floor']??false),isset($r['max_top_load'])?Weight::parse($r['max_top_load']):null,(float)($r['minimum_support_ratio']??0),$r['group']??null,$r['tags']??[],$r['incompatible_tags']??[],(int)($r['priority']??0),$r['metadata']??[],isset($r['max_stacked_items'])?(int)$r['max_stacked_items']:null,$r['eligible_container_tags']??[],$r['ground_contact_rule']??null,isset($r['nesting_height'])?Length::parse($r['nesting_height'],$unit):null,isset($r['stop_index'])?(int)$r['stop_index']:null,isset($r['value'])?(int)$r['value']:null,
         ShapeType::from((string)($r['shape_type']??ShapeType::RIGID_CUBOID)),self::hullVertices($r['hull_vertices']??null,$unit),
         isset($r['compression_ratio'])?Compression::ratioToPpm((float)$r['compression_ratio']):null,
-        isset($r['max_compression_pressure_kpa'])?(int)$r['max_compression_pressure_kpa']:null);}
+        isset($r['max_compression_pressure_kpa'])?(int)$r['max_compression_pressure_kpa']:null,
+        $r['stacking_group']??null,$r['accepts_stacking_groups']??[]);}
 
     /**
      * Parse `hull_vertices` into the integer tick frame before any geometry runs.
@@ -268,6 +300,19 @@ final class ArrayCodec
         return (int)$v;
     },$r['tag_limits']??[]),isset($r['max_stack_density'])?Weight::parse($r['max_stack_density']):null,self::axles($r['axles']??null,$unit),self::rateTable($r['rate_table']??null),array_map(static function ($d) {
         return (string)$d;
-    },$r['access_directions']??[]));}
+    },$r['access_directions']??[]),[],isset($r['deformable_boundary'])?(string)$r['deformable_boundary']['kind']:null,self::madeToMeasure($r['made_to_measure']??null,$unit));}
+    /** @param array<string,mixed>|null $r */
+    private static function madeToMeasure(?array $r,string $unit):?MadeToMeasure
+    {
+        if($r===null)return null;
+        $sides=static function($value)use($unit):array{
+            if($value===null)return [0,0,0];
+            return array_map(static function (string $axis) use ($value, $unit): int {
+                return MeasureReading::ticks($value[$axis],Length::class,$unit);
+            },['length','width','height']);
+        };
+        $tare=$r['tare_per_square_metre']??null;
+        return new MadeToMeasure($sides($r['minimum']??null),$sides($r['increment']??null),(int)($r['cost_per_square_metre_minor']??0),$tare===null?0:MeasureReading::ticks($tare,Weight::class,'g'),$sides($r['outer_allowance']??null));
+    }
     private static function rateTable(?array $r):?RateTable{if($r===null)return null;return new RateTable(array_map('intval',$r['weight_brackets_g']),array_map('intval',$r['prices_minor']),(int)($r['minimum_charge_minor']??0),(int)($r['fuel_surcharge_permille']??0));}
 }

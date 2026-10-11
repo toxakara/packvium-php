@@ -98,11 +98,29 @@ final class PackedContainer
         return $this->latticeSummary !== null ? $this->latticeSummary->expand($this->latticeItems) : $this->placements;
     }
 
+    /**
+     * The largest envelope x2, y2 and z2 of its placements: a flat bag's conformed package
+     *, or a made-to-measure box's extent before it is rounded onto the machine grid
+     *; null for any other container. O(p).
+     */
+    public function achievedDimensions():?Dimensions
+    {
+        if(!$this->container->isFlatBag()&&$this->container->madeToMeasure===null)return null;
+        return FlatBag::asDimensions(FlatBag::extentOf($this->placements));
+    }
+
+    /** What a carrier measures: a bag's achieved package, else the declared outer size. */
+    public function billedDimensions():Dimensions
+    {
+        $achieved=$this->container->isFlatBag()?$this->achievedDimensions():null;
+        return $achieved??$this->container->outerDimensions??$this->container->innerDimensions;
+    }
+
     public function asItem(?string $id=null,bool $keepUpright=true,?Weight $maxTopLoad=null):Item
     {
         return Item::create(
             $id??$this->id(),
-            $this->container->outerDimensions??$this->container->innerDimensions,
+            $this->billedDimensions(),
             $this->grossWeight(),
             1,
             Rotation::all(),

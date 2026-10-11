@@ -98,6 +98,18 @@ final class Deadline
     public function elapsedMs():int{return intdiv(($this->clock)()-$this->started,1000000);}
     public function remainingNs():int{return $this->limitNs-(($this->clock)()-$this->started);}
     public function effortExceeded():bool{return $this->effortBudget!==null && $this->stats!==null && $this->effortBudget->exceeded($this->stats);}
+    /**
+     * How many more search nodes counted into `$counted` may expand before `effortExceeded()`
+     * trips, while nothing else that budget counts moves: zero once it has tripped, and
+     * `PHP_INT_MAX` when no node budget reads `$counted`. A solver that counts a run of nodes
+     * in one step stops on the same node as one that checks before each.
+     */
+    public function searchNodesLeft(SearchStats $counted):int
+    {
+        if($this->effortExceeded())return 0;
+        if($this->effortBudget===null||$this->effortBudget->maxSearchNodes===null||$this->stats!==$counted)return PHP_INT_MAX;
+        return $this->effortBudget->maxSearchNodes-$counted->searchNodesExpanded;
+    }
     public function expired():bool{return $this->effortExceeded() || $this->remainingNs()<=0;}
 
     public function slice(int $parts):self

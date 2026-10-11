@@ -2,7 +2,8 @@
 declare(strict_types=1);
 namespace Packvium\Algorithm;
 use Packvium\Constraint\VolumeReserve;
-use Packvium\Domain\{AxisAlignedBox,Container,ItemInstance,LatticeSummary,Nesting,Placement,Point,ShapeType};
+use Packvium\Config\PackingConfig;
+use Packvium\Domain\{AxisAlignedBox,Container,FlatBag,ItemInstance,LatticeSummary,Nesting,Placement,Point,ShapeType};
 use Packvium\Support\BigInt;
 /**
  * Placed boxes plus the candidate points they expose.
@@ -16,7 +17,6 @@ use Packvium\Support\BigInt;
 final class ContainerState
 {
     /**
-     * @readonly
      * @var \Packvium\Domain\Container
      */
     public $container;
@@ -62,10 +62,20 @@ final class ContainerState
      * @var bool
      */
     public $compressionSensitive=false;
+    /** Largest envelope x2 and y2 so far; with `$maxZ`, a flat bag's running extents.
+     * @var int */
+    public $maxX=0;
+    /**
+     * @var int
+     */
+    public $maxY=0;
     /**
      * @var int
      */
     public $maxZ=0;
+    /** Null means a direct lattice/block placement invalidated the lazy beam key.
+     * @var string|null */
+    private $placementSignature='';
     /**
      * @var \Packvium\Algorithm\SpatialIndex
      */
@@ -82,6 +92,10 @@ final class ContainerState
      */
     private $usableVolumeTicks;
 
+    /**
+     * `$container` is not readonly only so a made-to-measure trial can be committed as the box
+     * cut for it (`withContainer`); nothing else reassigns it.
+     */
     public function __construct(Container $container,int $sequence)
     {
         $this->container = $container;
@@ -106,6 +120,32 @@ final class ContainerState
 
     /** Clone rather than reconstruct: the constructor's point seeding would be discarded. */
     public function copy():self{return clone $this;}
+
+    public function placementSignature():string
+    {
+        if($this->placementSignature!==null)return $this->placementSignature;
+        $parts=[];
+        foreach($this->placements as $placement)$parts[]=self::signatureElement($placement);
+        return $this->placementSignature=implode('|',$parts);
+    }
+
+    private static function signatureElement(Placement $placement):string
+    {
+        return $placement->instance->id().'@'.$placement->envelopeOrigin->x.','.$placement->envelopeOrigin->y.','.$placement->envelopeOrigin->z;
+    }
+
+    /**
+     * This state as a trial of another container of the same contents: a made-to-measure rung
+     * committed as the box cut for it. Only read after the trial ends, so the
+     * candidate points and index sized for the rung are never searched again.
+     */
+    public function withContainer(Container $container):self
+    {
+        $copy=clone $this;
+        $copy->container=$container;
+        $copy->usableVolumeTicks=null;
+        return $copy;
+    }
 
     /**
      * PHP arrays are value types, so `clone` already deep-copies `$bounds`/`$occupied`/
@@ -132,14 +172,18 @@ final class ContainerState
         else
             $this->usedVolume=BigInt::add($this->usedVolume,Nesting::usedVolumeDelta($this->placements,$placement));
         $this->placements[]=$placement;
+        if($this->placementSignature!==null){
+            $elem=self::signatureElement($placement);
+            $this->placementSignature=$this->placementSignature==='' ? $elem : $this->placementSignature.'|'.$elem;
+        }
         $this->payloadTicks+=$placement->instance->weight()->ticks;
         $item=$placement->instance->item;
         $this->stackSensitive=$this->stackSensitive||$item->isStackSensitive();
         $this->routeSensitive=$this->routeSensitive||$item->stopIndex!==null;
         $this->compressionSensitive=$compressionSensitive;
-        if($box->z2()>$this->maxZ)$this->maxZ=$box->z2();
         $this->occupied[]=$box;
         $bound=$box->extent();
+        $this->extendExtent($bound[3],$bound[4],$bound[5]);
         $this->index->add(count($this->bounds),$bound);
         $this->bounds[]=$bound;
         $shape=$placement->hullShape();
@@ -179,11 +223,42 @@ final class ContainerState
         // could drift from `add`, so the direct lattice path remains the proven O(1) delta.
         $this->usedVolume=BigInt::add($this->usedVolume,Nesting::usedVolumeDelta($this->placements,$placement));
         $this->placements[]=$placement;
+        $this->placementSignature=null;
         $this->payloadTicks+=$placement->instance->weight()->ticks;
         $item=$placement->instance->item;
         $this->stackSensitive=$this->stackSensitive||$item->isStackSensitive();
         $this->routeSensitive=$this->routeSensitive||$item->stopIndex!==null;
-        if($box->z2()>$this->maxZ)$this->maxZ=$box->z2();
+        $this->extendExtent($box->x2(),$box->y2(),$box->z2());
+    }
+
+    private function extendExtent(int $x2,int $y2,int $z2):void
+    {
+        if($x2>$this->maxX)$this->maxX=$x2;
+        if($y2>$this->maxY)$this->maxY=$y2;
+        if($z2>$this->maxZ)$this->maxZ=$z2;
+    }
+
+    /**
+     * The dimensional weight, in weight ticks, a carrier bills for this container as filled.
+     *
+     * A flat bag is billed on its running extents, the parcel a carrier measures; an empty bag
+     * has no parcel yet and bills nothing by volume. A rigid container is billed on its declared
+     * outer size, else its inner size. O(1).
+     */
+    public function billedDimensionalWeight(PackingConfig $config):int
+    {
+        $container=$this->container;
+        if($container->isFlatBag()){
+            if($this->placements===[])return 0;
+            $dimensions=FlatBag::asDimensions([$this->maxX,$this->maxY,$this->maxZ]);
+        }else{
+            $dimensions=$container->outerDimensions??$container->innerDimensions;
+        }
+        return $dimensions->dimensionalWeight(
+            (int)$config->dimensionalWeightDivisor,
+            $config->dimensionalWeightLengthUnit,
+            $config->dimensionalWeightWeightUnit,
+        )->ticks;
     }
 
     public function placementCount():int

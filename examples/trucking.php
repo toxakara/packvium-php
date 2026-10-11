@@ -29,8 +29,7 @@ declare(strict_types=1);
 
 require dirname(__DIR__) . '/autoload.php';
 
-use Packvium\Algorithm\EffortBudget;
-use Packvium\Config\{PackingConfig, SolverProfile};
+use Packvium\Config\{EffortBudget, PackingConfig, SolverProfile};
 use Packvium\Domain\{Axle, Container, Dimensions, Item, Rotation};
 use Packvium\Packer;
 use Packvium\Result\PackingResult;

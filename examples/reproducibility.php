@@ -29,8 +29,8 @@ declare(strict_types=1);
 
 require dirname(__DIR__) . '/autoload.php';
 
-use Packvium\Algorithm\EffortBudget;
-use Packvium\Config\{PackingConfig, SolverProfile};
+use Packvium\Artifacts\OperationalArtifact;
+use Packvium\Config\{EffortBudget, PackingConfig, SolverProfile};
 use Packvium\Domain\{Container, Dimensions, Item};
 use Packvium\Extension\ExtensionRegistry;
 use Packvium\Packer;
@@ -74,20 +74,14 @@ function solveOn(PackingConfig $config, int $step, array $items, array $boxes): 
     return (new Packer($config, new ExtensionRegistry(), null, host($step)))->pack($items, $boxes);
 }
 
-/**
- * Whether an artifact of this result could promise an exact replay: only when no clock
- * stopped the search. It is the rule `Packvium\Artifacts\OperationalArtifact` applies.
- */
-function replayLevel(PackingResult $result): string
-{
-    return $result->toArray()['algorithm']['time_limit_reached'] ? 'not_guaranteed' : 'exact';
-}
-
 function describe(PackingResult $result): string
 {
     $opened = implode(',', array_map(static fn($packed): string => $packed->container->id, $result->containers));
+    // The replay promise an operational artifact of this result would make: `exact` only
+    // when no clock stopped the search.
+    $replay = OperationalArtifact::replayLevel($result->toArray());
     return sprintf('%-6s left out %2d  termination %-12s replay %s',
-        $opened, count($result->unpacked), $result->termination->code, replayLevel($result));
+        $opened, count($result->unpacked), $result->termination->code, $replay);
 }
 
 function section(string $title): void

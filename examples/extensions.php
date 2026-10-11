@@ -27,8 +27,8 @@ declare(strict_types=1);
 
 require dirname(__DIR__) . '/autoload.php';
 
-use Packvium\Algorithm\{EffortBudget, RawSolution, SingleContainerSolution};
-use Packvium\Config\{PackingConfig, SolverProfile};
+use Packvium\Algorithm\{RawSolution, SingleContainerSolution};
+use Packvium\Config\{EffortBudget, PackingConfig, SolverProfile};
 use Packvium\Constraint\{ConstraintContext, ConstraintResult, PlacementConstraint};
 use Packvium\Domain\{Container, Dimensions, Item, Rotation};
 use Packvium\Extension\{ContainerSelector, DefaultContainerSelector, ExtensionRegistry};
@@ -36,9 +36,11 @@ use Packvium\Objective\{DefaultSolutionScorer, ObjectiveScore, SolutionScorer};
 use Packvium\Packer;
 use Packvium\Unit\Length;
 
-// The interfaces take a few types that live in `Packvium\Algorithm` (`RawSolution`,
-// `SingleContainerSolution`, `EffortBudget`). Implementing an interface means naming them;
-// read only what is shown here from them, since that namespace is not frozen like the rest.
+// `SolutionScorer` and `ContainerSelector` are handed the solver's own results,
+// `RawSolution` and `SingleContainerSolution`, which live in the internal
+// `Packvium\Algorithm` namespace. Implementing either interface means naming them, and
+// their names are held by the interfaces' frozen signatures; read only what is shown here
+// from them -- a `RawSolution`'s `containers` and `unpacked` -- since the rest is not frozen.
 
 /**
  * Counted work, not a clock, bounds every solve here, so the example prints the same on

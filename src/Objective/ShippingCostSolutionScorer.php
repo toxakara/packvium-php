@@ -58,7 +58,7 @@ class ShippingCostSolutionScorer implements SolutionScorer
 
         $billable = 0;
         foreach ($solution->containers as $container) {
-            $dimensions = $container->container->outerDimensions ?? $container->container->innerDimensions;
+            $dimensions = $container->billedDimensions();
             $dimensionalWeight = $dimensions->dimensionalWeight($this->divisor, $this->lengthUnit, $this->weightUnit);
             $billable += max($container->grossWeight()->ticks, $dimensionalWeight->ticks);
         }

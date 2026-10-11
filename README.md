@@ -10,7 +10,7 @@ coordinates and rotations for each item, with a reason for anything that did not
 Full documentation, the constraint reference and benchmarks live at
 [packvium.com](https://packvium.com).
 
-> **Version 1.5.0 — the public API is frozen.** Field names, status codes and the
+> **Version 1.6.0 — the public API is frozen.** Field names, status codes and the
 > objective vector do not change without a major version, so any `1.x` is a safe upgrade
 > from any earlier `1.x`.
 > Read [docs/GUARANTEES.md](https://github.com/toxakara/packvium-php/blob/main/docs/GUARANTEES.md)
@@ -69,6 +69,12 @@ echo '{"items":[{"id":"box","quantity":8,"dimensions":{"length":"50","width":"50
        "containers":[{"id":"carton","inner_dimensions":{"length":"100","width":"100","height":"100"}}]}' \
   | vendor/bin/packvium
 ```
+
+Support is not required by default: `minimum_support_ratio` is 0, so an item may rest on
+nothing above the container floor, and the result then says so in `warnings`
+(`unsupported_placements: N placement(s) rest on nothing above the container floor; ...`).
+To require support, set it above 0 — `'configuration' => ['minimum_support_ratio' => 0.75]`, or
+`new PackingConfig(minimumSupportRatio: 0.75)` in the object API.
 
 The library is framework-independent: no facades, no static state, no container bindings.
 Construct a `Packer` and call it.
@@ -333,7 +339,7 @@ CodeMeta form.
 @software{packvium_php,
   author  = {{Packvium contributors}},
   title   = {Packvium for PHP},
-  version = {1.5.0},
+  version = {1.6.0},
   license = {MIT},
   url     = {https://packvium.com}
 }
