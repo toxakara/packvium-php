@@ -10,7 +10,7 @@ use Packvium\Constraint\ContactGraph;
 use Packvium\Constraint\ContainerEligibilityConstraint;
 use Packvium\Constraint\FloorConstraint;
 use Packvium\Constraint\LoadCalculator;
-use Packvium\Constraint\Internal\{LoadAnalysis,LoadSupportGraph};
+use Packvium\Constraint\Internal\{ConstraintActivity,LoadAnalysis,LoadSupportGraph};
 use Packvium\Constraint\LoadUnit;
 use Packvium\Constraint\RouteOrderConstraint;
 use Packvium\Constraint\StopAccessibilityConstraint;
@@ -233,6 +233,21 @@ final class ConstraintTest extends TestCase
         self::assertTrue($throughPlus->allowed);
     }
 
+    public static function testTheSweepAsksTheInstanceForItsDoors(): void
+    {
+        // S17: the activity check read the configuration's doors, so a caller-supplied
+        // constraint built with its own doors was skipped in a container that states none.
+        // Python asks the instance; so does PHP now.
+        $doorless = Container::create('doorless', Dimensions::mm(100, 100, 100));
+        $item = self::instance('i');
+        self::assertFalse(ConstraintActivity::isInert(new StopAccessibilityConstraint(['-x']), $doorless, $item, true, true));
+        self::assertTrue(ConstraintActivity::isInert(new StopAccessibilityConstraint(), $doorless, $item, true, true));
+        self::assertTrue(ConstraintActivity::isInert(new StopAccessibilityConstraint(['-x']), $doorless, $item, true, false));
+        $doored = Container::create('doored', Dimensions::mm(100, 100, 100), accessDirections: ['+x']);
+        self::assertSame(['+x'], (new StopAccessibilityConstraint(['-x']))->directionsFor($doored));
+        self::assertSame(['-x'], (new StopAccessibilityConstraint(['-x']))->directionsFor($doorless));
+    }
+
     public static function testSweptVolumeRefusesAnUnknownDirectionAtThePrimitive(): void
     {
         // The constraint validates its doors at construction, but the primitive is public
@@ -313,6 +328,16 @@ final class ConstraintTest extends TestCase
             self::unit(0, 0, 20, 10, 10, 10, weight: 100, label: 'top'),
         ];
         self::assertSame([200, 100, 0], LoadCalculator::topLoads($tower));
+    }
+
+    public static function testEverythingAboveAUnitIsRestingOnItNotOnlyItsDirectLoad(): void
+    {
+        $tower = [
+            self::unit(0, 0, 0, 10, 10, 10, weight: 100, label: 'bottom'),
+            self::unit(0, 0, 10, 10, 10, 10, weight: 100, label: 'middle'),
+            self::unit(0, 0, 20, 10, 10, 10, weight: 100, label: 'top'),
+        ];
+        self::assertSame([[1 => true, 2 => true], [2 => true], []], LoadCalculator::restingAbove($tower));
     }
 
     public static function testAThreeLayerNestedColumnPropagatesLoadAndStackedCountDirectly(): void
@@ -937,6 +962,18 @@ final class ConstraintTest extends TestCase
         self::assertSame([1, 1, 0], LoadCalculator::stackedCounts($supportersAndLoad));
     }
 
+    public static function testAStackOfElevenHundredSheetsIsCountedWithoutRecursing(): void
+    {
+        // The audit's tall-stack reproduction (S3) at the constraint level.
+        $column = [];
+        for ($level = 0; $level < 1_100; $level++) {
+            $column[] = self::unit(0, 0, $level, 10, 10, 1, stackLimit: 5_000, label: "s{$level}");
+        }
+        self::assertSame(array_map(static fn(int $level): int => 1_099 - $level, range(0, 1_099)),
+            LoadCalculator::stackedCounts($column));
+        self::assertNull(LoadCalculator::stackLimitExceeded($column));
+    }
+
     public static function testNoStackLimitsMeansNoCheckToRun(): void
     {
         $column = [
@@ -1331,6 +1368,26 @@ final class ConstraintTest extends TestCase
         self::assertTrue((new SupportConstraint(0.0))->evaluate($resting)->allowed);
     }
 
+    public static function testCoveredCountsOnlyBoxesTheCandidateActuallyRestsOn(): void
+    {
+        // The audit's three-box case (S4): `a` carries the front half of the candidate,
+        // `b` and `c` touch its two back corners with zero overlap area. Corners touched
+        // only by a zero-area neighbour hang, so this is refused, as the validators do.
+        [$front] = Item::create('a', Dimensions::mm(10, 5, 10))->instances();
+        [$left] = Item::create('b', Dimensions::mm(10, 10, 10))->instances();
+        [$right] = Item::create('c', Dimensions::mm(10, 10, 10))->instances();
+        $candidate = self::instance('top', 10, 10, 10, ['groundContactRule' => 'covered']);
+        $resting = self::context($candidate, 10 * self::MM, [
+            self::placed($front, 10 * self::MM, 0),
+            self::placed($left, 0, 10 * self::MM),
+            self::placed($right, 20 * self::MM, 10 * self::MM),
+        ], x: 10 * self::MM);
+        $result = (new SupportConstraint(0.0))->evaluate($resting);
+        self::assertFalse($result->allowed);
+        self::assertSame('ground_contact_violation', $result->code);
+        self::assertSame('covered: 1 supporter(s), not all four corners touched', $result->detail);
+    }
+
     public static function testSingleRejectsACandidateSplitAcrossTwoSupporters(): void
     {
         [$left] = Item::create('left', Dimensions::mm(50, 100, 10))->instances();
@@ -1663,5 +1720,19 @@ final class ConstraintTest extends TestCase
         self::assertSame('unloading_order_violation', $code);
         self::assertTrue(str_contains($detail, 'base'), 'the blocked item is named');
         self::assertTrue(str_contains($detail, 'top'), 'its blocker is named');
+    }
+
+    public static function testTheFirstBlockerNamedIsTheLowestIndexNotTheFirstReached(): void
+    {
+        // `high` is reached first through `left`; both it and `right` block `base`. The
+        // lowest index is named so PHP and Python agree (S16).
+        $scene = [
+            self::unit(0, 0, 0, 20, 10, 10, label: 'base'),
+            self::unit(0, 0, 10, 10, 10, 10, label: 'left'),
+            self::unit(10, 0, 10, 10, 10, 10, label: 'right'),
+            self::unit(0, 0, 20, 10, 10, 10, label: 'high'),
+        ];
+        self::assertSame(['unloading_order_violation', 'base blocked by right'],
+            LoadCalculator::routeOrderViolated($scene, [0.0, 0.0, 1.0, 2.0]));
     }
 }

@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 namespace Packvium\Domain;
-use InvalidArgumentException;
+use Packvium\Support\ObjectRefusal;
 use Packvium\Support\BigInt;
 /**
  * A made-to-measure container's machine (docs/MADE-TO-MEASURE-CONTAINERS.md "1.6
@@ -30,10 +30,10 @@ final readonly class MadeToMeasure
      */
     public function __construct(public array $minimum,public array $increment,public int $costPerSquareMetreMinor=0,public int $tarePerSquareMetre=0,public array $outerAllowance=[0,0,0])
     {
-        if(min($minimum)<=0)throw new InvalidArgumentException('made_to_measure minimum must be positive');
-        if(min($increment)<=0)throw new InvalidArgumentException('made_to_measure increment must be positive');
-        if($costPerSquareMetreMinor<0||$tarePerSquareMetre<0)throw new InvalidArgumentException('made_to_measure prices cannot be negative');
-        if(min($outerAllowance)<0)throw new InvalidArgumentException('made_to_measure outer_allowance cannot be negative');
+        if(min($minimum)<=0)throw new ObjectRefusal('invalid_value','made_to_measure minimum must be positive');
+        if(min($increment)<=0)throw new ObjectRefusal('invalid_value','made_to_measure increment must be positive');
+        if($costPerSquareMetreMinor<0||$tarePerSquareMetre<0)throw new ObjectRefusal('below_minimum','made_to_measure prices cannot be negative');
+        if(min($outerAllowance)<0)throw new ObjectRefusal('negative_measure','made_to_measure outer_allowance cannot be negative');
     }
 
     /**
@@ -46,8 +46,8 @@ final readonly class MadeToMeasure
     public function admits(array $maximum):void
     {
         foreach(['length','width','height'] as $axis=>$name){
-            if($this->minimum[$axis]>$maximum[$axis])throw new InvalidArgumentException("made_to_measure minimum {$name} exceeds inner_dimensions");
-            if(($maximum[$axis]-$this->minimum[$axis])%$this->increment[$axis]!==0)throw new InvalidArgumentException("made_to_measure increment {$name} does not divide inner_dimensions minus minimum");
+            if($this->minimum[$axis]>$maximum[$axis])throw new ObjectRefusal('invalid_value',"made_to_measure minimum {$name} exceeds inner_dimensions");
+            if(($maximum[$axis]-$this->minimum[$axis])%$this->increment[$axis]!==0)throw new ObjectRefusal('invalid_value',"made_to_measure increment {$name} does not divide inner_dimensions minus minimum");
         }
     }
 

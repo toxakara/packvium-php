@@ -182,8 +182,9 @@ final class RequestErrorTest extends TestCase
     public static function testWhatTheRulesDoNotNameIsStillARequestError(): void
     {
         $request = self::request();
-        $request['items'][0]['allowed_rotations'] = ['XYZ'];
-        $error = self::refusal($request, 'unknown rotation');
+        // A model rule the schema does not have: rate brackets out of order.
+        $request['containers'][0]['rate_table'] = ['weight_brackets_g' => [5000, 1000], 'prices_minor' => [500, 900]];
+        $error = self::refusal($request, 'descending rate brackets');
         self::assertSame(['invalid_value', ''], [$error->reason(), $error->field()]);
         self::assertTrue(str_starts_with($error->getMessage(), 'invalid_request: '), $error->getMessage());
     }
@@ -248,6 +249,17 @@ final class RequestErrorTest extends TestCase
             return $error;
         }
         throw new RuntimeException("{$name}: the request was packed");
+    }
+
+    /**: with no output block, the result is in the request unit spelt as its schema code. */
+    public static function testWithoutAnOutputBlockTheResultIsInTheRequestUnitSpeltAsItsCode(): void
+    {
+        foreach (['cm' => 'cm', 'MM' => 'mm', 'IN' => 'in', 'Inches' => 'in', 'millimeter' => 'mm', 'tick' => 'mm'] as $unit => $code) {
+            $request = self::request();
+            $request['units'] = ['length' => $unit];
+            $result = ArrayCodec::pack($request);
+            self::assertSame($code, $result['containers'][0]['inner_dimensions']['length']['unit'], $unit);
+        }
     }
 
     /** @return array<string,mixed> */

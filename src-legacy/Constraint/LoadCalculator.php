@@ -100,14 +100,8 @@ final class LoadCalculator
      */
     public static function routeOrderViolated(array $units,array $stops):?array
     {
-        $routed=false;
-        foreach($stops as $stop)if($stop!==INF){$routed=true;break;}
-        if(!$routed)return null;
-        foreach(self::restingAbove($units) as $index=>$above)
-            foreach(array_keys($above) as $upper)
-                if($stops[$upper]>$stops[$index])
-                    return ['unloading_order_violation',$units[$index]->label.' blocked by '.$units[$upper]->label];
-        return null;
+        if(!LoadAnalysis::routed($stops))return null;
+        return (new LoadAnalysis($units,new LoadSupportGraph($units)))->routeOrderViolated($stops);
     }
 
     /** First unit whose stacked-item limit is exceeded, as [code, detail]. @param list<LoadUnit> $units @return array{0:string,1:string}|null */

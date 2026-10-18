@@ -9,7 +9,7 @@ use Packvium\Domain\{Axle,AxisAlignedBox,Compression,Container,Dimensions,FixedP
 use Packvium\Extension\ExtensionRegistry;
 use Packvium\Packer;
 use Packvium\Policy\PolicyRuleSet;
-use Packvium\Support\{FixedPlacementShape,JsonValue,MeasureReading,RequestRules};
+use Packvium\Support\{FixedPlacementShape,JsonValue,MeasureReading,ObjectRefusal,RequestRules};
 use Packvium\Unit\{Length,Weight};
 use Throwable;
 use TypeError;
@@ -150,6 +150,17 @@ final class ArrayCodec
     }
 
     /** @return array<array-key,mixed> a collection to scan, or nothing when it is not one */
+    /**
+     * The output unit a request without `output.length_unit` is written in: the
+     * request's own `units.length`, spelt as the schema's output code, so `Inches` is `in`.
+     * A unit no output code names -- the internal `tick` -- gives `mm`, the default of both blocks.
+     */
+    private static function outputLengthCode(string $requestUnit):string
+    {
+        $multiplier=Length::multiplier($requestUnit);
+        foreach(['mm','cm','m','in','ft'] as $code)if(Length::multiplier($code)===$multiplier)return $code;
+        return 'mm';
+    }
     private static function entries(array $data,string $collection):array{$entries=$data[$collection]??[];return is_array($entries)?$entries:[];}
 
     /**
@@ -172,7 +183,7 @@ final class ArrayCodec
         catch(InvalidArgumentException|TypeError|ValueError|ArithmeticError $error){throw self::asRequestError($error);}
         $unit=(string)($data['units']['length']??'mm');
         $out=$data['output']??[];
-        $result=(new Packer($config,$extensions))->pack($items,$containers,$fixed)->toArray($out['length_unit']??$unit,$out['weight_unit']??'g');
+        $result=(new Packer($config,$extensions))->pack($items,$containers,$fixed)->toArray($out['length_unit']??self::outputLengthCode($unit),$out['weight_unit']??'g');
         $result['catalog_versions_used']=$references;
         return $result;
     }
@@ -209,6 +220,9 @@ final class ArrayCodec
      */
     private static function asRequestError(Throwable $error):Throwable
     {
+        // A model's own refusal names a reason for the object API; these rules did not name
+        // this value, and every engine reports that as `invalid_value` with no field.
+        if($error instanceof ObjectRefusal)return new InvalidRequestException('invalid_value','',$error->detail(),$error);
         if($error instanceof InvalidRequestException||$error instanceof UnsupportedFeatureException||method_exists($error,'errorCode'))return $error;
         return new InvalidRequestException('invalid_value','',$error->getMessage(),$error);
     }

@@ -2,6 +2,7 @@
 declare(strict_types=1);
 namespace Packvium\Unit;
 use InvalidArgumentException;
+use Packvium\Support\ObjectRefusal;
 use Packvium\Support\RationalParser;
 final class Weight
 {
@@ -16,7 +17,7 @@ final class Weight
     /**
      * @param int|string $value
      */
-    public static function of($value,string $unit='g',string $rounding=Rounding::Nearest):self{return new self(RationalParser::scaled($value,self::multiplier($unit),$rounding));}
+    public static function of($value,string $unit='g',string $rounding=Rounding::Nearest):self{return self::read(RationalParser::scaled($value,self::multiplier($unit),$rounding));}
     /**
      * @param $this|int|string|mixed[] $value
      */
@@ -42,6 +43,8 @@ final class Weight
         case 'lbs':
             return self::TICKS_PER_LB;
         default:
-            throw new InvalidArgumentException("Unsupported weight unit: {$unit}");
+            throw new ObjectRefusal('invalid_unit',"Unsupported weight unit: {$unit}");
     }}
+    /** A weight read from the caller's input; the constructor still guards the arithmetic, where a negative is a defect, not a caller's mistake. */
+    private static function read(int $ticks):self{if($ticks<0)throw new ObjectRefusal('negative_measure','Weight cannot be negative');return new self($ticks);}
 }

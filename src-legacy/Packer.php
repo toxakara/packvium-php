@@ -4,7 +4,7 @@ declare(strict_types=1);
 namespace Packvium;
 
 use Packvium\Algorithm\{Deadline, FixedPlacementAdmission, SolverOrchestrator};
-use Packvium\Support\{StableSorter, UnsupportedPlacements};
+use Packvium\Support\{RequestObjects, StableSorter, UnsupportedPlacements};
 use Packvium\Config\PackingConfig;
 use Packvium\Domain\{Container, FixedPlacement, Item, PackingRequest, UnratedWeightException};
 use Packvium\Extension\ExtensionRegistry;
@@ -52,6 +52,9 @@ final class Packer
     /** @param list<Item> $items @param list<Container> $containers @param list<FixedPlacement> $fixedPlacements */
     public function pack(array $items, array $containers, array $fixedPlacements = []): PackingResult
     {
+        // The JSON path's rules, with the JSON path's reason and field: a request
+        // built from objects is refused exactly where the same request as JSON would be.
+        RequestObjects::check($items, $containers, $this->config, $fixedPlacements);
         $request = new PackingRequest($items, $containers, $fixedPlacements);
         // Both cost objectives price the same billed weight, so both need the divisor.
         // There is no library-chosen default: a wrong guess would silently misprice

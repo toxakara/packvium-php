@@ -364,7 +364,7 @@ final class PlanRevision
         self::requireName(JsonValue::get($placement, 'item_type'), 'placement.item_type');
         self::requireName(JsonValue::get($placement, 'container_type'), 'placement.container_type');
         if (!\in_array(JsonValue::get($placement, 'orientation'), FixedPlacementShape::ORIENTATIONS, true)) {
-            throw new PlanRevisionException('invalid_event', 'placement.orientation is one of the six codes');
+            throw new PlanRevisionException('invalid_event', 'placement.orientation must be one of ' . CanonicalJson::spelling(FixedPlacementShape::ORIENTATIONS));
         }
         $instance = JsonValue::has($placement, 'container_instance') ? JsonValue::integer($placement->container_instance) : 1;
         if ($instance === null || $instance < 1) {

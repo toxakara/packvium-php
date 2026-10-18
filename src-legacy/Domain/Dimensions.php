@@ -2,6 +2,7 @@
 declare(strict_types=1);
 namespace Packvium\Domain;
 use InvalidArgumentException;
+use Packvium\Support\ObjectRefusal;
 use Packvium\Support\BigInt;
 use Packvium\Unit\Length;
 use Packvium\Unit\Rounding;
@@ -32,7 +33,7 @@ final class Dimensions
      * @param int|string $w
      * @param int|string $h
      */
-    public static function of($l,$w,$h,string $unit='mm',string $rounding=Rounding::Nearest):self{return new self(Length::of($l,$unit,$rounding),Length::of($w,$unit,$rounding),Length::of($h,$unit,$rounding));}
+    public static function of($l,$w,$h,string $unit='mm',string $rounding=Rounding::Nearest):self{return self::read(Length::of($l,$unit,$rounding),Length::of($w,$unit,$rounding),Length::of($h,$unit,$rounding));}
     /**
      * @param int|string $l
      * @param int|string $w
@@ -45,7 +46,9 @@ final class Dimensions
      * @param int|string $h
      */
     public static function inches($l,$w,$h,string $rounding=Rounding::Nearest):self{return self::of($l,$w,$h,'in',$rounding);}
-    /** @param array{length:mixed,width:mixed,height:mixed} $data */ public static function fromArray(array $data,string $unit='mm',string $rounding=Rounding::Nearest):self{return new self(Length::parse($data['length'],$unit,$rounding),Length::parse($data['width'],$unit,$rounding),Length::parse($data['height'],$unit,$rounding));}
+    /** @param array{length:mixed,width:mixed,height:mixed} $data */ public static function fromArray(array $data,string $unit='mm',string $rounding=Rounding::Nearest):self{return self::read(Length::parse($data['length'],$unit,$rounding),Length::parse($data['width'],$unit,$rounding),Length::parse($data['height'],$unit,$rounding));}
+    /** Sides read from the caller's input, where a zero side is a request refusal; the constructor still guards the arithmetic. */
+    private static function read(Length $length,Length $width,Length $height):self{if(min($length->ticks,$width->ticks,$height->ticks)<=0)throw new ObjectRefusal('invalid_value','All dimensions must be positive');return new self($length,$width,$height);}
     public function rotated(string $r):self{switch ($r) {
         case Rotation::LWH:
             return new self($this->length,$this->width,$this->height);

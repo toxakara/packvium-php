@@ -2,6 +2,7 @@
 declare(strict_types=1);
 namespace Packvium\Unit;
 use InvalidArgumentException;
+use Packvium\Support\ObjectRefusal;
 use Packvium\Support\RationalParser;
 final class Length
 {
@@ -17,7 +18,7 @@ final class Length
      * @param int|string $value
      */
     public static function of($value,string $unit='mm',string $rounding=Rounding::Nearest):self
-    { return new self(RationalParser::scaled($value,self::multiplier($unit),$rounding)); }
+    { return self::read(RationalParser::scaled($value,self::multiplier($unit),$rounding)); }
     /**
      * @param int|string $value
      */
@@ -60,6 +61,8 @@ final class Length
         case 'ft':
             return self::TICKS_PER_INCH*12;
         default:
-            throw new InvalidArgumentException("Unsupported length unit: {$unit}");
+            throw new ObjectRefusal('invalid_unit',"Unsupported length unit: {$unit}");
     }}
+    /** A length read from the caller's input; the constructor still guards the arithmetic, where a negative is a defect, not a caller's mistake. */
+    private static function read(int $ticks):self{if($ticks<0)throw new ObjectRefusal('negative_measure','Length cannot be negative');return new self($ticks);}
 }

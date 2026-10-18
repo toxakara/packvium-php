@@ -2,13 +2,14 @@
 declare(strict_types=1);
 namespace Packvium\Unit;
 use InvalidArgumentException;
+use Packvium\Support\ObjectRefusal;
 use Packvium\Support\RationalParser;
 final readonly class Length
 {
     public const TICKS_PER_MM=16000; public const TICKS_PER_INCH=406400;
     public function __construct(public int $ticks){if($ticks<0)throw new InvalidArgumentException('Length cannot be negative');}
     public static function of(int|string $value,string $unit='mm',Rounding $rounding=Rounding::Nearest):self
-    { return new self(RationalParser::scaled($value,self::multiplier($unit),$rounding)); }
+    { return self::read(RationalParser::scaled($value,self::multiplier($unit),$rounding)); }
     public static function mm(int|string $value,Rounding $rounding=Rounding::Nearest):self{return self::of($value,'mm',$rounding);}
     public static function inches(int|string $value,Rounding $rounding=Rounding::Nearest):self{return self::of($value,'in',$rounding);}
     public static function parse(self|int|string|array $value,string $defaultUnit='mm',Rounding $rounding=Rounding::Nearest):self
@@ -23,5 +24,7 @@ final readonly class Length
     { return RationalParser::decimalString($this->ticks,self::multiplier($unit),$places); }
     /** @return array{ticks:int,value:string,unit:string} */
     public function toArray(string $unit='mm'):array{return ['ticks'=>$this->ticks,'value'=>$this->decimal($unit),'unit'=>$unit];}
-    public static function multiplier(string $unit):int{return match(strtolower(trim($unit))){'tick','ticks'=>1,'mm','millimeter','millimeters'=>self::TICKS_PER_MM,'cm'=>self::TICKS_PER_MM*10,'m'=>self::TICKS_PER_MM*1000,'in','inch','inches'=>self::TICKS_PER_INCH,'ft'=>self::TICKS_PER_INCH*12,default=>throw new InvalidArgumentException("Unsupported length unit: {$unit}")};}
+    public static function multiplier(string $unit):int{return match(strtolower(trim($unit))){'tick','ticks'=>1,'mm','millimeter','millimeters'=>self::TICKS_PER_MM,'cm'=>self::TICKS_PER_MM*10,'m'=>self::TICKS_PER_MM*1000,'in','inch','inches'=>self::TICKS_PER_INCH,'ft'=>self::TICKS_PER_INCH*12,default=>throw new ObjectRefusal('invalid_unit',"Unsupported length unit: {$unit}")};}
+    /** A length read from the caller's input; the constructor still guards the arithmetic, where a negative is a defect, not a caller's mistake. */
+    private static function read(int $ticks):self{if($ticks<0)throw new ObjectRefusal('negative_measure','Length cannot be negative');return new self($ticks);}
 }

@@ -1,7 +1,6 @@
 <?php
 declare(strict_types=1);
 namespace Packvium\Domain;
-use InvalidArgumentException;
 /**
  * An item already in a known place before the solve: loaded, or locked there.
  *
@@ -36,14 +35,17 @@ final class FixedPlacement
      * @var int
      */
     public $containerInstance = 1;
-    public function __construct(string $itemId,string $containerId,Point $position,string $rotation,int $containerInstance=1)
+    /**
+     * Every rule on these fields is checked where the placement sits in a request, by
+     * `Packer::pack` (`RequestObjects::check`), with the JSON path's refusal and pointer.
+     */
+    public function __construct(string $itemId, string $containerId, Point $position, string $rotation, int $containerInstance=1)
     {
         $this->itemId = $itemId;
         $this->containerId = $containerId;
         $this->position = $position;
         $this->rotation = $rotation;
         $this->containerInstance = $containerInstance;
-        if($containerInstance<1)throw new InvalidArgumentException('container_instance counts from 1');
     }
 
     public function packedContainerId():string{return "{$this->containerId}#{$this->containerInstance}";}

@@ -3,6 +3,7 @@ declare(strict_types=1);
 namespace Packvium\Domain;
 
 use InvalidArgumentException;
+use Packvium\Support\ObjectRefusal;
 use Packvium\Unit\Length;
 use Packvium\Unit\Weight;
 
@@ -127,7 +128,9 @@ final class Compression
     public static function ratioToPpm(float $ratio): int
     {
         if ($ratio < 0.0 || $ratio > 1.0) {
-            throw new InvalidArgumentException('compression_ratio must be between zero and one');
+            // Below zero is the schema's floor; the schema sets no ceiling, so above one stays
+            // the catch-all `invalid_value` every engine answers.
+            throw new ObjectRefusal($ratio < 0.0 ? 'below_minimum' : 'invalid_value', 'compression_ratio must be between zero and one');
         }
         return (int)($ratio * self::PPM + 0.5);
     }

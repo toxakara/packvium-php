@@ -68,9 +68,13 @@ final class CandidateFinder
         // reaches it.
         $active=[];
         foreach($constraints as $constraint){
-            if(ConstraintActivity::isInert($constraint,$container,$item,$stackSensitive,$routeSensitive,$config->accessDirections))continue;
-            $active[]=[$constraint,$constraint instanceof SupportConstraint];
+            if(ConstraintActivity::isInert($constraint,$container,$item,$stackSensitive,$routeSensitive))continue;
+            $active[]=[$constraint,$constraint instanceof SupportConstraint,ConstraintActivity::isPositionIndependent($constraint)];
         }
+        // A rule that reads no position answers the same at every (point, rotation) of this
+        // search, so it is asked once, by the first position that reaches it.
+        // Keyed by chain position; the stored value is the verdict's `allowed`.
+        $fixedVerdicts=[];
         if($points===null){
             if($item->item->nestingHeight===null)$scan=array_slice($state->orderedPoints,0,$config->maxCandidatePoints);
             else{
@@ -81,7 +85,7 @@ final class CandidateFinder
                 usort($scan,static fn(Point $a,Point $b):int=>[$a->z,$a->y,$a->x]<=>[$b->z,$b->y,$b->x]);
                 $scan=array_slice($scan,0,$config->maxCandidatePoints);
             }
-            if($container->axles!==null)$scan=[...$scan,...self::axleBalancedPoints($state,$item,$forms,$limitX)];
+            if($container->axles!==null)$scan=self::appendUnseen($scan,self::axleBalancedPoints($state,$item,$forms,$limitX));
         }else{$scan=$points;usort($scan,static fn(Point $a,Point $b):int=>[$a->z,$a->y,$a->x]<=>[$b->z,$b->y,$b->x]);}
         $out=[];$best=null;
         $retained=$max!==null&&$max>1?new \SplPriorityQueue():null;
@@ -124,9 +128,12 @@ final class CandidateFinder
                 }
                 if($blocked)continue;
                 $ctx=new ConstraintContext($container,$placed,$item,$point,$rotation,$physical,$envelope,$stackSensitive,$routeSensitive);
-                foreach($active as [$constraint,$countsSupport]){
+                foreach($active as $link=>[$constraint,$countsSupport,$positionIndependent]){
                     if($countsSupport)$stats->supportChecks++;
-                    if(!$constraint->evaluate($ctx)->allowed){$blocked=true;break;}
+                    $allowed=$positionIndependent
+                        ?($fixedVerdicts[$link]??=$constraint->evaluate($ctx)->allowed)
+                        :$constraint->evaluate($ctx)->allowed;
+                    if(!$allowed){$blocked=true;break;}
                 }
                 if($blocked)continue;
                 $score=$scorer->score($state,$point,$envelope);
@@ -193,6 +200,30 @@ final class CandidateFinder
     }
 
     /**
+     * `$points` then the `$extra` points not already offered, keeping their order (S20).
+     *
+     * A repeated point is the same candidate scanned twice: it can change nothing but the
+     * counted effort. O(k + a) for k offered and a extra points.
+     *
+     * @param list<Point> $points
+     * @param list<Point> $extra
+     * @return list<Point>
+     */
+    private static function appendUnseen(array $points, array $extra): array
+    {
+        $fresh=[];
+        foreach($extra as $point)$fresh["{$point->x}:{$point->y}:{$point->z}"]=true;
+        foreach($points as $point)unset($fresh["{$point->x}:{$point->y}:{$point->z}"]);
+        foreach($extra as $point){
+            $key="{$point->x}:{$point->y}:{$point->z}";
+            if(!isset($fresh[$key]))continue;
+            unset($fresh[$key]);
+            $points[]=$point;
+        }
+        return $points;
+    }
+
+    /**
      * Extra floor-level candidates that seat this item on an axle's own limit.
      *
      * Every other candidate point is flush against a wall or another placed box,
@@ -215,6 +246,9 @@ final class CandidateFinder
         $floorYs=[];
         foreach($state->points as $point)if($point->z===0)$floorYs[$point->y]=true;
         $floorYs=$floorYs===[]?[0]:array_keys($floorYs);
+        // Ascending, as Python and Rust scan them: insertion order moved which point a
+        // counted stop landed on (S12).
+        sort($floorYs);
         $points=[];
         foreach($forms as [, , , $dx, , , ]){
             foreach(AxleLoad::axleBalancedOrigins($container->axles,$otherUnits,$tareTicks,$tareDoubledX,$item->weight()->ticks,$dx) as $x1){

@@ -13,7 +13,7 @@ use stdClass;
  * The request schema's rules, walked over the decoded JSON before any model is built.
  *
  * Held to `packvium.request_errors.check_request`: the first violation wins, in the order every
- * engine follows -- units, configuration, items, containers -- and is refused with the same
+ * engine follows -- units, output, configuration, items, containers -- and is refused with the same
  * reason, JSON Pointer and message the reference raises.
  *
  * The request arrives from `json_decode(..., true)`, where `{}` and `[]` are the same empty
@@ -25,13 +25,21 @@ final class RequestRules
     public const SOLVER_PROFILES = ['fast', 'balanced', 'quality', 'exact_small'];
     public const OBJECTIVES = ['default', 'lowest_cost', 'shipping_cost', 'lowest_landed_cost', 'open_dimension_height', 'maximum_value', 'maximum_volume'];
     public const ACCESS_DIRECTIONS = ['+x', '-x', '+y', '-y', '+z', '-z'];
+    /** The schema's closed vocabularies, each refused as `not_allowed` like the two above. */
+    public const SOLVERS = ['grid', 'extreme_points', 'homogeneous_blocks', 'layer', 'maximal_spaces', 'exact_small'];
+    public const ROTATIONS = ['LWH', 'LHW', 'WLH', 'WHL', 'HLW', 'HWL'];
+    public const LENGTH_UNITS = ['mm', 'cm', 'm', 'in', 'ft'];
+    public const WEIGHT_UNITS = ['mg', 'g', 'kg', 'oz', 'lb'];
+    public const GROUND_CONTACT_RULES = ['free', 'covered', 'single', 'multiple'];
+    public const SHAPE_TYPES = ['rigid_cuboid', 'convex_hull', 'compressible'];
 
-    private const CONFIGURATION_INTEGERS = [
+    /** Shared with `RequestObjects`, which walks the same fields over a request of objects. */
+    public const CONFIGURATION_INTEGERS = [
         'time_limit_ms' => 1, 'alternatives' => 1, 'max_containers' => 1, 'exact_item_limit' => 1,
         'multi_start_orders' => 1, 'max_candidates_per_item' => 1, 'max_candidate_points' => 16,
         'container_plan_beam_width' => 1, 'container_plan_node_limit' => 1, 'dimensional_weight_divisor' => 1,
     ];
-    private const EFFORT_LIMITS = ['max_candidates_evaluated', 'max_placement_attempts', 'max_search_nodes', 'max_restarts'];
+    public const EFFORT_LIMITS = ['max_candidates_evaluated', 'max_placement_attempts', 'max_search_nodes', 'max_restarts'];
     /** Every key the request schema's `configuration` declares; it sets `additionalProperties: false`. */
     private const CONFIGURATION_FIELDS = [
         'alternatives', 'clearance', 'container_plan_beam_width', 'container_plan_node_limit',
@@ -42,7 +50,7 @@ final class RequestRules
     ];
     private const SIDES = ['length', 'width', 'height'];
     /** Container fields a flat bag refuses, in reporting order (docs/DEFORMABLE-CONTAINERS.md). */
-    private const BAG_EXCLUSIONS = ['obstacles', 'axles', 'access_directions', 'max_stack_density',
+    public const BAG_EXCLUSIONS = ['obstacles', 'axles', 'access_directions', 'max_stack_density',
         'outer_dimensions', 'void_fill_reserve_ratio', 'made_to_measure'];
     /** Every key the request schema's `made_to_measure` declares; it sets `additionalProperties: false`. */
     private const MADE_TO_MEASURE_FIELDS = ['cost_per_square_metre_minor', 'increment', 'minimum', 'outer_allowance',
@@ -59,21 +67,22 @@ final class RequestRules
     {
         $request = self::objectAt($data, '');
         $unit = self::units(JsonValue::get($request, 'units'));
+        self::output(JsonValue::get($request, 'output'));
         self::configuration(JsonValue::get($request, 'configuration'), $unit);
         $items = self::requiredList($request, 'items', '');
         foreach ($items as $index => $raw) {
             self::item($raw, "/items/{$index}", $unit);
         }
-        self::requireUniqueIds($items, 'items');
+        self::requireUniqueIds(self::identifiers($items), 'items');
         $containers = self::requiredList($request, 'containers', '');
         foreach ($containers as $index => $raw) {
             self::container($raw, "/containers/{$index}", $unit);
         }
-        self::requireUniqueIds($containers, 'containers');
+        self::requireUniqueIds(self::identifiers($containers), 'containers');
     }
 
     /** The RFC 6901 pointer to one member, escaping `~` and `/` in its name. */
-    private static function pointer(string $base, string $name): string
+    public static function pointer(string $base, string $name): string
     {
         return $base . '/' . \str_replace(['~', '/'], ['~0', '~1'], $name);
     }
@@ -97,6 +106,17 @@ final class RequestRules
     }
 
     /** @param mixed $raw */
+    private static function output($raw): void
+    {
+        if ($raw === null) {
+            return;
+        }
+        $output = self::objectAt($raw, '/output');
+        self::optionalOneOf($output, 'length_unit', '/output', self::LENGTH_UNITS);
+        self::optionalOneOf($output, 'weight_unit', '/output', self::WEIGHT_UNITS);
+    }
+
+    /** @param mixed $raw */
     private static function configuration($raw, string $unit): void
     {
         if ($raw === null) {
@@ -105,16 +125,11 @@ final class RequestRules
         $where = '/configuration';
         $configuration = self::objectAt($raw, $where);
         self::knownFields($configuration, $where, self::CONFIGURATION_FIELDS);
-        $profile = JsonValue::get($configuration, 'solver_profile');
-        if ($profile !== null && !\in_array($profile, self::SOLVER_PROFILES, true)) {
-            throw self::refuse('not_allowed', "{$where}/solver_profile",
-                'must be one of ' . CanonicalJson::spelling(self::SOLVER_PROFILES));
-        }
-        $objective = JsonValue::get($configuration, 'objective');
-        if ($objective !== null && !\in_array($objective, self::OBJECTIVES, true)) {
-            throw self::refuse('not_allowed', "{$where}/objective",
-                'must be one of ' . CanonicalJson::spelling(self::OBJECTIVES));
-        }
+        self::optionalOneOf($configuration, 'solver_profile', $where, self::SOLVER_PROFILES);
+        self::optionalOneOf($configuration, 'objective', $where, self::OBJECTIVES);
+        self::optionalEachOneOf($configuration, 'solvers', $where, self::SOLVERS);
+        self::optionalOneOf($configuration, 'dimensional_weight_length_unit', $where, self::LENGTH_UNITS);
+        self::optionalOneOf($configuration, 'dimensional_weight_weight_unit', $where, self::WEIGHT_UNITS);
         foreach (self::CONFIGURATION_INTEGERS as $name => $minimum) {
             self::optionalInteger($configuration, $name, $where, $minimum);
         }
@@ -130,6 +145,24 @@ final class RequestRules
         }
     }
 
+    /**
+     * A nested copy sinks by less than its own height, or it would vanish into the one below
+     *. Both measures have passed their own rules already. O(1).
+     *
+     * @param stdClass|array<array-key,mixed> $item
+     */
+    private static function nestingBelowHeight($item, string $where, string $unit): void
+    {
+        $nesting = JsonValue::get($item, 'nesting_height');
+        if ($nesting === null) {
+            return;
+        }
+        $height = JsonValue::get(JsonValue::get($item, 'dimensions'), 'height');
+        if (MeasureReading::ticks($nesting, Length::class, $unit) >= MeasureReading::ticks($height, Length::class, $unit)) {
+            throw self::refuse('invalid_value', "{$where}/nesting_height", "must be less than the item's height");
+        }
+    }
+
     /** @param mixed $raw */
     private static function item($raw, string $where, string $unit): void
     {
@@ -140,6 +173,7 @@ final class RequestRules
         self::optionalMeasure($item, 'weight', $where, Weight::class, self::WEIGHT_UNIT);
         self::optionalMeasure($item, 'max_top_load', $where, Weight::class, self::WEIGHT_UNIT);
         self::optionalMeasure($item, 'nesting_height', $where, Length::class, $unit);
+        self::nestingBelowHeight($item, $where, $unit);
         self::optionalInteger($item, 'max_stacked_items', $where, 1);
         self::optionalInteger($item, 'stop_index', $where, 0);
         self::optionalInteger($item, 'value', $where, 0);
@@ -156,10 +190,13 @@ final class RequestRules
                 self::stackingGroupName($name, "{$where}/accepts_stacking_groups/{$index}");
             }
         }
+        self::optionalEachOneOf($item, 'allowed_rotations', $where, self::ROTATIONS);
+        self::optionalOneOf($item, 'ground_contact_rule', $where, self::GROUND_CONTACT_RULES);
+        self::optionalOneOf($item, 'shape_type', $where, self::SHAPE_TYPES);
     }
 
     /** @param mixed $value */
-    private static function stackingGroupName($value, string $field): void
+    public static function stackingGroupName($value, string $field): void
     {
         if (!\is_string($value)) {
             throw self::refuse('wrong_type', $field, 'must be a string');
@@ -303,7 +340,7 @@ final class RequestRules
      *
      * @param mixed $value
      */
-    private static function setBesideABag(string $name, $value): bool
+    public static function setBesideABag(string $name, $value): bool
     {
         if ($name === 'obstacles') {
             return $value !== null && $value !== [];
@@ -317,12 +354,52 @@ final class RequestRules
     /** @param mixed $raw */
     private static function accessDirections($raw, string $where): void
     {
-        $list = self::listAt($raw, $where);
-        foreach ($list as $index => $direction) {
-            if (!\in_array($direction, self::ACCESS_DIRECTIONS, true)) {
-                throw self::refuse('not_allowed', "{$where}/{$index}",
-                    'must be one of ' . CanonicalJson::spelling(self::ACCESS_DIRECTIONS));
-            }
+        self::eachOneOf($raw, $where, self::ACCESS_DIRECTIONS);
+    }
+
+    /**
+     * @param stdClass|array<array-key,mixed> $object
+     * @param list<string> $allowed
+     */
+    private static function optionalOneOf($object, string $name, string $where, array $allowed): void
+    {
+        $value = JsonValue::get($object, $name);
+        if ($value !== null) {
+            self::oneOf($value, "{$where}/{$name}", $allowed);
+        }
+    }
+
+    /**
+     * @param stdClass|array<array-key,mixed> $object
+     * @param list<string> $allowed
+     */
+    private static function optionalEachOneOf($object, string $name, string $where, array $allowed): void
+    {
+        $value = JsonValue::get($object, $name);
+        if ($value !== null) {
+            self::eachOneOf($value, "{$where}/{$name}", $allowed);
+        }
+    }
+
+    /**
+     * @param mixed $raw
+     * @param list<string> $allowed
+     */
+    private static function eachOneOf($raw, string $where, array $allowed): void
+    {
+        foreach (self::listAt($raw, $where) as $index => $value) {
+            self::oneOf($value, "{$where}/{$index}", $allowed);
+        }
+    }
+
+    /**
+     * @param mixed $value
+     * @param list<string> $allowed
+     */
+    private static function oneOf($value, string $field, array $allowed): void
+    {
+        if (!\in_array($value, $allowed, true)) {
+            throw self::refuse('not_allowed', $field, 'must be one of ' . CanonicalJson::spelling($allowed));
         }
     }
 
@@ -389,7 +466,7 @@ final class RequestRules
     // ------------------------------------------------------------------------- primitives
 
     /** @param mixed $value */
-    private static function integer($value, string $field, int $minimum): void
+    public static function integer($value, string $field, int $minimum): void
     {
         $number = JsonValue::integer($value);
         if ($number === null) {
@@ -421,7 +498,7 @@ final class RequestRules
     }
 
     /** @param mixed $value */
-    private static function ratio($value, string $field, ?int $maximum): void
+    public static function ratio($value, string $field, ?int $maximum): void
     {
         if (!\is_int($value) && !\is_float($value)) {
             throw self::refuse('wrong_type', $field, 'must be a number');
@@ -583,18 +660,26 @@ final class RequestRules
     /**
      * Checked once every entry is well formed, so the later of two equal ids is named.
      *
-     * @param list<mixed> $entries
+     * @param list<string> $identifiers
      */
-    private static function requireUniqueIds(array $entries, string $key): void
+    public static function requireUniqueIds(array $identifiers, string $key): void
     {
         $seen = [];
-        foreach ($entries as $index => $entry) {
-            $identifier = (string) JsonValue::get($entry, 'id');
+        foreach ($identifiers as $index => $identifier) {
             if (isset($seen[$identifier])) {
                 throw self::refuse('duplicate_id', "/{$key}/{$index}/id", 'repeats the id ' . CanonicalJson::spelling($identifier));
             }
             $seen[$identifier] = true;
         }
+    }
+
+    /**
+     * @param list<mixed> $entries
+     * @return list<string>
+     */
+    private static function identifiers(array $entries): array
+    {
+        return \array_map(static fn($entry): string => (string) JsonValue::get($entry, 'id'), $entries);
     }
 
     private static function refuse(string $reason, string $field, string $detail): InvalidRequestException

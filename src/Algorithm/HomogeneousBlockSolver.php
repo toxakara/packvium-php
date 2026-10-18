@@ -3,6 +3,7 @@ declare(strict_types=1);
 namespace Packvium\Algorithm;
 
 use Packvium\Config\PackingConfig;
+use Packvium\Config\SolverProfile;
 use Packvium\Constraint\Internal\LoadSupportGraph;
 use Packvium\Constraint\PlacementConstraint;
 use Packvium\Domain\{AxisAlignedBox,Container,Dimensions,ItemInstance,Placement,Point,ShapeType};
@@ -28,6 +29,10 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
     /** Lattice nodes between two clock reads are a power of two: 1 << CLOCK_SHIFT. */
     private const CLOCK_SHIFT=6;
     private const CLOCK_STRIDE=(1<<self::CLOCK_SHIFT)-1;
+    /** Leading blocks the `quality` lookahead completes in each round. */
+    public const LOOKAHEAD_WIDTH=4;
+    /** The lookahead's lattice-node budget per mode, as a multiple of the node limit. */
+    public const LOOKAHEAD_NODE_FACTOR=64;
 
     /**
      * `fast` and `balanced` leave `containerPlanNodeLimit` at one, which would stop the
@@ -50,6 +55,8 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
         foreach($this->modes as $mode){
             if($deadline->expired()){$reached=true;break;}
             $solution=$this->packMode($container,$sequence,$items,$config,$stats,$deadline,$mode,$nodeLimit);
+            if($config->profile===SolverProfile::Quality&&!$deadline->expired())
+                $solution=$this->lookahead($container,$sequence,$items,$config,$stats,$deadline,$mode,$nodeLimit*self::LOOKAHEAD_NODE_FACTOR,$solution);
             $reached=$reached||$solution->timeLimitReached;
             $byVolume=$config->objective==='maximum_volume';
             if($best===null||$this->solutionKey($solution,$byVolume)<$this->solutionKey($best,$byVolume))$best=$solution;
@@ -227,25 +234,26 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
     }
 
     /**
-     * The round's leading block over every (space, type, rotation) group, or null.
+     * The round's `$leaders` leading blocks over every (space, type, rotation) group, best first.
      *
      * Every group's nodes count toward the limits before any is ranked, and a stop inside a
      * group lands on the node the per-node loop stopped at: a stopped round places nothing,
      * so which node led it is never read. Inside one group every key field except the
      * count-derived lead is equal, and fill and volume grow with the count, so the group's
      * first largest count is the only node that can lead. No node exceeds the capacity or
-     * the whole lattice, and a group whose bound already trails the incumbent cannot lead:
-     * the cheap lead is monotone in the count, since a float product is.
+     * the whole lattice, and once `$leaders` blocks are kept a group whose bound already
+     * trails the last of them cannot lead: the cheap lead is monotone in the count, since a
+     * float product is.
      *
      * @param list<Space> $spaces
      * @param array<string,int> $capacities
      * @param array<string,list<array<string,mixed>>> $rotations
-     * @return array<string,mixed>|null
+     * @return list<array<string,mixed>>
      */
-    private static function leadingBlock(array $spaces,array $capacities,array $rotations,string $mode,int &$nodes,int $stopAt,SearchStats $stats,Deadline $deadline,bool &$reached):?array
+    private static function leadingBlocks(array $spaces,array $capacities,array $rotations,string $mode,int $leaders,int &$nodes,int $stopAt,SearchStats $stats,Deadline $deadline,bool &$reached):array
     {
-        $best=null;$byCount=$mode==='count';
-        // The incumbent's cheap lead as scalars: its count, and its float volume less the margin.
+        $leading=[];$byCount=$mode==='count';
+        // The last kept block's cheap lead as scalars: its count, and its float volume less the margin.
         $leadCount=0;$leadFloor=-INF;
         foreach($spaces as $space){
             $spaceLength=$space->dimensions->length->ticks;$spaceWidth=$space->dimensions->width->ticks;$spaceHeight=$space->dimensions->height->ticks;
@@ -260,7 +268,7 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
                     if($nodes+$groupNodes>$stopAt||(($nodes+$groupNodes-1)>>self::CLOCK_SHIFT)!==(($nodes-1)>>self::CLOCK_SHIFT)){
                         $expanded=self::expandable($nodes,$groupNodes,$stopAt,$deadline);
                         $nodes+=$expanded;$stats->searchNodesExpanded+=$expanded;
-                        if($expanded<$groupNodes){$reached=true;return null;}
+                        if($expanded<$groupNodes){$reached=true;return [];}
                     }else{$nodes+=$groupNodes;$stats->searchNodesExpanded+=$groupNodes;}
                     if($envelopeHeight>$spaceHeight)continue;
                     $maximumZ=intdiv($spaceHeight,$envelopeHeight);
@@ -272,55 +280,169 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
                     $approximateUsed=$count*$volume;
                     if($byCount?$count<$leadCount:$approximateUsed<$leadFloor)continue;
                     $candidate=['space'=>$space,'itemId'=>$itemId,'rotation'=>$lattice['rotation'],'rotationName'=>$lattice['rotationName'],'physical'=>$lattice['physical'],'envelope'=>$lattice['envelope'],'volume'=>$lattice['volume'],'approximateUsed'=>$approximateUsed,'nx'=>$nx,'ny'=>$ny,'nz'=>$nz,'count'=>$count];
-                    if($best!==null&&!self::leads($candidate,$best,$mode))continue;
-                    $best=$candidate;$leadCount=$count;$leadFloor=$approximateUsed*(1-self::FLOAT_MARGIN);
+                    $full=count($leading)===$leaders;
+                    if($full&&!self::leads($candidate,$leading[$leaders-1],$mode))continue;
+                    $position=count($leading);
+                    while($position>0&&self::leads($candidate,$leading[$position-1],$mode))$position--;
+                    array_splice($leading,$position,0,[$candidate]);
+                    if(count($leading)>$leaders)array_pop($leading);
+                    if(count($leading)===$leaders){$last=$leading[$leaders-1];$leadCount=$last['count'];$leadFloor=$last['approximateUsed']*(1-self::FLOAT_MARGIN);}
                 }
             }
         }
-        return $best;
+        return $leading;
+    }
+
+    /** @param list<ItemInstance> $items @return array<string,list<ItemInstance>> */
+    private static function byType(array $items):array
+    {
+        $remaining=[];
+        foreach($items as $instance)$remaining[$instance->item->id][]=$instance;
+        ksort($remaining,SORT_STRING);
+        return $remaining;
+    }
+
+    /**
+     * Each type's distinct rotations with what every lattice of them shares.
+     *
+     * @param array<string,list<ItemInstance>> $remaining
+     * @return array<string,list<array<string,mixed>>>
+     */
+    private static function rotationsOf(array $remaining,PackingConfig $config):array
+    {
+        $rotations=[];
+        foreach($remaining as $itemId=>$available)$rotations[$itemId]=self::lattices($available[0],$config);
+        return $rotations;
     }
 
     private function packMode(Container $container,int $sequence,array $items,PackingConfig $config,SearchStats $stats,Deadline $deadline,string $mode,int $nodeLimit):SingleContainerSolution
     {
-        $state=new ContainerState($container,$sequence);
-        $spaces=[new Space(new Point(0,0,0),$container->innerDimensions)];
-        $remaining=[];
-        foreach($items as $instance)$remaining[$instance->item->id][]=$instance;
-        ksort($remaining,SORT_STRING);
-        $nodes=0;$reached=false;$rotations=[];
+        $remaining=self::byType($items);
+        $nodes=0;$reached=false;
+        $solution=$this->complete($container,new ContainerState($container,$sequence),[new Space(new Point(0,0,0),$container->innerDimensions)],$remaining,self::rotationsOf($remaining,$config),$config,$stats,$deadline,$mode,$nodeLimit,$nodes,$reached);
+        return new SingleContainerSolution($solution->state,$solution->unpacked,false,$reached||$deadline->expired());
+    }
+
+    /**
+     * How many of each type one block may still take, for the types that may take any.
+     *
+     * @param array<string,list<ItemInstance>> $remaining
+     * @return array<string,int>
+     */
+    private static function capacities(Container $container,ContainerState $state,array $remaining):array
+    {
+        $capacities=[];
+        foreach($remaining as $itemId=>$available){
+            if($available===[])continue;
+            $prototype=$available[0];$capacity=count($available);
+            if($container->maxItems!==null)$capacity=min($capacity,$container->maxItems-$state->placementCount());
+            if($container->maxPayload!==null&&$prototype->weight()->ticks>0)$capacity=min($capacity,intdiv($container->maxPayload->ticks-$state->payloadTicks,$prototype->weight()->ticks));
+            if($capacity<=0)continue;
+            $capacities[$itemId]=$capacity;
+        }
+        return $capacities;
+    }
+
+    /**
+     * One round's leading blocks under the mode's node limit and the effort budget.
+     *
+     * @param list<Space> $spaces
+     * @param array<string,list<ItemInstance>> $remaining
+     * @param array<string,list<array<string,mixed>>> $rotations
+     * @return list<array<string,mixed>>
+     */
+    private static function round(Container $container,ContainerState $state,array $spaces,array $remaining,array $rotations,string $mode,int $leaders,int $nodeLimit,int &$nodes,SearchStats $stats,Deadline $deadline,bool &$reached):array
+    {
+        // Only the node count moves a counted limit inside one round: candidates and
+        // placements are counted when a block is placed, after it.
+        $stopAt=$nodes+max(0,min($nodeLimit-$nodes,$deadline->searchNodesLeft($stats)));
+        return self::leadingBlocks($spaces,self::capacities($container,$state,$remaining),$rotations,$mode,$leaders,$nodes,$stopAt,$stats,$deadline,$reached);
+    }
+
+    /**
+     * Commit each round's leading block until nothing more fits.
+     *
+     * @param list<Space> $spaces
+     * @param array<string,list<ItemInstance>> $remaining
+     * @param array<string,list<array<string,mixed>>> $rotations
+     */
+    private function complete(Container $container,ContainerState $state,array $spaces,array $remaining,array $rotations,PackingConfig $config,SearchStats $stats,Deadline $deadline,string $mode,int $nodeLimit,int &$nodes,bool &$reached):SingleContainerSolution
+    {
         while($spaces!==[]&&array_sum(array_map('count',$remaining))>0){
-            // Only the node count moves a counted limit inside one round: candidates and
-            // placements are counted when a block is placed, after it.
-            $stopAt=$nodes+max(0,min($nodeLimit-$nodes,$deadline->searchNodesLeft($stats)));
-            // A type's capacity and lattices do not depend on the space they are tried in.
-            $capacities=[];
-            foreach($remaining as $itemId=>$available){
-                if($available===[])continue;
-                $prototype=$available[0];$capacity=count($available);
-                if($container->maxItems!==null)$capacity=min($capacity,$container->maxItems-$state->placementCount());
-                if($container->maxPayload!==null&&$prototype->weight()->ticks>0)$capacity=min($capacity,intdiv($container->maxPayload->ticks-$state->payloadTicks,$prototype->weight()->ticks));
-                if($capacity<=0)continue;
-                $capacities[$itemId]=$capacity;
-                $rotations[$itemId]??=self::lattices($prototype,$config);
-            }
-            $best=self::leadingBlock($spaces,$capacities,$rotations,$mode,$nodes,$stopAt,$stats,$deadline,$reached);
-            if($best===null||$reached)break;
-            $chosen=array_slice($remaining[$best['itemId']],0,$best['count']);
-            $remaining[$best['itemId']]=array_slice($remaining[$best['itemId']],$best['count']);
-            $clearance=$config->clearance->ticks;$index=0;
-            for($z=0;$z<$best['nz'];$z++)for($y=0;$y<$best['ny'];$y++)for($x=0;$x<$best['nx'];$x++){
-                $point=new Point($best['space']->origin->x+$x*$best['envelope']->length->ticks,$best['space']->origin->y+$y*$best['envelope']->width->ticks,$best['space']->origin->z+$z*$best['envelope']->height->ticks);
-                $position=new Point($point->x+$clearance,$point->y+$clearance,$point->z+$clearance);
-                // Above its bottom layer a member rests on an identical footprint; the
-                // bottom layer rests on whatever is there.
-                $support=$z===0?self::memberSupport($state,$chosen[$index],$point,$best['envelope']):1.0;
-                $state->addDirect(new Placement($chosen[$index++],$position,$best['rotation'],$best['physical'],$point,$best['envelope'],$support));
-                $stats->candidatesEvaluated++;$stats->placementsAttempted++;
-            }
-            $blockDimensions=new Dimensions(new Length($best['nx']*$best['envelope']->length->ticks),new Length($best['ny']*$best['envelope']->width->ticks),new Length($best['nz']*$best['envelope']->height->ticks));
-            $spaces=MaximalSpaceSolver::subtractAll($spaces,[new AxisAlignedBox($best['space']->origin,$blockDimensions)],$stats);
+            $leading=self::round($container,$state,$spaces,$remaining,$rotations,$mode,1,$nodeLimit,$nodes,$stats,$deadline,$reached);
+            if($leading===[]||$reached)break;
+            $spaces=self::commit($state,$spaces,$remaining,$leading[0],$config,$stats);
         }
         $unpacked=[];foreach($remaining as $available)foreach($available as $instance)$unpacked[]=$instance;
-        return new SingleContainerSolution($state,$unpacked,false,$reached||$deadline->expired());
+        return new SingleContainerSolution($state,$unpacked,false,$reached);
+    }
+
+    /**
+     * `$greedy`, or a better answer from completing each round's leading blocks.
+     *
+     * Each round ranks its LOOKAHEAD_WIDTH leading blocks, completes each one greedily on a
+     * copy, and commits the block whose completion ranks best. The greedy answer is the first
+     * completion, so the result is never worse than it. The round's first block is the greedy
+     * choice after the block committed last, so its completion is the one already known --
+     * unless the greedy pass was stopped by the node limit, when the first round completes it
+     * under the lookahead's larger budget. When that budget runs out the best completion so
+     * far stands; only the deadline or the effort budget marks the answer as stopped.
+     *
+     * @param list<ItemInstance> $items
+     */
+    private function lookahead(Container $container,int $sequence,array $items,PackingConfig $config,SearchStats $stats,Deadline $deadline,string $mode,int $nodeLimit,SingleContainerSolution $greedy):SingleContainerSolution
+    {
+        $byVolume=$config->objective==='maximum_volume';
+        $state=new ContainerState($container,$sequence);
+        $spaces=[new Space(new Point(0,0,0),$container->innerDimensions)];
+        $remaining=self::byType($items);
+        $rotations=self::rotationsOf($remaining,$config);
+        $best=$greedy;$bestKey=$this->solutionKey($greedy,$byVolume);
+        $known=$greedy->timeLimitReached?null:$greedy;
+        $nodes=0;$reached=false;
+        while($spaces!==[]&&array_sum(array_map('count',$remaining))>0){
+            $leading=self::round($container,$state,$spaces,$remaining,$rotations,$mode,self::LOOKAHEAD_WIDTH,$nodeLimit,$nodes,$stats,$deadline,$reached);
+            if($leading===[]||$reached)break;
+            $chosen=$known===null?null:[$this->solutionKey($known,$byVolume),$known,$leading[0]];
+            foreach($known===null?$leading:array_slice($leading,1) as $block){
+                $trialState=$state->copy();$trialRemaining=$remaining;
+                $trialSpaces=self::commit($trialState,$spaces,$trialRemaining,$block,$config,$stats);
+                $trial=$this->complete($container,$trialState,$trialSpaces,$trialRemaining,$rotations,$config,$stats,$deadline,$mode,$nodeLimit,$nodes,$reached);
+                if($reached)break;
+                $trialKey=$this->solutionKey($trial,$byVolume);
+                if($chosen===null||$trialKey<$chosen[0])$chosen=[$trialKey,$trial,$block];
+            }
+            if($reached||$chosen===null)break;
+            [$chosenKey,$known,$block]=$chosen;
+            if($chosenKey<$bestKey){$best=$known;$bestKey=$chosenKey;}
+            $spaces=self::commit($state,$spaces,$remaining,$block,$config,$stats);
+        }
+        return new SingleContainerSolution($best->state,$best->unpacked,false,$best->timeLimitReached||$deadline->expired());
+    }
+
+    /**
+     * Place every member of the block, bottom layer first, and return the spaces left.
+     *
+     * @param list<Space> $spaces
+     * @param array<string,list<ItemInstance>> $remaining
+     * @param array<string,mixed> $best
+     * @return list<Space>
+     */
+    private static function commit(ContainerState $state,array $spaces,array &$remaining,array $best,PackingConfig $config,SearchStats $stats):array
+    {
+        $chosen=array_slice($remaining[$best['itemId']],0,$best['count']);
+        $remaining[$best['itemId']]=array_slice($remaining[$best['itemId']],$best['count']);
+        $clearance=$config->clearance->ticks;$index=0;
+        for($z=0;$z<$best['nz'];$z++)for($y=0;$y<$best['ny'];$y++)for($x=0;$x<$best['nx'];$x++){
+            $point=new Point($best['space']->origin->x+$x*$best['envelope']->length->ticks,$best['space']->origin->y+$y*$best['envelope']->width->ticks,$best['space']->origin->z+$z*$best['envelope']->height->ticks);
+            $position=new Point($point->x+$clearance,$point->y+$clearance,$point->z+$clearance);
+            // Above its bottom layer a member rests on an identical footprint; the
+            // bottom layer rests on whatever is there.
+            $support=$z===0?self::memberSupport($state,$chosen[$index],$point,$best['envelope']):1.0;
+            $state->addDirect(new Placement($chosen[$index++],$position,$best['rotation'],$best['physical'],$point,$best['envelope'],$support));
+            $stats->candidatesEvaluated++;$stats->placementsAttempted++;
+        }
+        $blockDimensions=new Dimensions(new Length($best['nx']*$best['envelope']->length->ticks),new Length($best['ny']*$best['envelope']->width->ticks),new Length($best['nz']*$best['envelope']->height->ticks));
+        return MaximalSpaceSolver::subtractAll($spaces,[new AxisAlignedBox($best['space']->origin,$blockDimensions)],$stats);
     }
 }

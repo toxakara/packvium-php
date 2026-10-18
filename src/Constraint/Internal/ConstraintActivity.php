@@ -23,14 +23,24 @@ use Packvium\Domain\ItemInstance;
  */
 final class ConstraintActivity
 {
-    /** @param list<string> $defaultAccessDirections */
+    /**
+     * Whether a built-in rule's verdict for an item never reads the candidate's position.
+     *
+     * Compatibility and tag counts look only at the item, the container and what is
+     * already placed, all fixed for one candidate search, so one verdict serves every
+     * (point, rotation) of it -- as Rust and JavaScript already compute them once per item.
+     */
+    public static function isPositionIndependent(PlacementConstraint $constraint): bool
+    {
+        return $constraint instanceof CompatibilityConstraint || $constraint instanceof TagCountConstraint;
+    }
+
     public static function isInert(
         PlacementConstraint $constraint,
         Container $container,
         ItemInstance $item,
         bool $stackSensitive,
         bool $routeSensitive,
-        array $defaultAccessDirections,
     ): bool {
         if ($constraint instanceof FloorConstraint) {
             return !$item->item->mustBeOnFloor;
@@ -53,9 +63,9 @@ final class ConstraintActivity
             return !$routeSensitive;
         }
         if ($constraint instanceof StopAccessibilityConstraint) {
-            // A flat bag has no walls, so it inherits no doors either.
-            return !$routeSensitive || $container->isFlatBag()
-                || ($container->accessDirections === [] && $defaultAccessDirections === []);
+            // The instance, not the configuration: a caller-supplied constraint carries
+            // its own default doors (S17).
+            return !$routeSensitive || $constraint->directionsFor($container) === [];
         }
         if ($constraint instanceof AxleLoadConstraint) {
             return $container->axles === null;
