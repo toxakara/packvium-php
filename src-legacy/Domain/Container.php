@@ -2,6 +2,7 @@
 declare(strict_types=1);
 namespace Packvium\Domain;
 use InvalidArgumentException;
+use Packvium\Support\ObjectRefusal;
 use Packvium\Unit\Length;
 use Packvium\Unit\Weight;
 final class Container
@@ -152,8 +153,8 @@ final class Container
     $this->preloaded = $preloaded;
     $this->deformableBoundary = $deformableBoundary;
     $this->madeToMeasure = $madeToMeasure;
-    if($id==='')throw new InvalidArgumentException('Container id is required');($nullsafeVariable1 = $madeToMeasure) ? $nullsafeVariable1->admits([$innerDimensions->length->ticks,$innerDimensions->width->ticks,$innerDimensions->height->ticks]) : null;if($deformableBoundary!==null)self::requireBagFields($deformableBoundary,$obstacles,$axles,$accessDirections,$maxStackDensity,$outerDimensions,$voidFillReserveRatio);if($quantity!==null&&$quantity<=0)throw new InvalidArgumentException('Container quantity must be positive');if($costMinor<0)throw new InvalidArgumentException('Container cost cannot be negative');if($maxItems!==null&&$maxItems<1)throw new InvalidArgumentException('Container max_items must be at least 1');if($voidFillReserveRatio<0||$voidFillReserveRatio>1)throw new InvalidArgumentException('void_fill_reserve_ratio must be between 0 and 1');foreach($tagLimits as $limit)if($limit<1)throw new InvalidArgumentException('tag_limits must be at least 1');if($outerDimensions!==null&&!$innerDimensions->fitsInside($outerDimensions))throw new InvalidArgumentException('Outer dimensions cannot be smaller than inner dimensions');$boundary=new AxisAlignedBox(new Point(0,0,0),$innerDimensions);foreach($obstacles as $o)foreach($o->boxes() as $box)if(!$boundary->contains($box))throw new InvalidArgumentException("Obstacle {$o->id} lies outside container");
-        if($axles!==null){[$front,$rear]=$axles;if($front->position->ticks>=$rear->position->ticks)throw new InvalidArgumentException('The front axle must be strictly nearer the origin than the rear axle');if($front->position->ticks<0||$rear->position->ticks>$innerDimensions->length->ticks)throw new InvalidArgumentException("Axle positions must lie within the container's length");}
+    if($id==='')throw new ObjectRefusal('invalid_value','Container id is required');($nullsafeVariable1 = $madeToMeasure) ? $nullsafeVariable1->admits([$innerDimensions->length->ticks,$innerDimensions->width->ticks,$innerDimensions->height->ticks]) : null;if($deformableBoundary!==null)self::requireBagFields($deformableBoundary,$obstacles,$axles,$accessDirections,$maxStackDensity,$outerDimensions,$voidFillReserveRatio);if($quantity!==null&&$quantity<=0)throw new ObjectRefusal('below_minimum','Container quantity must be positive');if($costMinor<0)throw new ObjectRefusal('below_minimum','Container cost cannot be negative');if($maxItems!==null&&$maxItems<1)throw new ObjectRefusal('below_minimum','Container max_items must be at least 1');if(!($voidFillReserveRatio>=0&&$voidFillReserveRatio<=1))throw ObjectRefusal::ratio($voidFillReserveRatio,'void_fill_reserve_ratio must be between 0 and 1');foreach($tagLimits as $limit)if($limit<1)throw new ObjectRefusal('below_minimum','tag_limits must be at least 1');if($outerDimensions!==null&&!$innerDimensions->fitsInside($outerDimensions))throw new ObjectRefusal('invalid_value','Outer dimensions cannot be smaller than inner dimensions');$boundary=new AxisAlignedBox(new Point(0,0,0),$innerDimensions);foreach($obstacles as $o)foreach($o->boxes() as $box)if(!$boundary->contains($box))throw new ObjectRefusal('invalid_value',"Obstacle {$o->id} lies outside container");
+        if($axles!==null){[$front,$rear]=$axles;if($front->position->ticks>=$rear->position->ticks)throw new ObjectRefusal('invalid_value','The front axle must be strictly nearer the origin than the rear axle');if($front->position->ticks<0||$rear->position->ticks>$innerDimensions->length->ticks)throw new ObjectRefusal('invalid_value',"Axle positions must lie within the container's length");}
         foreach($accessDirections as $direction)if(!in_array($direction,SweptRegion::ALL_DIRECTIONS,true))throw new InvalidArgumentException("unknown movement direction {$direction}");
         // Deduplicated into the canonical order rather than kept as given: two callers
         // naming the same doors in a different order must search identically.
@@ -197,9 +198,9 @@ final class Container
      */
     private static function requireBagFields(string $kind,array $obstacles,?array $axles,array $accessDirections,?Weight $maxStackDensity,?Dimensions $outerDimensions,float $voidFillReserveRatio):void
     {
-        if(!in_array($kind,FlatBag::KINDS,true))throw new InvalidArgumentException("unknown deformable_boundary kind {$kind}");
+        if(!in_array($kind,FlatBag::KINDS,true))throw new ObjectRefusal('not_allowed',"unknown deformable_boundary kind {$kind}");
         $present=['obstacles'=>$obstacles!==[],'axles'=>$axles!==null,'access_directions'=>$accessDirections!==[],'max_stack_density'=>$maxStackDensity!==null,'outer_dimensions'=>$outerDimensions!==null,'void_fill_reserve_ratio'=>$voidFillReserveRatio>0];
-        foreach($present as $name=>$set)if($set)throw new InvalidArgumentException("{$name} cannot be combined with deformable_boundary");
+        foreach($present as $name=>$set)if($set)throw new ObjectRefusal('not_allowed',"{$name} cannot be combined with deformable_boundary");
     }
     /**
      * @param \Packvium\Unit\Weight|int|string|mixed[] $tareWeight

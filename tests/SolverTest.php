@@ -29,6 +29,7 @@ use Packvium\Config\SolverProfile;
 use Packvium\Constraint\ConstraintSet;
 use Packvium\Constraint\LoadCalculator;
 use Packvium\Domain\AxisAlignedBox;
+use Packvium\Domain\Axle;
 use Packvium\Domain\Container;
 use Packvium\Domain\Dimensions;
 use Packvium\Domain\Item;
@@ -342,7 +343,11 @@ final class SolverTest extends TestCase
         self::assertPhysicallySound($high->state);
     }
 
-    /** One 60x60x40 base and three 40x60x50 tops in a 100 mm crate: the base ends on two tops and overhangs them. */
+    /**
+     * One 60x60x40 base and three 40x60x50 tops in a 100 mm crate. The greedy block pass, which
+     * `balanced` runs, ends the base on two tops so that it overhangs them; `quality`'s lookahead
+     * finds a layout with nothing overhanging.
+     */
     private static function aBaseAndThreeTops(): array
     {
         return [...self::instances('base',60,60,40),...self::instances('top',40,60,50,['quantity'=>3])];
@@ -364,12 +369,29 @@ final class SolverTest extends TestCase
     public static function testABlockSetOnASmallerOneReportsTheSupportItReallyHas(): void
     {
         $box=Container::create('crate',Dimensions::mm(100,100,100),quantity:1);
-        $solution=(new HomogeneousBlockSolver())->packOne($box,1,self::aBaseAndThreeTops(),PackingConfig::quality(),new SearchStats(),self::generous());
+        $solution=(new HomogeneousBlockSolver())->packOne($box,1,self::aBaseAndThreeTops(),self::greedyBlocks(),new SearchStats(),self::generous());
         $placements=$solution->state->placements;
         $base=array_values(array_filter($placements,static fn(Placement $p):bool=>$p->instance->item->id==='base'))[0];
         self::assertTrue($base->envelopeOrigin->z>0);
         self::assertTrue(abs($base->supportRatio-5/6)<1e-9);
         self::assertSame(self::restingShare($placements,$base),$base->supportRatio);
+    }
+
+    /** The block solver without `quality`'s lookahead: one greedy pass per mode. */
+    private static function greedyBlocks(): PackingConfig
+    {
+        return new PackingConfig(profile:SolverProfile::Balanced,containerPlanNodeLimit:100_000);
+    }
+
+    public static function testTheQualityLookaheadFindsALayoutWithNothingOverhanging(): void
+    {
+        $box=Container::create('crate',Dimensions::mm(100,100,100),quantity:1);
+        $greedy=(new HomogeneousBlockSolver())->packOne($box,1,self::aBaseAndThreeTops(),self::greedyBlocks(),new SearchStats(),self::generous());
+        $looked=(new HomogeneousBlockSolver())->packOne($box,1,self::aBaseAndThreeTops(),PackingConfig::quality(),new SearchStats(),self::generous());
+        self::assertSame([],$looked->unpacked);
+        self::assertTrue(!$looked->timeLimitReached);
+        foreach($looked->state->placements as $placement)self::assertSame(1.0,$placement->supportRatio);
+        self::assertTrue($looked->state->maxZ<$greedy->state->maxZ);
     }
 
     public static function testTheBlockSolverLeavesARequestThatAsksForSupportToThePerItemSearch(): void
@@ -954,6 +976,29 @@ final class SolverTest extends TestCase
         self::assertGreaterThan(0,$stats->searchNodesExpanded);
     }
 
+    public static function testAxleBalancedPointsScanFloorRowsInAscendingY(): void
+    {
+        // Python and Rust sort the floor y-values; PHP scanned them in insertion order,
+        // which moved where a counted stop landed (S12).
+        $container = Container::create('axled', Dimensions::mm(1000, 100, 100),
+            axles: [new Axle(Length::mm(100), Weight::of(300, 'kg')), new Axle(Length::mm(900), Weight::of(300, 'kg'))]);
+        $state = new ContainerState($container, 1);
+        $mm = Length::mm(1)->ticks;
+        $state->points = ['a' => new Point(0, 50 * $mm, 0), 'b' => new Point(0, 0, 0),
+            'c' => new Point(0, 20 * $mm, 0), 'd' => new Point(0, 70 * $mm, 10 * $mm)];
+        [$item] = Item::create('i', Dimensions::mm(200, 10, 10), '400 kg')->instances();
+        $dims = $item->item->dimensions;
+        $forms = [[Rotation::LWH, $dims, $dims, 200 * $mm, 10 * $mm, 10 * $mm]];
+        $method = new ReflectionMethod(CandidateFinder::class, 'axleBalancedPoints');
+        $method->setAccessible(true);
+        $points = $method->invoke(null, $state, $item, $forms, 1000 * $mm);
+        // 400 kg over axles 800 mm apart reaches a 300 kg limit with its centre at 300 or 700 mm.
+        self::assertSame([200 * $mm, 200 * $mm, 200 * $mm, 600 * $mm, 600 * $mm, 600 * $mm],
+            array_map(static fn(Point $point): int => $point->x, $points));
+        foreach (array_chunk($points, 3) as $row)
+            self::assertSame([0, 20 * $mm, 50 * $mm], array_map(static fn(Point $point): int => $point->y, $row));
+    }
+
     // ------------------------------------------------------------ seeded randomness
 
     public static function testTheSameSeedReplaysTheSameSequence(): void
@@ -1018,6 +1063,16 @@ final class SolverTest extends TestCase
         self::assertSame([98, 91, 19, 44, 31], $draws);
         self::assertSame([2, 1, 0], (new DeterministicRandom(42))->shuffled([0, 1, 2]));
         self::assertSame([1, 2, 4, 3, 5, 0], (new DeterministicRandom(7))->shuffled(range(0, 5)));
+    }
+
+    public static function testANegativeSeedShufflesAsPythonDoes(): void
+    {
+        // Python reduces a negative seed to its non-negative residue modulo 2^31; PHP's
+        // remainder keeps the sign and once indexed negative keys under `quality`.
+        $values = range(0, 9);
+        self::assertSame([5, 0, 3, 4, 8, 7, 6, 9, 2, 1], (new DeterministicRandom(-7))->shuffled($values));
+        self::assertSame((new DeterministicRandom(2_147_483_641))->shuffled($values),
+            (new DeterministicRandom(-7))->shuffled($values));
     }
 
     // ----------------------------------------------------------------- group batches

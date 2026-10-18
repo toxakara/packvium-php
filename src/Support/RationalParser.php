@@ -2,6 +2,7 @@
 declare(strict_types=1);
 namespace Packvium\Support;
 use InvalidArgumentException;
+use Packvium\Support\ObjectRefusal;
 use Packvium\Unit\Rounding;
 final class RationalParser
 {
@@ -30,13 +31,13 @@ final class RationalParser
         if (preg_match('/^([+-]?\d+)\s*\/\s*(\d+)$/', $text, $m)) {
             $n = self::parseWhole($m[1]); $d = self::parseWhole($m[2]); self::assertDenominator($d); return [$n, $d];
         }
-        if (!preg_match('/^([+-]?)(\d+)(?:\.(\d+))?$/', $text, $m)) { throw new InvalidArgumentException("Invalid decimal or fraction: {$text}"); }
+        if (!preg_match('/^([+-]?)(\d+)(?:\.(\d+))?$/', $text, $m)) { throw new ObjectRefusal('wrong_type', "Invalid decimal or fraction: {$text}"); }
         $fraction = $m[3] ?? '';
         if ($fraction === '') {
             $num = self::parseWhole($m[2]);
             return [$negative ? -$num : $num, 1];
         }
-        if (strlen($fraction) > 18) { throw new InvalidArgumentException('Decimal has more fractional digits than a tick can distinguish'); }
+        if (strlen($fraction) > 18) { throw new ObjectRefusal('wrong_type', 'Decimal has more fractional digits than a tick can distinguish'); }
         $den = 10 ** strlen($fraction);
         $intPart = self::parseWhole($m[2]);
         if ($intPart !== 0 && $intPart > intdiv(PHP_INT_MAX - (int)$fraction, $den)) {

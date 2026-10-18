@@ -2,7 +2,7 @@
 declare(strict_types=1);
 namespace Packvium\Domain;
 
-use InvalidArgumentException;
+use Packvium\Support\ObjectRefusal;
 
 /**
  * A carrier rate card carried by the request rather than by a code plugin.
@@ -30,31 +30,31 @@ final class RateTable
         public readonly int $fuelSurchargePermille = 0,
     ) {
         if ($weightBracketsG === []) {
-            throw new InvalidArgumentException('rate_table requires at least one weight bracket');
+            throw new ObjectRefusal('invalid_value', 'rate_table requires at least one weight bracket');
         }
         if (count($weightBracketsG) !== count($pricesMinor)) {
-            throw new InvalidArgumentException('rate_table weight_brackets_g and prices_minor must be the same length');
+            throw new ObjectRefusal('invalid_value', 'rate_table weight_brackets_g and prices_minor must be the same length');
         }
         $previous = 0;
         foreach ($weightBracketsG as $bound) {
             if ($bound <= 0) {
-                throw new InvalidArgumentException('rate_table weight brackets must be positive');
+                throw new ObjectRefusal('below_minimum', 'rate_table weight brackets must be positive');
             }
             if ($bound <= $previous) {
-                throw new InvalidArgumentException('rate_table weight brackets must be strictly ascending');
+                throw new ObjectRefusal('invalid_value', 'rate_table weight brackets must be strictly ascending');
             }
             $previous = $bound;
         }
         foreach ($pricesMinor as $price) {
             if ($price < 0) {
-                throw new InvalidArgumentException('rate_table prices cannot be negative');
+                throw new ObjectRefusal('below_minimum', 'rate_table prices cannot be negative');
             }
         }
         if ($minimumChargeMinor < 0) {
-            throw new InvalidArgumentException('rate_table minimum_charge_minor cannot be negative');
+            throw new ObjectRefusal('below_minimum', 'rate_table minimum_charge_minor cannot be negative');
         }
         if ($fuelSurchargePermille < 0) {
-            throw new InvalidArgumentException('rate_table fuel_surcharge_permille cannot be negative');
+            throw new ObjectRefusal('below_minimum', 'rate_table fuel_surcharge_permille cannot be negative');
         }
     }
 

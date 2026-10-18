@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 namespace Packvium\Domain;
-use InvalidArgumentException;
+use Packvium\Support\ObjectRefusal;
 use Packvium\Unit\Length;
 use Packvium\Unit\Weight;
 final readonly class Item
@@ -50,11 +50,11 @@ final readonly class Item
     private array $acceptedStackingGroups;
     public function __construct(string $id,Dimensions $dimensions,?Weight $weight=null,int $quantity=1,array $allowedRotations=[Rotation::LWH,Rotation::LHW,Rotation::WLH,Rotation::WHL,Rotation::HLW,Rotation::HWL],bool $keepUpright=false,bool $stackable=true,bool $mustBeOnFloor=false,?Weight $maxTopLoad=null,float $minimumSupportRatio=0.0,?string $group=null,array $tags=[],array $incompatibleTags=[],int $priority=0,array $metadata=[],?int $maxStackedItems=null,array $eligibleContainerTags=[],?string $groundContactRule=null,?Length $nestingHeight=null,?int $stopIndex=null,?int $value=null,ShapeType $shapeType=ShapeType::RIGID_CUBOID,?array $hullVertices=null,?int $compressionRatioPpm=null,?int $maxCompressionPressureKpa=null,?string $stackingGroup=null,array $acceptsStackingGroups=[])
     {
-        if($id==='')throw new InvalidArgumentException('Item id is required');if($quantity<=0)throw new InvalidArgumentException('Item quantity must be positive');if($minimumSupportRatio<0||$minimumSupportRatio>1)throw new InvalidArgumentException('Minimum support ratio must be between 0 and 1');if($maxStackedItems!==null&&$maxStackedItems<1)throw new InvalidArgumentException('max_stacked_items must be at least 1');if($groundContactRule!==null&&!in_array($groundContactRule,self::GROUND_CONTACT_RULES,true))throw new InvalidArgumentException('ground_contact_rule must be one of '.implode(', ',self::GROUND_CONTACT_RULES));
-        if($nestingHeight!==null&&!($nestingHeight->ticks>=0&&$nestingHeight->ticks<$dimensions->height->ticks))throw new InvalidArgumentException("nesting_height must be at least zero and strictly less than the item's own height");
-        if($stopIndex!==null&&($stopIndex<0||$stopIndex>self::MAX_EXACT_STOP_INDEX))throw new InvalidArgumentException('stop_index must be a non-negative safe integer');
-        if($value!==null&&$value<0)throw new InvalidArgumentException('value must be non-negative');
-        if($keepUpright)$allowedRotations=array_values(array_filter($allowedRotations,static fn(Rotation $r)=>in_array($r,Rotation::upright(),true)));if($allowedRotations===[])throw new InvalidArgumentException('At least one rotation must be allowed');
+        if($id==='')throw new ObjectRefusal('invalid_value','Item id is required');if($quantity<=0)throw new ObjectRefusal('below_minimum','Item quantity must be positive');if(!($minimumSupportRatio>=0&&$minimumSupportRatio<=1))throw ObjectRefusal::ratio($minimumSupportRatio,'Minimum support ratio must be between 0 and 1');if($maxStackedItems!==null&&$maxStackedItems<1)throw new ObjectRefusal('below_minimum','max_stacked_items must be at least 1');if($groundContactRule!==null&&!in_array($groundContactRule,self::GROUND_CONTACT_RULES,true))throw new ObjectRefusal('not_allowed','ground_contact_rule must be one of '.implode(', ',self::GROUND_CONTACT_RULES));
+        if($nestingHeight!==null&&!($nestingHeight->ticks>=0&&$nestingHeight->ticks<$dimensions->height->ticks))throw new ObjectRefusal('invalid_value',"nesting_height must be at least zero and strictly less than the item's own height");
+        if($stopIndex!==null&&($stopIndex<0||$stopIndex>self::MAX_EXACT_STOP_INDEX))throw new ObjectRefusal($stopIndex<0?'below_minimum':'above_maximum','stop_index must be a non-negative safe integer');
+        if($value!==null&&$value<0)throw new ObjectRefusal('below_minimum','value must be non-negative');
+        if($keepUpright)$allowedRotations=array_values(array_filter($allowedRotations,static fn(Rotation $r)=>in_array($r,Rotation::upright(),true)));if($allowedRotations===[])throw new ObjectRefusal('invalid_value','At least one rotation must be allowed');
         $this->id=$id;$this->dimensions=$dimensions;$this->weight=$weight??new Weight(0);$this->quantity=$quantity;$this->allowedRotations=$allowedRotations;$this->keepUpright=$keepUpright;$this->stackable=$stackable;$this->mustBeOnFloor=$mustBeOnFloor;$this->maxTopLoad=$maxTopLoad;$this->minimumSupportRatio=$minimumSupportRatio;$this->groundContactRule=$groundContactRule;$this->group=$group;$this->tags=array_values(array_unique($tags));$this->incompatibleTags=array_values(array_unique($incompatibleTags));$this->priority=$priority;$this->metadata=$metadata;$this->maxStackedItems=$maxStackedItems;$this->eligibleContainerTags=array_values(array_unique($eligibleContainerTags));$this->nestingHeight=$nestingHeight;$this->stopIndex=$stopIndex;$this->value=$value;
         $this->shapeType=$shapeType;
         $this->hullVertices=self::admitShape($shapeType,$hullVertices,$compressionRatioPpm,$maxCompressionPressureKpa,$dimensions,$nestingHeight);
@@ -77,15 +77,18 @@ final readonly class Item
             ShapeType::COMPRESSIBLE=>['hull_vertices'=>$hullVertices],
             ShapeType::RIGID_CUBOID=>['hull_vertices'=>$hullVertices,'compression_ratio'=>$ratioPpm,'max_compression_pressure_kpa'=>$limitKpa],
         };
+        // The value's own floor first, as the JSON rules check it before the shape.
+        if($limitKpa!==null&&$limitKpa<0)
+            throw new ObjectRefusal('below_minimum','max_compression_pressure_kpa cannot be negative');
         foreach($foreign as $name=>$value){
-            if($value!==null)throw new InvalidArgumentException("{$name} is not part of a {$shapeType->value} item");
+            if($value!==null)throw new ObjectRefusal('invalid_value',"{$name} is not part of a {$shapeType->value} item");
         }
         // Both rewrite occupied height. Choosing an order silently would give four engines
         // four contracts, so the interaction is refused until a task defines it.
         if($nestingHeight!==null&&$shapeType!==ShapeType::RIGID_CUBOID)
-            throw new InvalidArgumentException("nesting_height with shape_type {$shapeType->value} is not supported yet");
+            throw new ObjectRefusal('invalid_value',"nesting_height with shape_type {$shapeType->value} is not supported yet");
         if($shapeType===ShapeType::CONVEX_HULL){
-            if($hullVertices===null)throw new InvalidArgumentException('a convex_hull item requires hull_vertices');
+            if($hullVertices===null)throw new ObjectRefusal('invalid_value','a convex_hull item requires hull_vertices');
             $hullVertices=HullShape::validate($hullVertices);
             [$low,$high]=HullShape::boundingExtent($hullVertices);
             $declared=[$dimensions->length->ticks,$dimensions->width->ticks,$dimensions->height->ticks];
@@ -94,17 +97,15 @@ final readonly class Item
                 // a hull poking out of it would be collision-tested against space the solver
                 // never reserved.
                 if($high[$axis]-$low[$axis]>$declared[$axis])
-                    throw new InvalidArgumentException('hull_vertices span does not fit inside dimensions');
+                    throw new ObjectRefusal('invalid_value','hull_vertices span does not fit inside dimensions');
             }
             return $hullVertices;
         }
         if($shapeType===ShapeType::COMPRESSIBLE){
             if($ratioPpm===null||$limitKpa===null)
-                throw new InvalidArgumentException('a compressible item requires both compression_ratio and max_compression_pressure_kpa');
+                throw new ObjectRefusal('invalid_value','a compressible item requires both compression_ratio and max_compression_pressure_kpa');
             if($ratioPpm<0||$ratioPpm>Compression::PPM)
-                throw new InvalidArgumentException('compression_ratio must be between zero and one');
-            if($limitKpa<0)
-                throw new InvalidArgumentException('max_compression_pressure_kpa cannot be negative');
+                throw new ObjectRefusal('invalid_value','compression_ratio must be between zero and one');
         }
         return $hullVertices;
     }

@@ -122,7 +122,6 @@ final class ExactSmallSolver implements SingleContainerSolver
             if($deadline->expired())return;
             $stats->searchNodesExpanded++;
             $stateCount=count($state->placements);
-            $bestCount=count($best->placements);
             if(self::isBetterForObjective($state,$stateVolume,$best,$bestVolume,$config)){
                 $best=$state;
                 $bestVolume=$stateVolume;

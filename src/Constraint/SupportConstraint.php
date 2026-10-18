@@ -37,12 +37,11 @@ final readonly class SupportConstraint implements PlacementConstraint
         if(!$this->canReject($c->item))return ConstraintResult::allow();
         $box=$c->envelopeBox();
         $support=LoadSupportGraph::candidateView($c->placements,$c->item,$box);
-        $surfaces=$support->surfaces;
         $supporters=$support->supporterBoxes;
         $rule=$c->item->item->groundContactRule;
         if($rule!==null&&$rule!=='free'){
             $count=count($supporters);
-            if($rule==='covered'&&!self::touchesCorners($box,$surfaces))
+            if($rule==='covered'&&!self::touchesCorners($box,$supporters))
                 return ConstraintResult::reject('ground_contact_violation',"covered: {$count} supporter(s), not all four corners touched");
             if($rule==='single'&&$count!==1)
                 return ConstraintResult::reject('ground_contact_violation',"single: rests on {$count} item(s)");
@@ -67,18 +66,18 @@ final readonly class SupportConstraint implements PlacementConstraint
     }
 
     /**
-     * Whether every one of the candidate's four base corners rests on some surface.
+     * Whether every one of the candidate's four base corners rests on some supporter.
      *
      * A ratio cannot express this: 90% of the footprint concentrated in the middle
-     * passes any ratio below that but leaves every corner hanging.
+     * passes any ratio below that but leaves every corner hanging. Only positive-area
+     * supporters count: a neighbour touching a corner along an edge carries nothing,
+     * and Rust, JS and every validator ignore it.
      *
-     * @param list<\Packvium\Domain\AxisAlignedBox> $surfaces
-     */
-    /**
      * Public, not private: `Sequence\LoadingDependencyGraph::verifyLoadingPrefixBusinessRules`
      * reuses this exact corner-touch calculation against every loading
-     * prefix, not only the finished scene -- widened visibility only, no behaviour
-     * change, so every existing caller of this constraint is unaffected.
+     * prefix, not only the finished scene.
+     *
+     * @param list<\Packvium\Domain\AxisAlignedBox> $surfaces the candidate's positive-area supporters
      */
     public static function touchesCorners(\Packvium\Domain\AxisAlignedBox $box,array $surfaces):bool
     {

@@ -93,23 +93,56 @@ final class LoadAnalysis
         return null;
     }
 
-    /** @return list<array<int,true>> */
+    /**
+     * Walked iteratively in the load order topLoads uses: a child's top is above its
+     * supporter's, so every child's set is complete before its supporter reads it. The
+     * recursive walk spent one frame per stack level. Set keys are in no
+     * promised order; a caller that names a member sorts first.
+     *
+     * @return list<array<int,true>>
+     */
     public function restingAbove():array
     {
         if($this->restingAbove!==null)return $this->restingAbove;
-        $memo=[];
-        $aboveSet=function(int $index) use (&$aboveSet,&$memo):array{
-            if(isset($memo[$index]))return $memo[$index];
+        $count=count($this->units);
+        $sets=$count===0?[]:array_fill(0,$count,[]);
+        foreach($this->graph->descendingIndices() as $index){
             $result=[];
-            foreach($this->graph->children($index) as $child){
-                $result[$child]=true;
-                foreach($aboveSet($child) as $ancestor=>$_)$result[$ancestor]=true;
-            }
-            return $memo[$index]=$result;
-        };
-        $sets=[];
-        for($index=0,$count=count($this->units);$index<$count;$index++)$sets[]=$aboveSet($index);
+            foreach($this->graph->children($index) as $child)$result+=[$child=>true]+$sets[$child];
+            $sets[$index]=$result;
+        }
         return $this->restingAbove=$sets;
+    }
+
+    /**
+     * Whether any stop is a real one. A scene where everything rides the whole route has
+     * no order to violate, so callers ask this before building a graph at all.
+     *
+     * @param list<float> $stops
+     */
+    public static function routed(array $stops):bool
+    {
+        foreach($stops as $stop)if($stop!==INF)return true;
+        return false;
+    }
+
+    /**
+     * First unit due at an earlier stop with a later-stop unit resting above it, as
+     * [code, detail]. `$stops` is parallel to the units; INF rides the whole route.
+     *
+     * @param list<float> $stops @return array{0:string,1:string}|null
+     */
+    public function routeOrderViolated(array $stops):?array
+    {
+        foreach($this->restingAbove() as $index=>$above){
+            // Ascending, as Python iterates: the detail names the first violator (S16).
+            $uppers=array_keys($above);
+            sort($uppers);
+            foreach($uppers as $upper)
+                if($stops[$upper]>$stops[$index])
+                    return ['unloading_order_violation',$this->units[$index]->label.' blocked by '.$this->units[$upper]->label];
+        }
+        return null;
     }
 
     /** @return list<int> */

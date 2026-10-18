@@ -222,21 +222,21 @@ final class LoadSupportGraph
     /**
      * Direct support for one active candidate: O(m) time and O(m) output space.
      *
-     * Ordinary face semantics are retained exactly. With an exact adjacent nesting
-     * predecessor, shadowed same-column face surfaces are removed and that predecessor
-     * becomes one full-area supporter. Every returned list stays in placement-index
-     * order, so remainder and traversal decisions remain canonical.
+     * A box whose top is on the candidate's base plane supports it when the two overlap
+     * with positive area. With an exact adjacent nesting predecessor, shadowed
+     * same-column face supporters are removed and that predecessor becomes one full-area
+     * supporter. Every returned list stays in placement-index order, so remainder and
+     * traversal decisions remain canonical.
      *
      * @param list<Placement> $placements
      */
     public static function candidateView(array $placements,ItemInstance $item,AxisAlignedBox $box):DirectSupportView
     {
-        $surfaceEntries=[];$supporterEntries=[];$nearestLower=null;
+        $supporterEntries=[];$nearestLower=null;
         $nesting=$item->item->nestingHeight;
         foreach($placements as $index=>$placement){
             $other=$placement->envelopeBox();
             if($other->z2()===$box->origin->z){
-                $surfaceEntries[]=['index'=>$index,'box'=>$other];
                 $area=$other->overlapAreaXY($box);
                 if($area>0)$supporterEntries[]=['index'=>$index,'box'=>$other,'area'=>$area];
             }
@@ -251,21 +251,12 @@ final class LoadSupportGraph
             &&$nearestLower['box']->z2()-$box->origin->z===$nesting->ticks
             ?$nearestLower:null;
         if($predecessor!==null){
-            $surfaceEntries=array_values(array_filter(
-                $surfaceEntries,
-                static function (array $entry) use ($placements, $item, $box): bool {
-                    return !self::sameNestingColumn($placements[$entry['index']],$item,$box);
-                },
-            ));
             $supporterEntries=array_values(array_filter(
                 $supporterEntries,
                 static function (array $entry) use ($placements, $item, $box): bool {
                     return !self::sameNestingColumn($placements[$entry['index']],$item,$box);
                 },
             ));
-            $surfaceAt=0;
-            while($surfaceAt<count($surfaceEntries)&&$surfaceEntries[$surfaceAt]['index']<$predecessor['index'])$surfaceAt++;
-            array_splice($surfaceEntries,$surfaceAt,0,[$predecessor]);
             $supporterAt=0;
             while($supporterAt<count($supporterEntries)&&$supporterEntries[$supporterAt]['index']<$predecessor['index'])$supporterAt++;
             array_splice($supporterEntries,$supporterAt,0,[[
@@ -277,11 +268,6 @@ final class LoadSupportGraph
         foreach($supporterEntries as $entry){
             $indexes[]=$entry['index'];$boxes[]=$entry['box'];$areas[]=$entry['area'];$totalArea+=$entry['area'];
         }
-        return new DirectSupportView(
-            array_map(static function (array $entry): AxisAlignedBox {
-                return $entry['box'];
-            },$surfaceEntries),
-            $indexes,$boxes,$areas,$totalArea,
-        );
+        return new DirectSupportView($indexes,$boxes,$areas,$totalArea);
     }
 }

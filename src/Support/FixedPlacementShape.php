@@ -93,7 +93,7 @@ final class FixedPlacementShape
             }
         }
         if (!\in_array(JsonValue::get($entry, 'orientation'), self::ORIENTATIONS, true)) {
-            throw self::malformed("{$where}.orientation is one of the six codes", "{$field}/orientation");
+            throw self::malformed("{$where}.orientation must be one of " . CanonicalJson::spelling(self::ORIENTATIONS), "{$field}/orientation");
         }
         $instance = JsonValue::has($entry, 'container_instance') ? JsonValue::integer(JsonValue::get($entry, 'container_instance')) : 1;
         if ($instance === null || $instance < 1) {

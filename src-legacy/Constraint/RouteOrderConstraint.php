@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 namespace Packvium\Constraint;
+use Packvium\Constraint\Internal\{LoadAnalysis,PlacedSupportBase};
 /**
  * Rejects a placement that would bury an item due off at an earlier stop.
  *
@@ -10,20 +11,27 @@ namespace Packvium\Constraint;
  */
 final class RouteOrderConstraint implements PlacementConstraint
 {
+    // Its own base rather than a rebuild per candidate: 60 routed placements once cost
+    // thousands of graph constructions. Created on first use, as in
+    // TopLoadConstraint, so the frozen public surface keeps no constructor.
+    /**
+     * @var \Packvium\Constraint\Internal\PlacedSupportBase|null
+     */
+    private $support;
+
     public function evaluate(ConstraintContext $c):ConstraintResult
     {
         if(!$c->routeSensitive)return ConstraintResult::allow();
-        $units=LoadCalculator::units(
-            $c->placements,
-            new LoadUnit(
-                $c->envelopeBox(),$c->item->weight()->ticks,null,null,$c->item->id(),
-                $c->item->item->nestingHeight===null?null:$c->item->item->id,($nullsafeVariable1 = $c->item->item->nestingHeight) ? $nullsafeVariable1->ticks : null,
-            ),
+        $candidate=new LoadUnit(
+            $c->envelopeBox(),$c->item->weight()->ticks,null,null,$c->item->id(),
+            $c->item->item->nestingHeight===null?null:$c->item->item->id,($nullsafeVariable1 = $c->item->item->nestingHeight) ? $nullsafeVariable1->ticks : null,
         );
         $stops=[];
         foreach($c->placements as $p)$stops[]=$p->instance->item->stopIndex===null?INF:(float)$p->instance->item->stopIndex;
         $stops[]=$c->item->item->stopIndex===null?INF:(float)$c->item->item->stopIndex;
-        $failure=LoadCalculator::routeOrderViolated($units,$stops);
+        if(!LoadAnalysis::routed($stops))return ConstraintResult::allow();
+        [$units,$graph]=($this->support = $this->support ?? new PlacedSupportBase())->withCandidate($c->placements,$candidate);
+        $failure=(new LoadAnalysis($units,$graph))->routeOrderViolated($stops);
         return $failure===null?ConstraintResult::allow():ConstraintResult::reject($failure[0],$failure[1]);
     }
 }

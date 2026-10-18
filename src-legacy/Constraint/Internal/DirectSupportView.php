@@ -3,14 +3,9 @@ declare(strict_types=1);
 namespace Packvium\Constraint\Internal;
 use Packvium\Domain\AxisAlignedBox;
 
-/** Candidate support surfaces plus canonical positive-area direct supporters. */
+/** Positive-area direct supporters of one candidate, in placement-index order. */
 final class DirectSupportView
 {
-    /**
-     * @var list<AxisAlignedBox>
-     * @readonly
-     */
-    public $surfaces;
     /**
      * @var list<int>
      * @readonly
@@ -32,14 +27,12 @@ final class DirectSupportView
      */
     public $supportingArea;
     /**
-     * @param list<AxisAlignedBox> $surfaces
      * @param list<int> $supporterIndexes
      * @param list<AxisAlignedBox> $supporterBoxes
      * @param list<int> $supporterAreas
      */
-    public function __construct(array $surfaces, array $supporterIndexes, array $supporterBoxes, array $supporterAreas, int $supportingArea)
+    public function __construct(array $supporterIndexes, array $supporterBoxes, array $supporterAreas, int $supportingArea)
     {
-        $this->surfaces = $surfaces;
         $this->supporterIndexes = $supporterIndexes;
         $this->supporterBoxes = $supporterBoxes;
         $this->supporterAreas = $supporterAreas;

@@ -102,25 +102,34 @@ final class SequenceGeometry
         }
     }
 
-    /** @param array<int,array<int,true>> $dependsOn */
+    /**
+     * Kahn's algorithm: acyclic exactly when every node can be released. O(V + E).
+     *
+     * Iterative, not a depth-first walk: a stack of sheets is a dependency chain as long
+     * as the stack, and recursion spent one frame per level.
+     *
+     * @param array<int,array<int,true>> $dependsOn
+     */
     public static function isAcyclic(array $dependsOn): bool
     {
-        $visiting = [];
-        $visited = [];
-        $visit = function (int $node) use (&$visit, &$visiting, &$visited, $dependsOn): bool {
-            if (isset($visited[$node])) { return true; }
-            if (isset($visiting[$node])) { return false; }
-            $visiting[$node] = true;
-            foreach (array_keys($dependsOn[$node] ?? []) as $dependency) {
-                if (!$visit($dependency)) { return false; }
+        $waiting = [];
+        foreach ($dependsOn as $node => $dependencies) {
+            $waiting[$node] = $waiting[$node] ?? 0;
+            foreach (array_keys($dependencies) as $dependency) {
+                $waiting[$dependency] = ($waiting[$dependency] ?? 0) + 1;
             }
-            unset($visiting[$node]);
-            $visited[$node] = true;
-            return true;
-        };
-        foreach (array_keys($dependsOn) as $node) {
-            if (!$visit($node)) { return false; }
         }
-        return true;
+        $ready = array_keys(array_filter($waiting, static function (int $count): bool {
+            return $count === 0;
+        }));
+        $released = 0;
+        while ($ready !== []) {
+            $node = array_pop($ready);
+            $released++;
+            foreach (array_keys($dependsOn[$node] ?? []) as $dependency) {
+                if (--$waiting[$dependency] === 0) { $ready[] = $dependency; }
+            }
+        }
+        return $released === count($waiting);
     }
 }

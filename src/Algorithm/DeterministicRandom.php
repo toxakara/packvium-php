@@ -17,7 +17,8 @@ final class DeterministicRandom
 
     private int $state;
 
-    public function __construct(int $seed){$this->state=$seed%self::MODULUS;}
+    /** PHP's % keeps the dividend's sign; Python's does not, and the shuffle indexes by the draw. */
+    public function __construct(int $seed){$this->state=(($seed%self::MODULUS)+self::MODULUS)%self::MODULUS;}
 
     private function bits():int
     {

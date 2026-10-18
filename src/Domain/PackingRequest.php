@@ -1,10 +1,10 @@
 <?php
 declare(strict_types=1);
 namespace Packvium\Domain;
-use InvalidArgumentException;
+use Packvium\Support\ObjectRefusal;
 final readonly class PackingRequest
 {
-    /** @param list<Item> $items @param list<Container> $containers @param list<FixedPlacement> $fixedPlacements */ public function __construct(public array $items,public array $containers,public array $fixedPlacements=[]){if($items===[])throw new InvalidArgumentException('At least one item is required');if($containers===[])throw new InvalidArgumentException('At least one container is required');self::unique(array_map(fn(Item $i)=>$i->id,$items),'item');self::unique(array_map(fn(Container $c)=>$c->id,$containers),'container');}
+    /** @param list<Item> $items @param list<Container> $containers @param list<FixedPlacement> $fixedPlacements */ public function __construct(public array $items,public array $containers,public array $fixedPlacements=[]){if($items===[])throw new ObjectRefusal('invalid_value','At least one item is required');if($containers===[])throw new ObjectRefusal('invalid_value','At least one container is required');self::unique(array_map(fn(Item $i)=>$i->id,$items),'item');self::unique(array_map(fn(Container $c)=>$c->id,$containers),'container');}
     /** @return list<ItemInstance> */ public function instances():array{$out=[];foreach($this->items as $i)array_push($out,...$i->instances());return $out;}
-    private static function unique(array $ids,string $kind):void{if(count($ids)!==count(array_unique($ids)))throw new InvalidArgumentException(ucfirst($kind).' ids must be unique');}
+    private static function unique(array $ids,string $kind):void{if(count($ids)!==count(array_unique($ids)))throw new ObjectRefusal('duplicate_id',ucfirst($kind).' ids must be unique');}
 }

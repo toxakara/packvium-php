@@ -38,3 +38,4 @@ spl_autoload_register(static function (string $class) use ($packviumTree): void 
 // (Packvium\Commerce\quote and friends). `require_once` makes a second include -- through
 // Composer's `files` and again by a consumer wiring this up by hand -- harmless.
 require_once $packviumTree . '/Commerce/functions.php';
+require_once $packviumTree . '/Validation/functions.php';

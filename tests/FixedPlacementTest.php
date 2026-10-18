@@ -159,7 +159,7 @@ final class FixedPlacementTest extends TestCase
             ['fixed_placements[0] needs ["orientation"]', [array_diff_key($entry, ['orientation' => 0])]],
             ['fixed_placements[0].item_type is a non-empty string', [array_replace($entry, ['item_type' => ''])]],
             ['fixed_placements[0].container_type is a non-empty string', [array_replace($entry, ['container_type' => 5])]],
-            ['fixed_placements[0].orientation is one of the six codes', [array_replace($entry, ['orientation' => 'lwh'])]],
+            ['fixed_placements[0].orientation must be one of ["LWH","LHW","WLH","WHL","HLW","HWL"]', [array_replace($entry, ['orientation' => 'lwh'])]],
             ['fixed_placements[0].container_instance counts from 1', [array_replace($entry, ['container_instance' => '1'])]],
             ['fixed_placements[0].container_instance counts from 1', [array_replace($entry, ['container_instance' => true])]],
             ['fixed_placements[0].container_instance counts from 1', [array_replace($entry, ['container_instance' => 1.9])]],

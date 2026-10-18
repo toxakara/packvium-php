@@ -509,6 +509,18 @@ final class PackingSequenceTest extends TestCase
         self::assertFalse($graph->isAcyclic());
     }
 
+    public static function testADependencyChainOfElevenHundredLevelsIsChecked(): void
+    {
+        // An 1100-sheet stack is an 1100-long chain; the old depth-first check recursed
+        // once per level. A cycle behind a tail is still found.
+        $chain = [];
+        for ($level = 0; $level < 1_099; $level++) { $chain[$level] = [$level + 1 => true]; }
+        $chain[1_099] = [];
+        self::assertTrue((new UnloadingDependencyGraph($chain))->isAcyclic());
+        self::assertTrue((new LoadingDependencyGraph($chain))->isAcyclic());
+        self::assertFalse((new UnloadingDependencyGraph([0 => [1 => true], 1 => [2 => true], 2 => [1 => true]]))->isAcyclic());
+    }
+
     public static function testAnUnknownDirectionIsRejectedNotTreatedAsMinusZ(): void
     {
         // The concrete bug the audit reopened this over: an unrecognised direction

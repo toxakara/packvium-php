@@ -2,7 +2,7 @@
 declare(strict_types=1);
 namespace Packvium\Algorithm;
 
-use InvalidArgumentException;
+use Packvium\Support\ObjectRefusal;
 
 /**
  * Counted-work limits, checked alongside (never instead of) the wall clock.
@@ -51,7 +51,7 @@ final class EffortBudget
         // caller means; the schema's floor for each is 1.
         foreach (['maxCandidatesEvaluated'=>$maxCandidatesEvaluated,'maxPlacementAttempts'=>$maxPlacementAttempts,'maxSearchNodes'=>$maxSearchNodes,'maxRestarts'=>$maxRestarts] as $name=>$limit) {
             if ($limit!==null && $limit<1) {
-                throw new InvalidArgumentException("effortBudget.{$name} must be at least 1");
+                throw new ObjectRefusal('below_minimum',"effortBudget.{$name} must be at least 1");
             }
         }
     }

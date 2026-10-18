@@ -255,7 +255,7 @@ final class LoadingDependencyGraph
                         array_slice($present, 0, -1), $candidate->instance, $candidateBox,
                     );
                     $count = count($support->supporterBoxes);
-                    $violated = ($rule === 'covered' && !\Packvium\Constraint\SupportConstraint::touchesCorners($candidateBox, $support->surfaces))
+                    $violated = ($rule === 'covered' && !\Packvium\Constraint\SupportConstraint::touchesCorners($candidateBox, $support->supporterBoxes))
                         || ($rule === 'single' && $count !== 1)
                         || ($rule === 'multiple' && $count < 2);
                     if ($violated) {

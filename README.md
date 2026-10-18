@@ -10,7 +10,7 @@ coordinates and rotations for each item, with a reason for anything that did not
 Full documentation, the constraint reference and benchmarks live at
 [packvium.com](https://packvium.com).
 
-> **Version 1.6.0 — the public API is frozen.** Field names, status codes and the
+> **Version 1.7.0 — the public API is frozen.** Field names, status codes and the
 > objective vector do not change without a major version, so any `1.x` is a safe upgrade
 > from any earlier `1.x`.
 > Read [docs/GUARANTEES.md](https://github.com/toxakara/packvium-php/blob/main/docs/GUARANTEES.md)
@@ -123,9 +123,8 @@ $result['termination']['code'];                // "complete", "effort_limit" or 
 ```
 
 `termination` says which one stopped the search; only `time_limit` is a result you cannot
-replay. In the object API the budget is `new PackingConfig(effortBudget: new EffortBudget(...))`;
-`EffortBudget` lives in `Packvium\Algorithm`, the one namespace outside the frozen API, so
-prefer the array form where you can.
+replay. In the object API the budget is `new PackingConfig(effortBudget: new EffortBudget(...))`,
+with `Packvium\Config\EffortBudget`, part of the frozen API since 1.6.0.
 [`reproducibility.php`](https://github.com/toxakara/packvium-php/blob/main/examples/reproducibility.php)
 shows all three outcomes.
 
@@ -170,6 +169,29 @@ was left out, and why, in `unpacked_items`.
 [`errors.php`](https://github.com/toxakara/packvium-php/blob/main/examples/errors.php) turns
 each kind of refusal into the answer a web handler would send.
 
+## Checking a result
+
+*New in 1.7.0.*
+
+`Packvium\Validation\validate` checks a result against the request it answers, from the decoded
+JSON alone: geometry, support and load, accounting, the result's facts and its score. It is the
+same reference validator every Packvium package exports, so it returns the same issues, code and
+detail:
+
+```php
+use Packvium\Serialization\ArrayCodec;
+use function Packvium\Validation\validate;
+
+$issues = validate($request, ArrayCodec::pack($request)); // [] -- valid
+foreach ($issues as $issue) {
+    echo "{$issue->code}: {$issue->detail}\n"; // e.g. collision: cube#1 with cube#2 in box#1
+}
+```
+
+It shares no code with the engine, so it judges any engine's result, not only this package's. A
+result without the documented shape throws `Packvium\Validation\MalformedResult`, whose `kind`
+is `contract` or `shape`.
+
 ## Examples
 
 Runnable, in [`examples/`](https://github.com/toxakara/packvium-php/tree/main/examples). Each
@@ -185,7 +207,7 @@ surprise people.
 | File | What it shows |
 | --- | --- |
 | [`basic.php`](https://github.com/toxakara/packvium-php/blob/main/examples/basic.php) | The smallest useful call: items in, placements out — and the three details in it that are easy to miss. |
-| [`objectives.php`](https://github.com/toxakara/packvium-php/blob/main/examples/objectives.php) | All six objectives on scenes where they genuinely disagree, including the rate card that makes the heavier shipment the cheaper one. |
+| [`objectives.php`](https://github.com/toxakara/packvium-php/blob/main/examples/objectives.php) | Six of the seven objectives (all but `maximum_volume`) on scenes where they genuinely disagree, including the rate card that makes the heavier shipment the cheaper one. |
 | [`constraints.php`](https://github.com/toxakara/packvium-php/blob/main/examples/constraints.php) | Upright-only, floor-only, non-stackable, top-load limits, and tags that keep two items out of the same box — plus how to read the reason an item was refused. |
 | [`limits.php`](https://github.com/toxakara/packvium-php/blob/main/examples/limits.php) | A courier's refrigerated van and cargo bikes: obstacles built from `additional_boxes`, `max_items`, `tag_limits`, `eligible_container_tags` and `max_containers`, and what each one costs. |
 | [`units.php`](https://github.com/toxakara/packvium-php/blob/main/examples/units.php) | Why there are no floats anywhere: fractional inches, exact ticks, and the one-tick difference between a fit and a refusal. |
@@ -305,7 +327,9 @@ code and are not meant to run below it.
 ## The Packvium family
 
 One request and result contract, implemented independently in four engines (Rust,
-Python, PHP, JavaScript) and held to identical placements on a shared fixture set.
+Python, PHP, JavaScript) and checked against each other on a shared fixture set. Python and
+PHP are held to byte-identical canonical results; Rust and the JavaScript fallback are held
+to independent validity and a per-fixture objective floor.
 Pick the package for your stack; mixing them in one system is safe.
 
 Documentation, the constraint reference and the benchmarks are at
@@ -315,7 +339,7 @@ Documentation, the constraint reference and the benchmarks are at
 | --- | --- | --- |
 | Python — [`packvium`](https://pypi.org/project/packvium/) | `pip install packvium` | [packvium-python](https://github.com/toxakara/packvium-python) |
 | PHP — [`packvium/packvium`](https://packagist.org/packages/packvium/packvium) | `composer require packvium/packvium` | [packvium-php](https://github.com/toxakara/packvium-php) |
-| Rust — [`packvium`](https://crates.io/crates/packvium) | `packvium = "1.0"` | [packvium-rust](https://github.com/toxakara/packvium-rust) |
+| Rust — [`packvium`](https://crates.io/crates/packvium) | `packvium = "1.7"` | [packvium-rust](https://github.com/toxakara/packvium-rust) |
 | Node.js — [`@packvium/engine`](https://www.npmjs.com/package/@packvium/engine) | `npm install @packvium/engine` | [packvium-node](https://github.com/toxakara/packvium-node) |
 | Browser / WebAssembly — [`@packvium/browser`](https://www.npmjs.com/package/@packvium/browser) | `npm install @packvium/browser` | [packvium-wasm](https://github.com/toxakara/packvium-wasm) |
 | PHP FFI bridge — [`packvium/native-bridge`](https://packagist.org/packages/packvium/native-bridge) | `composer require packvium/native-bridge` | [packvium-php-bridge](https://github.com/toxakara/packvium-php-bridge) |
@@ -339,7 +363,7 @@ CodeMeta form.
 @software{packvium_php,
   author  = {{Packvium contributors}},
   title   = {Packvium for PHP},
-  version = {1.6.0},
+  version = {1.7.0},
   license = {MIT},
   url     = {https://packvium.com}
 }

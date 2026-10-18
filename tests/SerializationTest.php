@@ -320,6 +320,16 @@ final class SerializationTest extends TestCase
         self::assertSame(7, $result['algorithm']['seed']);
     }
 
+    public static function testANegativeSeedPacksUnderQuality(): void
+    {
+        // A negative remainder once reached the multi-start shuffle as a negative index.
+        $items = array_map(static fn(int $side) => self::cube("c{$side}", $side), [20, 25, 30, 35, 40, 45]);
+        $result = ArrayCodec::pack(self::request($items, [self::box('c')],
+            ['configuration' => ['solver_profile' => 'quality', 'seed' => -7]]));
+        self::assertSame(-7, $result['algorithm']['seed']);
+        self::assertSame([], $result['unpacked_items']);
+    }
+
     public static function testAnUnknownProfileIsRejectedRatherThanSilentlyDefaulted(): void
     {
         try {
@@ -354,8 +364,15 @@ final class SerializationTest extends TestCase
 
     public static function testAnUnknownSolverNameIsRejectedRatherThanSilentlyDefaulted(): void
     {
-        self::assertThrows(\Packvium\Algorithm\UnknownSolverException::class, static fn() => ArrayCodec::pack(
-            self::request([self::cube('a', 50)], [self::box('c')], ['configuration' => ['solvers' => ['brute_force']]])));
+        try {
+            ArrayCodec::pack(self::request([self::cube('a', 50)], [self::box('c')],
+                ['configuration' => ['solvers' => ['brute_force']]]));
+        } catch (\Packvium\Serialization\InvalidRequestException $error) {
+            // Refused by the request rules, at the unknown name, as every engine does.
+            self::assertSame(['not_allowed', '/configuration/solvers/0'], [$error->reason(), $error->field()]);
+            return;
+        }
+        self::fail('an unknown solver name was packed');
     }
 
     public static function testAnEffortBudgetIsPlumbedThroughAndActuallyBoundsTheSearch(): void

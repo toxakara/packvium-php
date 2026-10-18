@@ -2,6 +2,7 @@
 declare(strict_types=1);
 namespace Packvium\Domain;
 use InvalidArgumentException;
+use Packvium\Support\ObjectRefusal;
 use Packvium\Support\BigInt;
 use Packvium\Unit\Length;
 use Packvium\Unit\Rounding;
@@ -9,10 +10,12 @@ use Packvium\Unit\Weight;
 final readonly class Dimensions
 {
     public function __construct(public Length $length,public Length $width,public Length $height){if(min($length->ticks,$width->ticks,$height->ticks)<=0)throw new InvalidArgumentException('All dimensions must be positive');}
-    public static function of(int|string $l,int|string $w,int|string $h,string $unit='mm',Rounding $rounding=Rounding::Nearest):self{return new self(Length::of($l,$unit,$rounding),Length::of($w,$unit,$rounding),Length::of($h,$unit,$rounding));}
+    public static function of(int|string $l,int|string $w,int|string $h,string $unit='mm',Rounding $rounding=Rounding::Nearest):self{return self::read(Length::of($l,$unit,$rounding),Length::of($w,$unit,$rounding),Length::of($h,$unit,$rounding));}
     public static function mm(int|string $l,int|string $w,int|string $h,Rounding $rounding=Rounding::Nearest):self{return self::of($l,$w,$h,'mm',$rounding);}
     public static function inches(int|string $l,int|string $w,int|string $h,Rounding $rounding=Rounding::Nearest):self{return self::of($l,$w,$h,'in',$rounding);}
-    /** @param array{length:mixed,width:mixed,height:mixed} $data */ public static function fromArray(array $data,string $unit='mm',Rounding $rounding=Rounding::Nearest):self{return new self(Length::parse($data['length'],$unit,$rounding),Length::parse($data['width'],$unit,$rounding),Length::parse($data['height'],$unit,$rounding));}
+    /** @param array{length:mixed,width:mixed,height:mixed} $data */ public static function fromArray(array $data,string $unit='mm',Rounding $rounding=Rounding::Nearest):self{return self::read(Length::parse($data['length'],$unit,$rounding),Length::parse($data['width'],$unit,$rounding),Length::parse($data['height'],$unit,$rounding));}
+    /** Sides read from the caller's input, where a zero side is a request refusal; the constructor still guards the arithmetic. */
+    private static function read(Length $length,Length $width,Length $height):self{if(min($length->ticks,$width->ticks,$height->ticks)<=0)throw new ObjectRefusal('invalid_value','All dimensions must be positive');return new self($length,$width,$height);}
     public function rotated(Rotation $r):self{return match($r){Rotation::LWH=>new self($this->length,$this->width,$this->height),Rotation::LHW=>new self($this->length,$this->height,$this->width),Rotation::WLH=>new self($this->width,$this->length,$this->height),Rotation::WHL=>new self($this->width,$this->height,$this->length),Rotation::HLW=>new self($this->height,$this->length,$this->width),Rotation::HWL=>new self($this->height,$this->width,$this->length)};}
     /** @param list<Rotation> $allowed @return list<array{0:Rotation,1:self}> */ public function uniqueRotations(array $allowed):array{$seen=[];$out=[];foreach($allowed as $r){$d=$this->rotated($r);$k=$d->length->ticks.':'.$d->width->ticks.':'.$d->height->ticks;if(!isset($seen[$k])){$seen[$k]=true;$out[]=[$r,$d];}}return $out;}
     public function fitsInside(self $o):bool{return $this->length->ticks<=$o->length->ticks&&$this->width->ticks<=$o->width->ticks&&$this->height->ticks<=$o->height->ticks;}

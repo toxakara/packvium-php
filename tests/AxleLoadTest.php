@@ -3,14 +3,17 @@ declare(strict_types=1);
 
 namespace Packvium\Tests;
 
+use Packvium\Algorithm\CandidateFinder;
 use Packvium\Constraint\AxleLoad;
 use Packvium\Constraint\LoadUnit;
 use Packvium\Domain\Axle;
 use Packvium\Domain\AxisAlignedBox;
 use Packvium\Domain\Dimensions;
 use Packvium\Domain\Point;
+use Packvium\Serialization\ArrayCodec;
 use Packvium\Unit\Length;
 use Packvium\Unit\Weight;
+use ReflectionMethod;
 
 /**
  * Two-axle weight distribution, checked against hand-computed values.
@@ -135,5 +138,37 @@ final class AxleLoadTest extends TestCase
         // Tare 800 at the centre puts 400 on each axle.
         self::assertTrue(AxleLoad::admitsAlone([new Axle(new Length(0), new Weight(400)), new Axle(new Length(100), null)], 800, 100, 0, 10));
         self::assertFalse(AxleLoad::admitsAlone([new Axle(new Length(0), new Weight(399)), new Axle(new Length(100), null)], 800, 100, 0, 10));
+    }
+    public static function testAxlePointsAlreadyOfferedAreNotOfferedAgain(): void
+    {
+        // S20: an axle point equal to an ordinary point, or to an earlier axle point, is the
+        // same candidate scanned twice; it is dropped and every other point keeps its place.
+        $ordinary = [new Point(0, 0, 0), new Point(5, 0, 0), new Point(0, 5, 0)];
+        $axle = [new Point(7, 0, 0), new Point(5, 0, 0), new Point(7, 5, 0), new Point(7, 0, 0), new Point(0, 5, 0)];
+        $scan = (new ReflectionMethod(CandidateFinder::class, 'appendUnseen'))->invoke(null, $ordinary, $axle);
+        self::assertEquals([...$ordinary, new Point(7, 0, 0), new Point(7, 5, 0)], $scan);
+    }
+
+    public static function testAnAxleBalancedPointSeatsTheEnvelopeUnderAClearance(): void
+    {
+        // S10: feasible centres are 300..305 mm, narrower than the 10 mm clearance, so only an
+        // envelope origin computed from the envelope's own length lands inside the window.
+        foreach (['fast', 'balanced', 'quality'] as $profile) {
+            $result = ArrayCodec::pack([
+                'units' => ['length' => 'mm'],
+                'configuration' => ['solver_profile' => $profile, 'clearance' => '10'],
+                'items' => [['id' => 'drum', 'allowed_rotations' => ['LWH'],
+                    'weight' => ['value' => '1000', 'unit' => 'g'],
+                    'dimensions' => ['length' => '200', 'width' => '100', 'height' => '100']]],
+                'containers' => [['id' => 'trailer',
+                    'inner_dimensions' => ['length' => '1000', 'width' => '200', 'height' => '200'],
+                    'axles' => [['position' => '0', 'max_load' => ['value' => '700', 'unit' => 'g']],
+                        ['position' => '1000', 'max_load' => ['value' => '305', 'unit' => 'g']]]]],
+            ]);
+            $placements = array_merge(...array_map(static fn(array $c): array => $c['placements'], $result['containers']));
+            self::assertCount(1, $placements, $profile);
+            $x = (float)$placements[0]['position']['x']['value'];
+            self::assertTrue($x >= 200 && $x <= 205, "{$profile}: x {$x}");
+        }
     }
 }

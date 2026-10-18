@@ -127,12 +127,26 @@ final class StopAccessibilityConstraint implements PlacementConstraint
         return [$clear,$stops];
     }
 
+    /**
+     * The doors this constraint enforces in `$container`; empty means it is inert there.
+     *
+     * The container's own doors win; this instance's configured list is what a container
+     * that states none inherits. A flat bag has no walls, so it inherits none.
+     * Public so the candidate sweep asks the instance, as Python's `directions_for`
+     * does, rather than the configuration a custom instance may not have been built from.
+     *
+     * @return list<string>
+     */
+    public function directionsFor(\Packvium\Domain\Container $container):array
+    {
+        if($container->isFlatBag())return [];
+        return $container->accessDirections!==[]?$container->accessDirections:$this->defaultDirections;
+    }
+
     public function evaluate(ConstraintContext $c):ConstraintResult
     {
         if(!$c->routeSensitive)return ConstraintResult::allow();
-        // The container's own doors win; the configured list is what a container that
-        // states none inherits. A flat bag has no walls, so it inherits none.
-        $directions=$c->container->isFlatBag()?[]:($c->container->accessDirections!==[]?$c->container->accessDirections:$this->defaultDirections);
+        $directions=$this->directionsFor($c->container);
         if($directions===[])return ConstraintResult::allow();
         $candidateStop=$c->item->item->stopIndex??INF;
         $inner=$c->container->innerDimensions;
