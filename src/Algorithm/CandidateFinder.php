@@ -67,10 +67,15 @@ final class CandidateFinder
         // support rule stays in regardless: `supportChecks` counts every time the chain
         // reaches it.
         $active=[];
+        $inertChain=true;
         foreach($constraints as $constraint){
             if(ConstraintActivity::isInert($constraint,$container,$item,$stackSensitive,$routeSensitive))continue;
-            $active[]=[$constraint,$constraint instanceof SupportConstraint,ConstraintActivity::isPositionIndependent($constraint)];
+            $isSupport=$constraint instanceof SupportConstraint;
+            if(!$isSupport||$constraint->canReject($item))$inertChain=false;
+            $active[]=[$constraint,$isSupport,ConstraintActivity::isPositionIndependent($constraint)];
         }
+        $inertSupportChecks=count($active);
+        $defaultScorer=get_class($scorer)===\Packvium\Extension\DefaultCandidateScorer::class;
         // A rule that reads no position answers the same at every (point, rotation) of this
         // search, so it is asked once, by the first position that reaches it.
         // Keyed by chain position; the stored value is the verdict's `allowed`.
@@ -86,15 +91,23 @@ final class CandidateFinder
                 $scan=array_slice($scan,0,$config->maxCandidatePoints);
             }
             if($container->axles!==null)$scan=self::appendUnseen($scan,self::axleBalancedPoints($state,$item,$forms,$limitX));
-        }else{$scan=$points;usort($scan,static fn(Point $a,Point $b):int=>[$a->z,$a->y,$a->x]<=>[$b->z,$b->y,$b->x]);}
+        }else{
+            $scan=$points;
+            if(count($scan)>1)usort($scan,static fn(Point $a,Point $b):int=>[$a->z,$a->y,$a->x]<=>[$b->z,$b->y,$b->x]);
+        }
         $out=[];$best=null;
         $retained=$max!==null&&$max>1?new \SplPriorityQueue():null;
         $placementOffset=count($bounds)-count($placed);
+        // The point's check alone let a point's rotations run a counter past its limit, so
+        // each counted step is compared with its ceiling first; reaching one stops the scan
+        // through the same check, which records the stop.
+        [$attemptCeiling,$candidateCeiling]=$deadline->placementCeilings($stats);
         foreach($scan as $point){
             $deadline->check();
             $stats->candidatePointsConsidered++;
             $x1=$point->x;$y1=$point->y;$z1=$point->z;
             foreach($forms as [$rotation,$physical,$envelope,$dx,$dy,$dz,$shape]){
+                if($stats->placementsAttempted>=$attemptCeiling)$deadline->check();
                 $stats->placementsAttempted++;
                 $x2=$x1+$dx;$y2=$y1+$dy;$z2=$z1+$dz;
                 if($x2>$limitX||$y2>$limitY||$z2>$limitZ)continue;
@@ -127,19 +140,35 @@ final class CandidateFinder
                     }
                 }
                 if($blocked)continue;
-                $ctx=new ConstraintContext($container,$placed,$item,$point,$rotation,$physical,$envelope,$stackSensitive,$routeSensitive);
-                foreach($active as $link=>[$constraint,$countsSupport,$positionIndependent]){
-                    if($countsSupport)$stats->supportChecks++;
-                    $allowed=$positionIndependent
-                        ?($fixedVerdicts[$link]??=$constraint->evaluate($ctx)->allowed)
-                        :$constraint->evaluate($ctx)->allowed;
-                    if(!$allowed){$blocked=true;break;}
+                if($inertChain){
+                    $stats->supportChecks+=$inertSupportChecks;
+                }else{
+                    $ctx=new ConstraintContext($container,$placed,$item,$point,$rotation,$physical,$envelope,$stackSensitive,$routeSensitive);
+                    foreach($active as $link=>[$constraint,$countsSupport,$positionIndependent]){
+                        if($countsSupport)$stats->supportChecks++;
+                        $allowed=$positionIndependent
+                            ?($fixedVerdicts[$link]??=$constraint->evaluate($ctx)->allowed)
+                            :$constraint->evaluate($ctx)->allowed;
+                        if(!$allowed){$blocked=true;break;}
+                    }
+                    if($blocked)continue;
                 }
-                if($blocked)continue;
-                $score=$scorer->score($state,$point,$envelope);
-                $position=$tentative?->position;
-                if($reserveCheck){
-                    $position??=new Point($x1+$clearance,$y1+$clearance,$z1+$clearance);
+                if(!$reserveCheck){
+                    if($stats->candidatesEvaluated>=$candidateCeiling)$deadline->check();
+                    $stats->candidatesEvaluated++;
+                    if($defaultScorer){
+                        if($max===1&&$best!==null&&$z1>$best->score[0])continue;
+                        if($retained!==null&&$retained->count()===$max&&$z1>$retained->top()->score[0])continue;
+                        $score=[$z1,$z2>$bagZ?$z2:$bagZ,($limitX-$x2)*($limitY-$y2)+($limitZ-$z2),$y1,$x1];
+                    }else{
+                        $score=$scorer->score($state,$point,$envelope);
+                    }
+                    $position=$tentative?->position;
+                }else{
+                    $score=$defaultScorer
+                        ?[$z1,$z2>$bagZ?$z2:$bagZ,($limitX-$x2)*($limitY-$y2)+($limitZ-$z2),$y1,$x1]
+                        :$scorer->score($state,$point,$envelope);
+                    $position=$tentative?->position??new Point($x1+$clearance,$y1+$clearance,$z1+$clearance);
                     $reservePlacement=$tentative??new Placement(
                         $item,$position,$rotation,$physical,$point,$envelope,
                     );
@@ -156,8 +185,9 @@ final class CandidateFinder
                         $projected=BigInt::add($state->usedVolume,Nesting::usedVolumeDelta($placed,$reservePlacement));
                     }
                     if(BigInt::compare($projected,$usable)>0)continue;
+                    if($stats->candidatesEvaluated>=$candidateCeiling)$deadline->check();
+                    $stats->candidatesEvaluated++;
                 }
-                $stats->candidatesEvaluated++;
                 // Selection follows every predicate and scorer call so extensions and
                 // effort counters observe exactly the same enumeration as a full sort.
                 if($max===1&&$best!==null&&$score>=$best->score)continue;

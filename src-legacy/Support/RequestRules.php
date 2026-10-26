@@ -49,6 +49,8 @@ final class RequestRules
         'solver_profile', 'solvers', 'time_limit_ms',
     ];
     private const SIDES = ['length', 'width', 'height'];
+    /** The item fields the request schema types `boolean`, in schema order. */
+    private const ITEM_BOOLEANS = ['keep_upright', 'stackable', 'must_be_on_floor'];
     /** Container fields a flat bag refuses, in reporting order (docs/DEFORMABLE-CONTAINERS.md). */
     public const BAG_EXCLUSIONS = ['obstacles', 'axles', 'access_directions', 'max_stack_density',
         'outer_dimensions', 'void_fill_reserve_ratio', 'made_to_measure'];
@@ -135,6 +137,7 @@ final class RequestRules
         }
         self::optionalRatio($configuration, 'minimum_support_ratio', $where, 1);
         self::optionalMeasure($configuration, 'clearance', $where, Length::class, $unit);
+        self::optionalBoolean($configuration, 'require_placement_coordinates', $where);
         $effort = JsonValue::get($configuration, 'effort_budget');
         if ($effort !== null) {
             $budget = self::objectAt($effort, "{$where}/effort_budget");
@@ -193,6 +196,9 @@ final class RequestRules
         self::optionalEachOneOf($item, 'allowed_rotations', $where, self::ROTATIONS);
         self::optionalOneOf($item, 'ground_contact_rule', $where, self::GROUND_CONTACT_RULES);
         self::optionalOneOf($item, 'shape_type', $where, self::SHAPE_TYPES);
+        foreach (self::ITEM_BOOLEANS as $name) {
+            self::optionalBoolean($item, $name, $where);
+        }
     }
 
     /** @param mixed $value */
@@ -605,6 +611,19 @@ final class RequestRules
         $value = JsonValue::get($object, $name);
         if ($value !== null) {
             self::integer($value, "{$where}/{$name}", $minimum);
+        }
+    }
+
+    /**
+     * Only JSON `true`/`false`: a `(bool)` cast would pack `"no"` as yes. O(1).
+     *
+     * @param stdClass|array<array-key,mixed> $object
+     */
+    private static function optionalBoolean($object, string $name, string $where): void
+    {
+        $value = JsonValue::get($object, $name);
+        if ($value !== null && !\is_bool($value)) {
+            throw self::refuse('wrong_type', "{$where}/{$name}", 'must be a boolean');
         }
     }
 

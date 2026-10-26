@@ -16,10 +16,14 @@ final class Spec
     public static function items($request, string $unit): Ordered
     {
         $items = new Ordered();
-        foreach (Json::items(Json::at($request, 'items'), 'request.items') as $raw) {
+        foreach (Json::items(Json::at($request, 'items'), 'request.items') as $index => $raw) {
+            $where = "items[{$index}]";
+            $keepUpright = Json::flag($raw, 'keep_upright', false, $where);
+            $stackable = Json::flag($raw, 'stackable', true, $where);
+            $mustBeOnFloor = Json::flag($raw, 'must_be_on_floor', false, $where);
             $rotations = Json::get($raw, 'allowed_rotations');
             if ($rotations === null) {
-                $rotations = Json::truthy(Json::get($raw, 'keep_upright')) ? self::UPRIGHT_ROTATIONS : \array_keys(Geometry::ROTATIONS);
+                $rotations = $keepUpright ? self::UPRIGHT_ROTATIONS : \array_keys(Geometry::ROTATIONS);
             } else {
                 $rotations = Json::items($rotations, 'allowed_rotations');
             }
@@ -30,8 +34,8 @@ final class Spec
             $spec->weight = Units::toTicks(Json::get($raw, 'weight', 0), 'g', Units::WEIGHT);
             $spec->quantity = Json::get($raw, 'quantity', 1);
             $spec->allowedRotations = \array_values($rotations);
-            $spec->stackable = Json::truthy(Json::get($raw, 'stackable', true));
-            $spec->mustBeOnFloor = Json::truthy(Json::get($raw, 'must_be_on_floor'));
+            $spec->stackable = $stackable;
+            $spec->mustBeOnFloor = $mustBeOnFloor;
             $spec->maxTopLoad = self::measured($raw, 'max_top_load', 'g', Units::WEIGHT);
             $spec->minimumSupportRatio = Units::ratioOf(Json::get($raw, 'minimum_support_ratio', 0));
             $spec->tags = self::tagSet(Json::get($raw, 'tags', []), 'tags');

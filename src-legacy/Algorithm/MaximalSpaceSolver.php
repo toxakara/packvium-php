@@ -58,9 +58,12 @@ final class MaximalSpaceSolver implements SingleContainerSolver
         $unplaced=[];
         $batches=GroupBatcher::batches($items);
         foreach($batches as $position=>$batch){
-            $snapshot=$state->copy();$saved=$spaces;$placed=true;
+            $snapshot=count($batch)>1?$state->copy():$state;$saved=$spaces;$placed=true;
             try{
                 foreach($batch as $item){
+                    // An item past a full container reaches no check of its own, so a spent
+                    // budget is checked before its node is counted.
+                    if($deadline->effortStops())throw new TimeLimitReached('effort budget spent');
                     $stats->searchNodesExpanded++;
                     $chosen=self::choose($state,$spaces,$item,$config,$constraints,$stats,$deadline,$scorer);
                     if($chosen===null){$placed=false;break;}
@@ -205,19 +208,21 @@ final class MaximalSpaceSolver implements SingleContainerSolver
     }
 
     /**
-     * Whether another extent contains `$extents[$index]`, for extents ordered by origin z.
+     * Whether another extent contains `$extents[$index]`, for extents ordered by
+     * `(z1, y1, x1, -volume)`.
      *
-     * A container starts at or below what it contains, so the scan stops at the first
-     * extent that starts higher: O(prefix) instead of O(s), with no index to build.
+     * A containing extent starts at or before `$extents[$index]` on every axis and has strictly
+     * larger volume when origins match, so it always appears at a position `< $index` with
+     * `$extent[2] <= $z1` already guaranteed.
      *
      * @param list<array{int,int,int,int,int,int}> $extents
      */
     private static function isContained(array $extents,int $index):bool
     {
-        [$x1,$y1,$z1,$x2,$y2,$z2]=$extents[$index];
-        foreach($extents as $other=>$extent){
-            if($extent[2]>$z1)return false;
-            if($other!==$index&&$extent[0]<=$x1&&$extent[1]<=$y1&&$x2<=$extent[3]&&$y2<=$extent[4]&&$z2<=$extent[5])return true;
+        [$x1,$y1,,$x2,$y2,$z2]=$extents[$index];
+        for($other=0;$other<$index;++$other){
+            $extent=$extents[$other];
+            if($extent[3]>=$x2&&$extent[4]>=$y2&&$extent[5]>=$z2&&$extent[0]<=$x1&&$extent[1]<=$y1)return true;
         }
         return false;
     }

@@ -88,18 +88,13 @@ final class UnloadingDependencyGraph
         $present = array_fill_keys(array_keys($boxes), true);
         $order = [];
         while ($present !== []) {
-            $unblocked = [];
+            $chosen = null;
             foreach (array_keys($present) as $index) {
                 $blockedBySupport = false;
                 foreach (array_keys($dependsOn[$index] ?? []) as $dependency) {
                     if (isset($present[$dependency])) { $blockedBySupport = true; break; }
                 }
                 if ($blockedBySupport) { continue; }
-                $unblocked[] = $index;
-            }
-            sort($unblocked);
-            $chosen = null;
-            foreach ($unblocked as $index) {
                 if (SequenceGeometry::clearDirection($index, $boxes[$index], $boxes, $present, $container, $directions) !== null) {
                     $chosen = $index;
                     break;
@@ -162,18 +157,13 @@ final class UnloadingDependencyGraph
                 if ($stops[$index] === $stop) { $due[$index] = true; }
             }
             while ($due !== []) {
-                $unblocked = [];
+                $chosen = null;
                 foreach (array_keys($due) as $index) {
                     $blockedBySupport = false;
                     foreach (array_keys($dependsOn[$index] ?? []) as $dependency) {
                         if (isset($remaining[$dependency])) { $blockedBySupport = true; break; }
                     }
                     if ($blockedBySupport) { continue; }
-                    $unblocked[] = $index;
-                }
-                sort($unblocked);
-                $chosen = null;
-                foreach ($unblocked as $index) {
                     if (SequenceGeometry::clearDirection($index, $boxes[$index], $boxes, $remaining, $container, $directions) !== null) {
                         $chosen = $index;
                         break;

@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace Packvium;
 
-use Packvium\Algorithm\{Deadline, FixedPlacementAdmission, SolverOrchestrator};
+use Packvium\Algorithm\{Deadline, FixedPlacementAdmission, ObjectiveBoundScope, ObjectiveBounds, SolverOrchestrator};
 use Packvium\Support\{RequestObjects, StableSorter, UnsupportedPlacements};
 use Packvium\Config\PackingConfig;
 use Packvium\Domain\{Container, FixedPlacement, Item, PackingRequest, UnratedWeightException};
@@ -13,6 +13,7 @@ use Packvium\Result\{
     AlgorithmReport,
     PackingResult,
     PackingStatus,
+    ResultFact,
     TerminationSummary
 };
 use Packvium\Validation\IndependentSolutionValidator;
@@ -49,12 +50,71 @@ final class Packer
         $this->clock = $clock;
     }
 
+    /**
+     * The request's lower bound in the objective's score order, or null.
+     *
+     * Over every instance, fixed placements included. A custom solution scorer
+     * ranks by positions the bound knows nothing about, so it gets none.
+     *
+     * @return list<int>|null
+     */
+    private function objectiveBound(PackingRequest $request): ?array
+    {
+        if ($this->solutionScorer !== null
+            || ObjectiveBoundScope::order($request->containers, $this->config->objective) === null
+        ) {
+            return null;
+        }
+        return ObjectiveBounds::forRequest($request->instances(), $request->containers,
+            $this->config->objective);
+    }
+
+    /**
+     * The status and `optimality` fact one ranked result states (OPTIMALITY-GAP.md § 1.3).
+     *
+     * Attainment is the only route to `optimal`: a complete result whose score meets the bound
+     * on every position is proven, and nothing else is -- an exhausted candidate set covers
+     * only the points it generated. A null fact keeps the one derived from the status alone,
+     * which is every result the bound does not speak for (§ 1.5).
+     *
+     * @param list<int|float|string> $score
+     * @param list<int>|null $objectiveBound
+     * @return array{0:PackingStatus,1:?ResultFact}
+     */
+    private static function statedOptimality(string $status, array $score, ?array $objectiveBound, bool $complete): array
+    {
+        if ($objectiveBound === null || $status === PackingStatus::InvalidResult) {
+            return [$status, null];
+        }
+        $fields = ObjectiveBounds::statement($score, $objectiveBound);
+        if ($fields === null) {
+            return [$status, null];
+        }
+        if ($complete && !array_key_exists('gap_key', $fields)) {
+            $status = PackingStatus::Optimal;
+        }
+        $code = $status === PackingStatus::Optimal ? 'proven_optimal' : ($complete ? 'not_proven' : 'best_found');
+        return [$status, new ResultFact($code, $fields)];
+    }
+
     /** @param list<Item> $items @param list<Container> $containers @param list<FixedPlacement> $fixedPlacements */
     public function pack(array $items, array $containers, array $fixedPlacements = []): PackingResult
     {
         // The JSON path's rules, with the JSON path's reason and field: a request
         // built from objects is refused exactly where the same request as JSON would be.
         RequestObjects::check($items, $containers, $this->config, $fixedPlacements);
+        return $this->solve($items, $containers, $fixedPlacements);
+    }
+
+    /**
+     * The pack once the request's rules have passed. Private, so the public entry always
+     * checks; `ArrayCodec` reaches it after `RequestRules`, which refuses everything
+     * `RequestObjects` would.
+     *
+     * @param list<Item> $items @param list<Container> $containers @param list<FixedPlacement> $fixedPlacements
+     */
+    private function solve(array $items, array $containers, array $fixedPlacements): PackingResult
+    {
         $request = new PackingRequest($items, $containers, $fixedPlacements);
         // Both cost objectives price the same billed weight, so both need the divisor.
         // There is no library-chosen default: a wrong guess would silently misprice
@@ -89,6 +149,10 @@ final class Packer
             $this->config->clearance,
             $this->config->maxContainers,
         );
+        // Once per pack, from the request alone and before the first solver runs, so that
+        // computing the bound never depends on which solver won, how many starts ran or
+        // how much of the deadline was left (OPTIMALITY-GAP.md F3).
+        $objectiveBound = $this->objectiveBound($request);
         $deadline = Deadline::ofMilliseconds($this->config->timeLimitMs, $this->clock);
         $orchestrator = new SolverOrchestrator(
             $this->extensions->placementConstraints,
@@ -112,9 +176,7 @@ final class Packer
             $score = $scorer->score($raw)->components;
             $status = ($raw->unpacked !== [] && $raw->timeLimitReached)
                 ? PackingStatus::TimeLimit
-                : ($raw->unpacked !== []
-                    ? PackingStatus::BestFound
-                    : ($raw->exhaustive ? PackingStatus::Optimal : PackingStatus::Feasible));
+                : ($raw->unpacked !== [] ? PackingStatus::BestFound : PackingStatus::Feasible);
             $warnings = [];
             if ($this->config->validateResult) {
                 // Independent validation re-derives every guarantee from per-item
@@ -165,6 +227,7 @@ final class Packer
             }
             $aggregateTimedOut = $termination->attributes['global_deadline_reached']
                 || $raw->timeLimitReached;
+            [$status, $optimality] = self::statedOptimality($status, $score, $objectiveBound, $raw->unpacked === []);
             $ranked[] = new PackingResult($status, $raw->containers, $raw->unpacked, new AlgorithmReport(
                 $this->config->profile,
                 $raw->solverName,
@@ -175,7 +238,7 @@ final class Packer
                 $raw->stats->candidatesEvaluated,
                 $raw->stats->placementsAttempted,
                 $raw->stats->metrics(),
-            ), $score, $warnings, [], null, $termination, null, $this->config->objective);
+            ), $score, $warnings, [], null, $termination, $optimality, $this->config->objective);
         }
 
         $ranked = StableSorter::sortBy($ranked, static function ($result): array {

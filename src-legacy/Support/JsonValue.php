@@ -15,6 +15,12 @@ use stdClass;
  */
 final class JsonValue
 {
+    /**
+     * The largest magnitude every engine holds exactly. Kept here, not in `CanonicalJson`, so
+     * that reading a request's integers never compiles the canonical writer.
+     */
+    public const MAX_EXACT_MAGNITUDE = 9007199254740991;
+
     /** @param mixed $value */
     public static function isList($value): bool
     {
@@ -44,10 +50,10 @@ final class JsonValue
     public static function integer($value): ?int
     {
         if (\is_int($value)) {
-            return \abs($value) <= CanonicalJson::MAX_EXACT_MAGNITUDE ? $value : null;
+            return \abs($value) <= self::MAX_EXACT_MAGNITUDE ? $value : null;
         }
         if (!\is_float($value) || !\is_finite($value) || \floor($value) !== $value
-            || \abs($value) > CanonicalJson::MAX_EXACT_MAGNITUDE) {
+            || \abs($value) > self::MAX_EXACT_MAGNITUDE) {
             return null;
         }
         return (int) $value;

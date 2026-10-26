@@ -9,6 +9,7 @@ use Packvium\Domain\{Axle,AxisAlignedBox,Compression,Container,Dimensions,FixedP
 use Packvium\Extension\ExtensionRegistry;
 use Packvium\Packer;
 use Packvium\Policy\PolicyRuleSet;
+use Packvium\Result\PackingResult;
 use Packvium\Support\{FixedPlacementShape,JsonValue,MeasureReading,ObjectRefusal,RequestRules};
 use Packvium\Unit\{Length,Weight};
 use Throwable;
@@ -183,9 +184,25 @@ final class ArrayCodec
         catch(InvalidArgumentException|TypeError|ValueError|ArithmeticError $error){throw self::asRequestError($error);}
         $unit=(string)($data['units']['length']??'mm');
         $out=$data['output']??[];
-        $result=(new Packer($config,$extensions))->pack($items,$containers,$fixed)->toArray($out['length_unit']??self::outputLengthCode($unit),$out['weight_unit']??'g');
+        $result=self::solve(new Packer($config,$extensions),$items,$containers,$fixed)->toArray($out['length_unit']??self::outputLengthCode($unit),$out['weight_unit']??'g');
         $result['catalog_versions_used']=$references;
         return $result;
+    }
+
+    /**
+     * `Packer::pack` without its object check. `RequestRules::check` has passed this request,
+     * and `RequestObjects` refuses only what those rules refuse, so the second walk could never
+     * fire here. The solve stays private to `Packer`, keeping its public `pack` the
+     * checked entry for object-built requests; the closure borrows its scope.
+     *
+     * @param list<Item> $items @param list<Container> $containers @param list<FixedPlacement> $fixed
+     */
+    private static function solve(Packer $packer,array $items,array $containers,array $fixed):PackingResult
+    {
+        $solve=\Closure::bind(static function (Packer $packer) use ($items, $containers, $fixed): PackingResult {
+            return $packer->solve($items,$containers,$fixed);
+        },null,Packer::class);
+        return $solve($packer);
     }
 
     /**
@@ -213,9 +230,7 @@ final class ArrayCodec
         $containers=array_map(function ($r) use ($unit) {
             return self::container($r,$unit);
         },$data['containers']);
-        $fixed=array_map(function ($r) use ($unit) {
-            return self::fixedPlacement($r,$unit);
-        },FixedPlacementShape::requireEntries($data['fixed_placements']??null,$unit));
+        $fixed=self::fixedPlacements($data['fixed_placements']??null,$unit);
         return [$config,$references,$extensions,$items,$containers,$fixed];
     }
 
@@ -301,6 +316,21 @@ final class ArrayCodec
     }
     private static function point(array $r,string $unit):Point{return new Point(Length::parse($r['x']??0,$unit)->ticks,Length::parse($r['y']??0,$unit)->ticks,Length::parse($r['z']??0,$unit)->ticks);}
     private static function box(array $r,string $unit):AxisAlignedBox{return new AxisAlignedBox(self::point($r['origin']??[],$unit),Dimensions::fromArray($r['dimensions'],$unit));}
+    /**
+     * Absent or null is none. Answered here, so that a request without fixed placements never
+     * compiles their shape checker. O(f) for f entries.
+     *
+     * @param mixed $raw
+     * @return list<FixedPlacement>
+     */
+    private static function fixedPlacements($raw,string $unit):array
+    {
+        if($raw===null)return [];
+        return array_map(function ($r) use ($unit) {
+            return self::fixedPlacement($r,$unit);
+        },FixedPlacementShape::requireEntries($raw,$unit));
+    }
+
     /**
      * One entry `FixedPlacementShape` has already admitted, so every read here is exact: the
      * names are strings, the orientation a code, the instance an integer by value.

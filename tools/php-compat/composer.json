@@ -1,0 +1,13 @@
+{
+  "name": "packvium/php-compat-build",
+  "description": "Release-only AST downgrade toolchain for the generated legacy-PHP artifact",
+  "type": "project",
+  "license": "MIT",
+  "require-dev": {
+    "rector/rector": "^2.4"
+  },
+  "config": {
+    "allow-plugins": false,
+    "sort-packages": true
+  }
+}

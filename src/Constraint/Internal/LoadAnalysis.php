@@ -20,17 +20,22 @@ final class LoadAnalysis
 {
     /** @var list<LoadUnit> */
     private array $units;
-    private LoadSupportGraph $graph;
+    private ?LoadSupportGraph $graph;
     /** @var list<int>|null */
     private ?array $topLoads=null;
     /** @var list<array<int,true>>|null */
     private ?array $restingAbove=null;
 
     /** @param list<LoadUnit> $units */
-    public function __construct(array $units,LoadSupportGraph $graph)
+    public function __construct(array $units,?LoadSupportGraph $graph=null)
     {
         $this->units=$units;
         $this->graph=$graph;
+    }
+
+    public function graph():LoadSupportGraph
+    {
+        return $this->graph??=new LoadSupportGraph($this->units);
     }
 
     /** @return list<int> */
@@ -39,11 +44,13 @@ final class LoadAnalysis
         if($this->topLoads!==null)return $this->topLoads;
         $count=count($this->units);
         if($count===0)return $this->topLoads=[];
+        $graph=$this->graph();
         $loads=array_fill(0,$count,0);
-        $order=$this->graph->descendingIndices();
+        $order=$graph->descendingIndices();
         foreach($order as $upperIndex){
-            $supports=$this->graph->supporters($upperIndex);
-            $totalArea=array_sum(array_map(static fn(ContactEdge $edge):int=>$edge->area,$supports));
+            $supports=$graph->supporters($upperIndex);
+            $totalArea=0;
+            foreach($supports as $edge)$totalArea+=$edge->area;
             if($totalArea===0)continue;
             $downward=$this->units[$upperIndex]->weightTicks+$loads[$upperIndex];
             $assigned=0;$last=count($supports)-1;
@@ -105,10 +112,12 @@ final class LoadAnalysis
     {
         if($this->restingAbove!==null)return $this->restingAbove;
         $count=count($this->units);
-        $sets=$count===0?[]:array_fill(0,$count,[]);
-        foreach($this->graph->descendingIndices() as $index){
+        if($count===0)return $this->restingAbove=[];
+        $graph=$this->graph();
+        $sets=array_fill(0,$count,[]);
+        foreach($graph->descendingIndices() as $index){
             $result=[];
-            foreach($this->graph->children($index) as $child)$result+=[$child=>true]+$sets[$child];
+            foreach($graph->children($index) as $child)$result+=[$child=>true]+$sets[$child];
             $sets[$index]=$result;
         }
         return $this->restingAbove=$sets;
@@ -134,13 +143,34 @@ final class LoadAnalysis
      */
     public function routeOrderViolated(array $stops):?array
     {
-        foreach($this->restingAbove() as $index=>$above){
+        $count=count($this->units);
+        if($count===0)return null;
+        $graph=$this->graph();
+        $maxStopAbove=array_fill(0,$count,-INF);
+        foreach($graph->descendingIndices() as $index){
+            $best=-INF;
+            foreach($graph->children($index) as $child){
+                $childStop=$stops[$child];
+                if($childStop>$best)$best=$childStop;
+                $childAbove=$maxStopAbove[$child];
+                if($childAbove>$best)$best=$childAbove;
+            }
+            $maxStopAbove[$index]=$best;
+        }
+        foreach($stops as $index=>$stop){
+            if($maxStopAbove[$index]<=$stop)continue;
             // Ascending, as Python iterates: the detail names the first violator (S16).
-            $uppers=array_keys($above);
-            sort($uppers);
-            foreach($uppers as $upper)
-                if($stops[$upper]>$stops[$index])
-                    return ['unloading_order_violation',$this->units[$index]->label.' blocked by '.$this->units[$upper]->label];
+            $seen=[];
+            $pending=$graph->children($index);
+            $upperMin=null;
+            while($pending!==[]){
+                $upper=array_pop($pending);
+                if(isset($seen[$upper]))continue;
+                $seen[$upper]=true;
+                if($stops[$upper]>$stop&&($upperMin===null||$upper<$upperMin))$upperMin=$upper;
+                foreach($graph->children($upper) as $child)$pending[]=$child;
+            }
+            return ['unloading_order_violation',$this->units[$index]->label.' blocked by '.$this->units[$upperMin]->label];
         }
         return null;
     }

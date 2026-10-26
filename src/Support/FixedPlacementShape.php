@@ -24,7 +24,7 @@ final class FixedPlacementShape
     private const AXES = ['x', 'y', 'z'];
 
     /**
-     * The entries as JSON gave them; absent or null is none. O(f) for f entries.
+     * The entries as JSON gave them. O(f) for f entries; an absent list never reaches here.
      *
      * Entries arrive from `json_decode(..., true)`, where `{}` is the empty array, so an empty
      * array stands for an empty object wherever an object is required.
@@ -35,9 +35,6 @@ final class FixedPlacementShape
      */
     public static function requireEntries($raw, string $unit = 'mm'): array
     {
-        if ($raw === null) {
-            return [];
-        }
         if (!JsonValue::isList($raw)) {
             throw self::malformed('fixed_placements is a list', '/fixed_placements');
         }

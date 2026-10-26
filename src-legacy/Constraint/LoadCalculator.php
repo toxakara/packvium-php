@@ -40,13 +40,13 @@ final class LoadCalculator
      */
     public static function topLoads(array $units):array
     {
-        return (new LoadAnalysis($units,new LoadSupportGraph($units)))->topLoads();
+        return (new LoadAnalysis($units))->topLoads();
     }
 
     /** First unit whose bearing limit is exceeded, as [code, detail]. @param list<LoadUnit> $units @return array{0:string,1:string}|null */
     public static function overloaded(array $units):?array
     {
-        return (new LoadAnalysis($units,new LoadSupportGraph($units)))->overloaded();
+        return (new LoadAnalysis($units))->overloaded();
     }
 
     /**
@@ -61,7 +61,7 @@ final class LoadCalculator
      */
     public static function crushed(array $units):?array
     {
-        return (new LoadAnalysis($units,new LoadSupportGraph($units)))->crushed();
+        return (new LoadAnalysis($units))->crushed();
     }
 
     /**
@@ -75,13 +75,13 @@ final class LoadCalculator
      */
     public static function restingAbove(array $units):array
     {
-        return (new LoadAnalysis($units,new LoadSupportGraph($units)))->restingAbove();
+        return (new LoadAnalysis($units))->restingAbove();
     }
 
     /** Items resting anywhere above each unit. A count, not a weight. @param list<LoadUnit> $units @return list<int> */
     public static function stackedCounts(array $units):array
     {
-        return (new LoadAnalysis($units,new LoadSupportGraph($units)))->stackedCounts();
+        return (new LoadAnalysis($units))->stackedCounts();
     }
 
     /**
@@ -101,13 +101,13 @@ final class LoadCalculator
     public static function routeOrderViolated(array $units,array $stops):?array
     {
         if(!LoadAnalysis::routed($stops))return null;
-        return (new LoadAnalysis($units,new LoadSupportGraph($units)))->routeOrderViolated($stops);
+        return (new LoadAnalysis($units))->routeOrderViolated($stops);
     }
 
     /** First unit whose stacked-item limit is exceeded, as [code, detail]. @param list<LoadUnit> $units @return array{0:string,1:string}|null */
     public static function stackLimitExceeded(array $units):?array
     {
-        return (new LoadAnalysis($units,new LoadSupportGraph($units)))->stackLimitExceeded();
+        return (new LoadAnalysis($units))->stackLimitExceeded();
     }
 
     /**
@@ -126,6 +126,6 @@ final class LoadCalculator
      */
     public static function stackDensityExceeded(array $units,?int $maxDensityTicks):?array
     {
-        return (new LoadAnalysis($units,new LoadSupportGraph($units)))->stackDensityExceeded($maxDensityTicks);
+        return (new LoadAnalysis($units))->stackDensityExceeded($maxDensityTicks);
     }
 }

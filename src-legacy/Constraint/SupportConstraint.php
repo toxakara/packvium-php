@@ -62,6 +62,10 @@ final class SupportConstraint implements PlacementConstraint
         $baseArea=$c->envelopeDimensions->baseAreaTicks();
         if($area<self::requiredArea($baseArea,self::scaled($required)))
             return ConstraintResult::reject('insufficient_support',sprintf('%d/%d < %.6f',$area,$baseArea,$required));
+        // Over half of a rectangle cannot lie strictly to one side of a line through its
+        // centre (central symmetry), so any support covering >50% of the base already
+        // encloses the centroid and needs no hull check.
+        if($area*2>$baseArea)return ConstraintResult::allow();
         // Area alone is not stability: a candidate can clear the ratio
         // while overhanging its own centre of gravity, which the ratio check above
         // cannot see. Checked only once a minimum ratio is already being enforced,

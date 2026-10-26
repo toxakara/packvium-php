@@ -14,6 +14,9 @@ final class VolumeReserve
 {
     public static function reserved(Container $container):string
     {
+        // Nothing set aside is the common case, and answering it here keeps the request-level
+        // bound from loading SupportConstraint for its ratio scale alone.
+        if($container->voidFillReserveRatio===0.0)return '0';
         $scaled=(string)SupportConstraint::scaled($container->voidFillReserveRatio);
         return BigInt::divide(BigInt::multiply($container->innerDimensions->volumeString(),$scaled),'1000000');
     }

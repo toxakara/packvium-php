@@ -1,0 +1,47 @@
+name: rc
+
+# Packagist does not take an upload: it reads this repository's tags, and imports a
+# pre-release tag (`v1.9.0-rc.1`) as an RC-stability version. Composer skips it under the
+# default `minimum-stability: stable`, so a consumer opts in explicitly:
+#   composer require packvium/packvium:<version>@RC
+# This workflow runs the same checks `release.yml` runs. A bad RC tag gets a red check,
+# but that does not prevent Packagist from importing the tag. Check before pushing it.
+# There is no GitHub Release: an RC is not a release.
+# Nothing is needed from the owner: the repository is already linked on Packagist.
+
+on:
+  push:
+    tags: ["v*-*"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: "8.3"
+          coverage: none
+
+      # composer.json deliberately carries no `version` field -- Composer derives it from
+      # the tag, and a hand-maintained copy only ever drifts. The changelog is the file
+      # that does state a version, so that is what the tag is checked against: a tag with
+      # no matching changelog entry is a release nobody wrote down.
+      - name: The tag must have a changelog entry
+        run: |
+          tagged="${GITHUB_REF_NAME#v}"
+          if ! grep -q "^## \[${tagged}\]" CHANGELOG.md; then
+            echo "CHANGELOG.md has no '## [${tagged}]' section for tag $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+
+      - run: composer validate --strict --no-check-lock
+      - name: Lint every shipped file
+        run: |
+          for file in $(find src tests examples -name '*.php') bin/packvium; do
+            php -l "$file" > /dev/null
+          done
+      - run: php tests/run.php

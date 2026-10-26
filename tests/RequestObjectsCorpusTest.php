@@ -31,6 +31,7 @@ final class RequestObjectsCorpusTest extends TestCase
     private const COERCED = 'the codec casts it, so the objects it builds are a different, valid request';
     private const TYPED = 'a typed parameter cannot hold it';
     private const OUTPUT = 'the output units are arguments of the result\'s serializer, not part of the objects packed';
+    private const UNITS = 'the request\'s length unit is an argument of each measure, not an object packed';
     private const CONSTRUCTOR_FIRST = 'two faults: a constructor refuses its own value as the object is built, '
         . 'before Packer::pack walks the request in the JSON order';
     private const NEGATIVE_POSITION = 'a Point cannot hold a negative coordinate; the measure it is read with '
@@ -93,6 +94,34 @@ final class RequestObjectsCorpusTest extends TestCase
         'output-length-unit-unknown' => self::OUTPUT,
         'output-weight-unit-unknown' => self::OUTPUT,
         'output-before-configuration' => self::OUTPUT,
+        // The request's length unit is an argument of each measure, not an object of its own.
+        'units-not-object' => self::UNITS,
+        'units-list' => self::UNITS,
+        'units-length-object' => self::TYPED,
+        'units-length-list' => self::TYPED,
+        // A bool property cannot hold anything else; the codec casts what it reads.
+        'item-keep-upright-text' => self::COERCED,
+        'item-keep-upright-text-true' => self::COERCED,
+        'item-keep-upright-zero' => self::COERCED,
+        'item-keep-upright-one' => self::COERCED,
+        'item-keep-upright-list' => self::COERCED,
+        'item-stackable-text' => self::COERCED,
+        'item-stackable-text-true' => self::COERCED,
+        'item-stackable-zero' => self::COERCED,
+        'item-stackable-one' => self::COERCED,
+        'item-stackable-list' => self::COERCED,
+        'item-must-be-on-floor-text' => self::COERCED,
+        'item-must-be-on-floor-text-true' => self::COERCED,
+        'item-must-be-on-floor-zero' => self::COERCED,
+        'item-must-be-on-floor-one' => self::COERCED,
+        'item-must-be-on-floor-list' => self::COERCED,
+        'configuration-require-placement-coordinates-text' => self::COERCED,
+        'configuration-require-placement-coordinates-text-true' => self::COERCED,
+        'configuration-require-placement-coordinates-zero' => self::COERCED,
+        'configuration-require-placement-coordinates-one' => self::COERCED,
+        'configuration-require-placement-coordinates-list' => self::COERCED,
+        'item-booleans-in-schema-order' => self::COERCED,
+        'configuration-boolean-before-items' => self::COERCED,
     ];
 
     /** Cases the object path answers differently on purpose (docs/ERRORS.md). */
@@ -104,10 +133,12 @@ final class RequestObjectsCorpusTest extends TestCase
         'an-item-id-before-its-quantity' => self::CONSTRUCTOR_FIRST,
         'item-ids-before-containers' => self::CONSTRUCTOR_FIRST,
         'container-ids-before-fixed-placements' => self::CONSTRUCTOR_FIRST,
+        'configuration-boolean-before-effort-budget' => 'two faults: the EffortBudget is built, and refuses its own '
+            . 'value, before the PackingConfig that holds it',
     ];
 
     /** Pinned, so the skip set cannot grow without this line changing too. */
-    private const SKIPPED = 61;
+    private const SKIPPED = 88;
 
     public static function testTheSkipSetIsPinnedAndNamesOnlyCorpusCases(): void
     {

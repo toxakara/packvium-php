@@ -503,7 +503,8 @@ final class SolverTest extends TestCase
         // The solver counts a whole lattice group in one step and ranks only groups that can
         // lead. Each row is [limit, placements, stopped]: the limit from which that outcome
         // holds, pinned from the per-node walk over every limit from 1 to 7000, so a stop
-        // must land on the same node, in a node limit and in an effort budget alike.
+        // must land on the same node, in a node limit and in an effort budget alike. Only the
+        // effort budget reports the stop as a limit: the node limit is a search bound.
         $items=[...self::instances('a',108,76,30,['quantity'=>40]),...self::instances('b',110,43,25,['quantity'=>33]),
             ...self::instances('c',92,81,55,['quantity'=>39]),...self::instances('d',61,47,33,['quantity'=>12])];
         $box=Container::create('box',Dimensions::mm(587,233,220));
@@ -522,12 +523,13 @@ final class SolverTest extends TestCase
                     $solution=(new HomogeneousBlockSolver([],null,[$mode],$limit))->packOne($box,1,$items,PackingConfig::fast(),$stats,self::generous());
                     self::assertSame(min($limit,$total),$stats->searchNodesExpanded,"{$mode} node limit {$limit}");
                     self::assertSame($expectedPlaced,count($solution->state->placements),"{$mode} node limit {$limit}");
-                    self::assertSame($expectedStopped,$solution->timeLimitReached,"{$mode} node limit {$limit}");
+                    self::assertFalse($solution->timeLimitReached,"{$mode} node limit {$limit}");
                     $effort=new SearchStats();
                     $budget=self::generous()->withEffort(new EffortBudget(maxSearchNodes:$limit),$effort);
                     $limited=(new HomogeneousBlockSolver([],null,[$mode],1_000_000))->packOne($box,1,$items,PackingConfig::fast(),$effort,$budget);
                     self::assertSame(min($limit,$total),$effort->searchNodesExpanded,"{$mode} effort budget {$limit}");
                     self::assertSame($expectedPlaced,count($limited->state->placements),"{$mode} effort budget {$limit}");
+                    self::assertSame($expectedStopped,$limited->timeLimitReached,"{$mode} effort budget {$limit}");
                 }
             }
         }
@@ -622,6 +624,23 @@ final class SolverTest extends TestCase
         // under each 1 kg ceiling: three items need three containers.
         $items = [Item::create('heavy', Dimensions::mm(40, 40, 40), weight: '600 g', quantity: 3)];
         $containers = [Container::create('box', Dimensions::mm(100, 100, 100), maxPayload: '1 kg', quantity: 5)];
+        $config = new PackingConfig(timeLimitMs: 60_000, seed: 1, effortBudget: new EffortBudget(maxSearchNodes: 100_000),
+            containerPlanBeamWidth: 4, containerPlanNodeLimit: 64);
+        $result = (new \Packvium\Packer($config))->pack($items, $containers);
+        self::assertTrue($result->complete());
+        self::assertCount(3, $result->containers);
+        self::assertSame([], Support::problems($result, $items, $containers));
+    }
+
+    public static function testContainerPlanSearchRanksSeveralSurvivingPlansByTheirBound(): void
+    {
+        // Two container types give each step more than one surviving plan, so the beam is
+        // ranked by the payload-aware bound rather than passed through as a single plan.
+        $items = [Item::create('heavy', Dimensions::mm(40, 40, 40), weight: '600 g', quantity: 3)];
+        $containers = [
+            Container::create('cheap', Dimensions::mm(100, 100, 100), maxPayload: '1 kg', costMinor: 10, quantity: 5),
+            Container::create('dear', Dimensions::mm(100, 100, 100), maxPayload: '1 kg', costMinor: 20, quantity: 5),
+        ];
         $config = new PackingConfig(timeLimitMs: 60_000, seed: 1, effortBudget: new EffortBudget(maxSearchNodes: 100_000),
             containerPlanBeamWidth: 4, containerPlanNodeLimit: 64);
         $result = (new \Packvium\Packer($config))->pack($items, $containers);
@@ -951,6 +970,44 @@ final class SolverTest extends TestCase
                     self::assertTrue($selected==array_slice($every,0,$width));
                     self::assertTrue($stats==$fullStats);
                     self::assertTrue($custom->calls==$calls);
+                }
+            }
+        }
+    }
+
+    public static function testTheInlinedDefaultScoreSelectsWhatDefaultCandidateScorerWould(): void
+    {
+        // CandidateFinder builds DefaultCandidateScorer's key itself and skips a position whose
+        // height already loses. A scorer that only delegates to it takes the generic path, so
+        // both must select the same candidates and count the same work, reserve path included.
+        $delegating=new class implements \Packvium\Extension\CandidateScorer {
+            public function score(ContainerState $state,Point $point,Dimensions $envelope):array
+            {
+                return (new DefaultCandidateScorer())->score($state,$point,$envelope);
+            }
+        };
+        [$base]=self::instances('base',40,40,30);
+        [$plain]=self::instances('a',30,20,10);
+        [$nesting]=self::instances('cup',30,20,10,['nestingHeight'=>Length::mm(4)]);
+        $points=array_map(
+            static fn(array $origin):Point=>new Point(...array_map(static fn(int $mm):int=>Length::mm($mm)->ticks,$origin)),
+            [[60,60,50],[0,50,0],[0,0,30],[50,0,0],[0,0,0],[60,0,30],[10,60,50],[70,70,0]],
+        );
+        foreach([0.0,0.25] as $reserve){
+            $state=new ContainerState(Container::create('c',Dimensions::mm(100,100,100),voidFillReserveRatio:$reserve),1);
+            $config=new PackingConfig();
+            $constraints=ConstraintSet::defaults($config->minimumSupportRatio);
+            $state=BeamPacker::extended($state,$base,CandidateFinder::find(
+                $state,$base,$config,$constraints,new SearchStats(),self::generous(),new DefaultCandidateScorer(),1,
+            )[0]);
+            foreach([$plain,$nesting] as $item){
+                foreach([null,1,2,3,128] as $width){
+                    $inlined=new SearchStats();$delegated=new SearchStats();
+                    $expected=CandidateFinder::find($state,$item,$config,$constraints,$delegated,self::generous(),$delegating,$width,$points);
+                    $actual=CandidateFinder::find($state,$item,$config,$constraints,$inlined,self::generous(),new DefaultCandidateScorer(),$width,$points);
+                    self::assertGreaterThan(0,count($expected));
+                    self::assertTrue($actual==$expected);
+                    self::assertTrue($inlined==$delegated);
                 }
             }
         }

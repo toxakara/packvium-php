@@ -42,6 +42,9 @@ final class BeamPacker
             $expansions=[];$exhausted=false;
             foreach($beam as [$state,$unplaced]){
                 if($nodeLimit!==null&&$nodes>=$nodeLimit){$exhausted=true;break;}
+                // A spent budget would stop this node before its first counted step, so it
+                // is not counted either: a counter never passes its limit.
+                if($deadline->effortStops()){$exhausted=true;$expansions[]=[$state,array_merge($unplaced,$batch)];continue;}
                 $nodes++;
                 $stats->searchNodesExpanded++;
                 try{$children=self::placeBatch($state,$batch,$config,$constraints,$stats,$deadline,$scorer,$branchWidth);}
@@ -62,18 +65,22 @@ final class BeamPacker
                 if($candidateKey<$incumbentKey){$incumbent=[$state,array_merge($unplaced,$future)];$incumbentKey=$candidateKey;}
             }
             if($expansions===[])break;
-            $futureInfo=self::precomputeFuture($future,($nullsafeVariable1 = $container->maxPayload) ? $nullsafeVariable1->ticks : null);
-            $beam=array_slice(StableSorter::sortBy($expansions,static function (array $node) use ($futureInfo, $byVolume): array {
-                return self::nodeKeyPrecomputed($node,$futureInfo,$byVolume);
-            }),0,$width);
+            if(count($expansions)>1){
+                $futureInfo=self::precomputeFuture($future,($nullsafeVariable1 = $container->maxPayload) ? $nullsafeVariable1->ticks : null);
+                $beam=array_slice(StableSorter::sortBy($expansions,static function (array $node) use ($futureInfo, $byVolume): array {
+                    return self::nodeKeyPrecomputed($node,$futureInfo,$byVolume);
+                }),0,$width);
+            }else{
+                $beam=$expansions;
+            }
             if($exhausted){
                 [$state,$unplaced]=$incumbent;
-                return new SingleContainerSolution($state,$unplaced,false,$deadline->expired());
+                return new SingleContainerSolution($state,$unplaced,false,$deadline->stopped());
             }
         }
-        $ordered=StableSorter::sortBy($beam,static function (array $node) use ($byVolume): array {
+        $ordered=count($beam)>1?StableSorter::sortBy($beam,static function (array $node) use ($byVolume): array {
             return self::nodeKey($node,$byVolume);
-        });
+        }):$beam;
         $completed=$ordered[0]??null;
         [$state,$unplaced]=$completed!==null&&self::nodeKey($completed,$byVolume)<$incumbentKey?$completed:$incumbent;
         return new SingleContainerSolution($state,$unplaced);
@@ -94,15 +101,18 @@ final class BeamPacker
         foreach($batches as $position=>$batch){
             $expansions=[];$exhausted=false;
             foreach($beam as [$state,$unplaced]){
+                if($deadline->effortStops()){$exhausted=true;$expansions[]=[$state,array_merge($unplaced,$batch)];continue;}
                 $stats->searchNodesExpanded++;
                 try{$children=self::placeBatch($state,$batch,$config,$constraints,$stats,$deadline,$scorer,$width);}
                 catch(TimeLimitReached $exception){$exhausted=true;$children=[];}
                 if($children!==[]){foreach($children as $child)$expansions[]=[$child,$unplaced];}
                 else $expansions[]=[$state,array_merge($unplaced,$batch)];
             }
-            $beam=array_slice(StableSorter::sortBy($expansions,static function (array $node) use ($byVolume): array {
-                return self::nodeKey($node,$byVolume);
-            }),0,$width);
+            $beam=count($expansions)>1
+                ?array_slice(StableSorter::sortBy($expansions,static function (array $node) use ($byVolume): array {
+                    return self::nodeKey($node,$byVolume);
+                }),0,$width)
+                :$expansions;
             if($exhausted){
                 [$state,$unplaced]=$beam[0];
                 $pending=GroupBatcher::flatten(array_slice($batches,$position+1));

@@ -27,17 +27,22 @@ use Packvium\Support\BigInt;
  * to a float.
  *
  * Complexity. `O(n log n + c log c)` for `n` instances and `c` container types, the same as
- * the Python port: one sort of the volumes, one of the weights, one of the per-unit costs.
- * The volume sort compares decimal strings through `BigInt::compare` rather than PHP's
- * default string order, where "9" would sort after "10".
+ * the Python port: one sort of the volumes, one of the weights, one of the container types
+ * by cost. The volume sort compares decimal strings through `BigInt::compare` rather than
+ * PHP's default string order, where "9" would sort after "10".
+ *
+ * Which instances, and when. The bound is a property of the request: `Packer` computes it
+ * once per pack through `forRequest`, over every instance the request declares -- fixed
+ * placements included -- before the first solver runs. Refusal is the
+ * one predicate of docs/OPTIMALITY-CERTIFICATES.md, the same in every engine.
  *
  * Namespace. `Packvium\Algorithm` is one of the three namespaces `spec/api/php.json`
  * records as internal, and that is deliberate rather than incidental. A lower bound is
- * solver machinery: `SolverOrchestrator` -- its only production caller, and already in this
- * namespace -- records it into `SearchStats`, and nothing serializes it. Filed first under
- * the public `Packvium\Objective`, it added two classes to a frozen public API for no
- * caller outside this namespace, which is a contract this project would then owe forever.
- * Python and JavaScript reached the same place by construction: neither exports its bound.
+ * solver machinery, and nothing serializes it until the 1.8.0 result fields are emitted
+ *. Filed first under the public `Packvium\Objective`, it added two classes to a
+ * frozen public API for no caller outside the engine, which is a contract this project would
+ * then owe forever. Python and JavaScript reached the same place by construction: neither
+ * exports its bound.
  */
 final class ObjectiveBounds
 {
@@ -63,6 +68,85 @@ final class ObjectiveBounds
     public const MAX_BOUND_VALUE = '9007199254740991';
 
     /**
+     * The objectives a bound is stated for, and where each reads the five bounds: the
+     * position in `compute`'s default-order vector of each of the objective's score keys.
+     * `lowest_cost` scores cost ahead of the container count, and the document shows the
+     * permuted vector is still a bound. Every other objective gets none.
+     */
+    public const OBJECTIVE_ORDERS = ObjectiveBoundScope::OBJECTIVE_ORDERS;
+
+    /**
+     * The request's bound in `$objective`'s own score order, or null where none is stated.
+     *
+     * Null for an objective with no bound, for a request with a `made_to_measure` container
+     * (D13: the unused-volume key would read the machine maximum while the score
+     * reads the fabricated box), and for a request past a declared ceiling. The last
+     * withholds the bound and nothing else -- the pack is answered as it was before any
+     * bound existed, rather than failing with `BoundOverflowException` (finding F5).
+     *
+     * @param list<ItemInstance> $instances every instance of the request, fixed ones included
+     * @param list<Container> $containers
+     * @return list<int>|null
+     */
+    public static function forRequest(array $instances, array $containers, string $objective): ?array
+    {
+        $order = ObjectiveBoundScope::order($containers, $objective);
+        if ($order === null) {
+            return null;
+        }
+        try {
+            $vector = self::compute($instances, $containers);
+        } catch (BoundOverflowException $refused) {
+            return null;
+        }
+        return array_map(static function (int $position) use ($vector): int {
+            return $vector[$position];
+        }, $order);
+    }
+
+    /**
+     * The `optimality` fields one result states against its request's bound
+     * (OPTIMALITY-GAP.md § 1.1), or null where § 1.5 withholds them.
+     *
+     * `$bound` is in the result's own score order. The prefix runs through the first position
+     * the score misses, or is the whole bound when nothing is missed -- the attained case,
+     * which carries no gap at all rather than a zero one. A score below its bound means the
+     * bound is wrong, and an engine must not publish a claim it has just refuted, so nothing
+     * is stated. At most five comparisons, `O(1)`.
+     *
+     * @param list<int|float|string> $score
+     * @param list<int> $bound
+     * @return array<string,mixed>|null
+     */
+    public static function statement(array $score, array $bound): ?array
+    {
+        foreach ($bound as $index => $least) {
+            $achieved = $score[$index];
+            if ($achieved < $least) {
+                return null;
+            }
+            if ($achieved > $least) {
+                $difference = BigInt::subtract((string)$achieved, (string)$least);
+                if (BigInt::compare($difference, self::MAX_BOUND_VALUE) > 0) {
+                    return null;
+                }
+                $absolute = (int)$difference;
+                $fields = [
+                    'lower_bound' => array_slice($bound, 0, $index + 1),
+                    'gap_key' => $index,
+                    'absolute_gap' => $absolute,
+                ];
+                if ($least > 0) {
+                    // Unreduced, so the pair reads as (score - bound, bound) by eye.
+                    $fields['relative_gap'] = ['numerator' => $absolute, 'denominator' => $least];
+                }
+                return $fields;
+            }
+        }
+        return ['lower_bound' => $bound];
+    }
+
+    /**
      * Refuse a sum past the declared ceiling instead of carrying it further.
      *
      * A structured refusal rather than a number: the alternative is the failure Baldacci et
@@ -81,6 +165,12 @@ final class ObjectiveBounds
         return $total;
     }
 
+    /** A capacity total is guarded only when it is a number: an unbounded one is not. */
+    private static function guardFinite(?string $total, string $quantity): ?string
+    {
+        return $total === null ? null : self::guard($total, $quantity);
+    }
+
     /** Refuse a result before PHP or JavaScript can round it on a binding boundary. */
     private static function guardOutput(string $value, string $quantity): int
     {
@@ -96,7 +186,7 @@ final class ObjectiveBounds
     /**
      * Every bound for one request, in the default objective's key order.
      *
-     * @param list<ItemInstance> $instances quantity-expanded, exactly as the solver sees them
+     * @param list<ItemInstance> $instances quantity-expanded, free and fixed alike
      * @param list<Container> $containers the types the request permits
      * @return array{int,int,int,int,int}
      */
@@ -149,42 +239,9 @@ final class ObjectiveBounds
             $weights[] = $instance['weight'];
             $shrinks = $shrinks || $instance['shrinks'];
         }
-        // Native comparison while both sides fit one, `BigInt` only when they do not. The
-        // sort is the dominant cost at scale -- ten thousand instances is about 133,000
-        // comparisons -- and PHP's own string order is not an option here, where "9" would
-        // sort after "10".
-        usort($volumes, static function (string $a, string $b): int {
-            if (strlen($a) <= 18 && strlen($b) <= 18) {
-                return (int)$a <=> (int)$b;
-            }
-            return BigInt::compare($a, $b);
-        });
+        self::sortVolumes($volumes);
         sort($weights);
         $count = count($instances);
-
-        // The a-priori check, once, on the way in. Every later product is bounded by these
-        // totals times `PPM`, so guarding them here is what makes the rest safe by derivation
-        // rather than by hoping each step stays small.
-        self::guard(self::sumBig($volumes), 'instance volume');
-        self::guard(self::sumBig(array_map(\Closure::fromCallable('strval'), $weights)), 'instance weight');
-        self::guard(
-            self::sumBig(array_map(
-                static function (array $c): string {
-                    return BigInt::multiply($c['usable'], (string)($c['quantity'] ?? 1));
-                },
-                $containers,
-            )),
-            'container capacity',
-        );
-        self::guard(
-            self::sumBig(array_map(
-                static function (array $c): string {
-                    return BigInt::multiply((string)$c['cost_minor'], (string)($c['quantity'] ?? 1));
-                },
-                $containers,
-            )),
-            'opening cost',
-        );
 
         $usable = array_map(static function (array $c): string {
             return $c['usable'];
@@ -211,8 +268,21 @@ final class ObjectiveBounds
             return $c['cost_minor'];
         }, $containers);
 
-        $unpacked = self::unpackedBound($volumes, $weights, $shrinks, $count, $usable,
-            $payloads, $slots, $quantities);
+        // The one refusal predicate, on the way in: the two instance sums and every
+        // *finite* capacity total. Every later product is bounded by these times `PPM`, so
+        // guarding them here makes the rest safe by derivation. Nothing the formulas never
+        // form is guarded -- no single type's capacity or cost, no total an unlimited type
+        // makes unbounded -- and the shapes are never read, so the same request is refused
+        // in every engine. The five results are held to the portable ceiling on the way out.
+        self::guard(self::sumBig($volumes), 'instance volume');
+        self::guard(self::sumBig(array_map(\Closure::fromCallable('strval'), $weights)), 'instance weight');
+        $capacities = [
+            'volume' => self::guardFinite(self::volumeCapacity($usable, $quantities), 'volume capacity'),
+            'payload' => self::guardFinite(self::nativeCapacity($payloads, $quantities), 'payload capacity'),
+            'slots' => self::guardFinite(self::nativeCapacity($slots, $quantities), 'slot capacity'),
+        ];
+
+        $unpacked = self::unpackedBound($volumes, $weights, $shrinks, $count, $capacities);
         $placed = $count - $unpacked;
         $opened = self::containerBound($volumes, $weights, $shrinks, $placed, $containers,
             $usable, $payloads, $slots);
@@ -254,22 +324,17 @@ final class ObjectiveBounds
      *
      * @param list<string> $volumes ascending
      * @param list<int> $weights ascending
-     * @param list<string> $usable
-     * @param list<?int> $payloads
-     * @param list<?int> $slots
-     * @param list<?int> $quantities
+     * @param array{volume:?string,payload:?string,slots:?string} $capacities null when unbounded
      */
     private static function unpackedBound(array $volumes, array $weights, bool $shrinks,
-        int $count, array $usable, array $payloads, array $slots, array $quantities): int
+        int $count, array $capacities): int
     {
         $placeable = $count;
         if (!$shrinks) {
-            $volumeCapacity = self::volumeCapacity($usable, $quantities);
-            $placeable = min($placeable, self::fitBig($volumes, $volumeCapacity));
+            $placeable = min($placeable, self::fitBig($volumes, $capacities['volume']));
         }
-        $payloadCapacity = self::nativeCapacity($payloads, $quantities);
-        $placeable = min($placeable, self::fitNative($weights, $payloadCapacity));
-        $slotCapacity = self::nativeCapacity($slots, $quantities);
+        $placeable = min($placeable, self::fitNative($weights, $capacities['payload']));
+        $slotCapacity = $capacities['slots'];
         if ($slotCapacity !== null) {
             $placeable = min($placeable,
                 BigInt::compare($slotCapacity, (string)$count) >= 0 ? $count : (int)$slotCapacity);
@@ -326,6 +391,12 @@ final class ObjectiveBounds
      * `L2`: at least `L1` containers open, each costing at least the cheapest the inventory
      * still holds.
      *
+     * The types are sorted by cost once and taken greedily, `min(quantity, still needed)` of
+     * each: the sum of the `L1` cheapest per-unit entries without building that multiset,
+     * `O(c log c)` rather than the `O(c * L1 log(c * L1))` of materialising and sorting up to
+     * `L1` copies of every type (finding F6). Ties in cost cannot change the sum, so the
+     * order among them does not matter.
+     *
      * @param list<int> $costs
      * @param list<?int> $quantities
      */
@@ -334,17 +405,21 @@ final class ObjectiveBounds
         if ($opened <= 0) {
             return 0;
         }
-        $available = [];
-        foreach ($costs as $index => $cost) {
-            $quantity = $quantities[$index];
-            $repeat = $quantity === null ? $opened : min($quantity, $opened);
-            for ($taken = 0; $taken < $repeat; $taken++) {
-                $available[] = $cost;
+        $cheapestFirst = array_keys($costs);
+        usort($cheapestFirst, static function (int $a, int $b) use ($costs): int {
+            return $costs[$a] <=> $costs[$b];
+        });
+        $needed = $opened;
+        $selected = '0';
+        foreach ($cheapestFirst as $index) {
+            if ($needed <= 0) {
+                break;
             }
+            $quantity = $quantities[$index];
+            $taken = $quantity === null ? $needed : min($quantity, $needed);
+            $selected = BigInt::add($selected, BigInt::multiply((string)$costs[$index], (string)$taken));
+            $needed -= $taken;
         }
-        sort($available);
-        $selected = self::sumBig(array_map(\Closure::fromCallable('strval'), array_slice($available, 0, $opened)));
-        self::guard($selected, 'opening cost');
         return self::guardOutput($selected, 'opening cost');
     }
 
@@ -479,13 +554,46 @@ final class ObjectiveBounds
                 continue;
             }
             $total = BigInt::add($total, BigInt::multiply((string)$value, (string)$quantity));
-            self::guard($total, 'container capacity');
         }
         return $total;
     }
 
     /**
+     * Ascending decimal strings, in numeric order.
+     *
+     * PHP's own string order is not an option, where "9" would sort after "10". When every
+     * volume fits a native integer -- a 10 mm cube is 4.1e15 cubic ticks -- they are sorted
+     * as integers in C and written back as the same decimal strings. Measured on 51,200
+     * volumes: 17 ms, against 78 ms for the comparator callback and 182 ms for
+     * `SORT_NUMERIC`, which re-parses both strings on every comparison. Only a volume wider
+     * than a native integer needs the `BigInt` comparator.
+     *
+     * @param list<string> $volumes
+     */
+    private static function sortVolumes(array &$volumes): void
+    {
+        $widest = $volumes === [] ? 0 : max(array_map(\Closure::fromCallable('strlen'), $volumes));
+        if ($widest <= 18) {
+            $native = array_map(\Closure::fromCallable('intval'), $volumes);
+            sort($native);
+            $volumes = array_map(\Closure::fromCallable('strval'), $native);
+            return;
+        }
+        usort($volumes, static function (string $a, string $b): int {
+            if (strlen($a) <= 18 && strlen($b) <= 18) {
+                return (int)$a <=> (int)$b;
+            }
+            return BigInt::compare($a, $b);
+        });
+    }
+
+    /**
      * The largest `n` such that the `n` smallest values sum to at most the capacity.
+     *
+     * The running total is `$flushed + $native`: native additions until one more would
+     * overflow, then one `BigInt` addition that folds the chunk in. The capacity test stays
+     * native too, against the room the capacity leaves above `$flushed`, so a long run of
+     * small values costs native work rather than a string addition and comparison each.
      *
      * @param list<string> $ascending
      */
@@ -494,30 +602,42 @@ final class ObjectiveBounds
         if ($capacity === null) {
             return count($ascending);
         }
-        $used = '0';
+        $flushed = '0';
+        $native = 0;
+        $room = self::nativeRoom($capacity, $flushed);
         foreach ($ascending as $taken => $value) {
-            $used = BigInt::add($used, $value);
-            if (BigInt::compare($used, $capacity) > 0) {
+            if (strlen($value) > 18 || $native > PHP_INT_MAX - (int)$value) {
+                $flushed = BigInt::add(BigInt::add($flushed, (string)$native), $value);
+                $native = 0;
+                if (BigInt::compare($flushed, $capacity) > 0) {
+                    return $taken;
+                }
+                $room = self::nativeRoom($capacity, $flushed);
+                continue;
+            }
+            $native += (int)$value;
+            if ($room !== null && $native > $room) {
                 return $taken;
             }
         }
         return count($ascending);
     }
 
+    /**
+     * `capacity - flushed` as a native integer, or null when it exceeds every native total.
+     *
+     * The caller guarantees `flushed <= capacity`.
+     */
+    private static function nativeRoom(string $capacity, string $flushed): ?int
+    {
+        $room = BigInt::subtract($capacity, $flushed);
+        return BigInt::compare($room, (string)PHP_INT_MAX) <= 0 ? (int)$room : null;
+    }
+
     /** @param list<int> $ascending */
     private static function fitNative(array $ascending, ?string $capacity): int
     {
-        if ($capacity === null) {
-            return count($ascending);
-        }
-        $used = '0';
-        foreach ($ascending as $taken => $value) {
-            $used = BigInt::add($used, (string)$value);
-            if (BigInt::compare($used, $capacity) > 0) {
-                return $taken;
-            }
-        }
-        return count($ascending);
+        return self::fitBig(array_map(\Closure::fromCallable('strval'), $ascending), $capacity);
     }
 
     /**
@@ -546,39 +666,34 @@ final class ObjectiveBounds
      * The same trade `HullShape::axisFitsNatively` makes, and for the same reason: string
      * arithmetic is exact and slow, so it should be reached for when it is needed rather
      * than always. A single volume fits a 64-bit integer comfortably -- a 10 mm cube is
-     * 4.1e15 cubic ticks -- and only the running total can leave that range, at around two
-     * thousand such items. So the loop adds natively until one more addend would overflow,
-     * and only then switches to `BigInt` for the remainder.
+     * 4.1e15 cubic ticks -- and only the running total leaves that range, at around two
+     * thousand such items. So values are added natively in chunks, and a chunk is folded
+     * into the `BigInt` total only when one more addend would overflow it: one string
+     * addition per ~2^63 of total rather than one per value past the first overflow, which
+     * is what the bound computed on every pack pays at scale.
      *
-     * Measured on ten thousand instances: 459 ms before, and the exactness is unchanged --
-     * the switch happens on the value that would have wrapped, not after it.
+     * The exactness is unchanged: a chunk is folded before the value that would wrap it is
+     * added, and a value too wide for `(int)` goes straight to `BigInt`.
      *
      * @param list<string> $values
      */
     private static function sumBig(array $values): string
     {
+        $total = '0';
         $native = 0;
-        $index = 0;
-        $count = count($values);
-        for (; $index < $count; $index++) {
-            $value = $values[$index];
-            // A value too wide for a native integer, or a total that would pass one, ends the
-            // fast path. `is_numeric` guards nothing here -- these are engine-produced decimal
-            // strings -- but the width check is what keeps `(int)` from silently truncating.
+        foreach ($values as $value) {
             if (strlen($value) > 18) {
-                break;
+                $total = BigInt::add($total, $value);
+                continue;
             }
             $addend = (int)$value;
             if ($native > PHP_INT_MAX - $addend) {
-                break;
+                $total = BigInt::add($total, (string)$native);
+                $native = 0;
             }
             $native += $addend;
         }
-        $total = (string)$native;
-        for (; $index < $count; $index++) {
-            $total = BigInt::add($total, $values[$index]);
-        }
-        return $total;
+        return BigInt::add($total, (string)$native);
     }
 
     /** @param list<string> $values */

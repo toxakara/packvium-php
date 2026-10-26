@@ -2,8 +2,12 @@
 declare(strict_types=1);
 namespace Packvium\Tests;
 
-use Packvium\Domain\{Container, Dimensions, Item, ItemInstance, Rotation, ShapeType};
+use Packvium\Domain\{Container, Dimensions, FixedPlacement, Item, ItemInstance, MadeToMeasure, PackingRequest, Point, Rotation, ShapeType};
 use Packvium\Algorithm\{BoundOverflowException, ObjectiveBounds};
+use Packvium\Config\PackingConfig;
+use Packvium\Objective\DefaultSolutionScorer;
+use Packvium\Packer;
+use Packvium\Result\PackingStatus;
 use Packvium\Support\BigInt;
 use Packvium\Unit\{Length, Weight};
 
@@ -266,5 +270,168 @@ final class ObjectiveBoundsTest extends TestCase
 
         self::assertThrows(BoundOverflowException::class,
             static fn() => ObjectiveBounds::fromNormalised($instances, $containers));
+    }
+
+    /**
+     * Every edge of the one refusal predicate, and the fixed-placement case.
+     *
+     * Written from the oracle, `scripts/optimality_bounds.py`, rather than from an engine,
+     * because the predicate is what arbitrates between engines (finding F4). Before
+     * this engine refused `Σ usable * (quantity ?? 1)` and `Σ cost * (quantity ?? 1)` -- totals
+     * that do not exist for an unlimited type -- and guarded a payload total part-way through,
+     * so the order the types were listed in decided whether a request was answered.
+     */
+    public static function testEverySceneEdgeIsAnsweredOrRefusedAsTheOraclePredicateSays(): void
+    {
+        $edges = self::scene()['edges'] ?? [];
+        self::assertGreaterThan(9, count($edges), 'the scene carries too few edges to hold the predicate');
+        foreach ($edges as $edge) {
+            foreach ([$edge['containers'], array_reverse($edge['containers'])] as $containers) {
+                if ($edge['bounds'] === null) {
+                    self::assertThrows(BoundOverflowException::class,
+                        static fn() => ObjectiveBounds::fromNormalised($edge['instances'], $containers),
+                        "{$edge['name']} must be refused");
+                    continue;
+                }
+                self::assertSame($edge['bounds'],
+                    ObjectiveBounds::fromNormalised($edge['instances'], $containers), $edge['name']);
+            }
+        }
+    }
+
+    /** `lowest_cost` reads the same five numbers in its own order; nothing else gets any. */
+    public static function testTheRequestBoundIsStatedOnlyForTheCoveredObjectives(): void
+    {
+        $items = self::instancesOf(Item::create('i', Dimensions::mm(60, 50, 40)), 2);
+        $crate = [Container::create('c', Dimensions::mm(100, 100, 100), costMinor: 7)];
+        $default = ObjectiveBounds::forRequest($items, $crate, 'default');
+        self::assertSame(ObjectiveBounds::compute($items, $crate), $default);
+        [$unpacked, $count, $cost, $unused, $height] = $default;
+        self::assertSame([$unpacked, $cost, $count, $unused, $height],
+            ObjectiveBounds::forRequest($items, $crate, 'lowest_cost'));
+        foreach (['maximum_value', 'maximum_volume', 'open_dimension_height', 'shipping_cost'] as $objective) {
+            self::assertNull(ObjectiveBounds::forRequest($items, $crate, $objective), $objective);
+        }
+
+        // D13: a box cut to measure has no declared size until it is cut.
+        $ticks = static fn(int $mm): array => [$mm * Length::TICKS_PER_MM, $mm * Length::TICKS_PER_MM, $mm * Length::TICKS_PER_MM];
+        $machine = [new Container('m', Dimensions::mm(1510, 1510, 1510),
+            madeToMeasure: new MadeToMeasure($ticks(60), $ticks(25)))];
+        self::assertNull(ObjectiveBounds::forRequest($items, $machine, 'default'));
+    }
+
+    /** A custom solution scorer ranks by positions the bound knows nothing about. */
+    public static function testACustomSolutionScorerGetsNoBound(): void
+    {
+        $request = new PackingRequest([Item::create('i', Dimensions::mm(10, 10, 10))],
+            [Container::create('c', Dimensions::mm(100, 100, 100))]);
+        $bound = new \ReflectionMethod(Packer::class, 'objectiveBound');
+        self::assertNotNull($bound->invoke(new Packer(), $request));
+        self::assertNull($bound->invoke(new Packer(solutionScorer: new DefaultSolutionScorer()), $request));
+    }
+
+    /**
+     * F1, end to end: a fixed slab and a free one fill a 100 mm cube exactly.
+     *
+     * The bound used to see only the free slab and claim half the cube must stay empty --
+     * 500000 ppm on key 3 against a packing that scores 0. Over every instance it is the
+     * packing's own score: attained, and so a proof.
+     */
+    public static function testAFixedPlacementIsCountedByTheBound(): void
+    {
+        $slab = Item::create('slab', Dimensions::mm(100, 100, 50), quantity: 2);
+        $cube = Container::create('cube', Dimensions::mm(100, 100, 100), quantity: 1);
+        $fixed = [new FixedPlacement('slab', 'cube', new Point(0, 0, 0), Rotation::LWH, 1)];
+        $result = (new Packer(PackingConfig::quality(20000)))->pack([$slab], [$cube], $fixed);
+        self::assertSame([0, 1, 0, 0, 1000000], $result->score);
+
+        $request = new PackingRequest([$slab], [$cube], $fixed);
+        self::assertSame($result->score, ObjectiveBounds::forRequest($request->instances(), [$cube], 'default'));
+        // Attained and complete: the one route to a proof (OPTIMALITY-GAP.md § 1.3, Q1).
+        self::assertSame(PackingStatus::Optimal, $result->status);
+        self::assertSame(['code' => 'proven_optimal', 'lower_bound' => [0, 1, 0, 0, 1000000]],
+            $result->optimality->toArray());
+        $freeOnly = ObjectiveBounds::compute(array_slice($request->instances(), 1), [$cube]);
+        self::assertSame(500000, $freeOnly[3], 'the free slab alone over-states key 3');
+    }
+
+    /**
+     * F5: past the ceiling the bound is withheld and the pack is answered.
+     *
+     * A payload total of 10^31 is finite and past the ceiling. The quality profile runs the
+     * container-set beam and `exact_small` the exhaustive search, where the old per-start
+     * bound called `compute` with no `catch`, so on 1.7.0 both fail the whole pack with
+     * `BoundOverflowException`. Four different items, because identical ones reach the
+     * lattice fast path before either search.
+     */
+    public static function testARequestPastTheCeilingIsStillAnsweredOnTheBeam(): void
+    {
+        $items = array_map(static fn(int $n): Item => Item::create("i$n",
+            Dimensions::mm(30 + 7 * $n, 20 + 3 * $n, 15 + 5 * $n), 1), range(0, 3));
+        $box = Container::create('c', Dimensions::mm(100, 100, 100),
+            maxPayload: new Weight(1_000_000_000_000_000_000), quantity: 10_000_000_000_000);
+        $instances = array_merge(...array_map(static fn(Item $i): array => $i->instances(), $items));
+        self::assertNull(ObjectiveBounds::forRequest($instances, [$box], 'default'));
+        foreach ([PackingConfig::quality(20000), PackingConfig::exactSmall(20000)] as $config) {
+            $result = (new Packer($config))->pack($items, [$box]);
+            self::assertSame([], $result->unpacked, $config->profile->value);
+            // Withheld means no statement at all, and no warning (Q6).
+            self::assertSame(['code' => 'not_proven'], $result->optimality->toArray());
+        }
+    }
+
+    /** F6: the cheapest entries of the per-unit multiset, from one sort of the types. */
+    public static function testTheCostBoundTakesTheCheapestTypesWithoutExpandingThem(): void
+    {
+        $cost = new \ReflectionMethod(ObjectiveBounds::class, 'costBound');
+        self::assertSame(5 + 7 * 3, $cost->invoke(null, [9, 5, 7], [3, 1, null], 4));
+        self::assertSame(14, $cost->invoke(null, [9, 5], [1, 1], 4));
+        self::assertSame(3 * 1_000_000_000_000, $cost->invoke(null, [3], [null], 1_000_000_000_000));
+    }
+
+    /**
+     * The prefix through the first missed position, the unreduced relative gap,
+     * its absence on a zero bound, and nothing for a score below its bound.
+     */
+    public static function testAStatementStopsAtTheFirstMissedPosition(): void
+    {
+        $bound = [0, 2, 10, 500, 7];
+        self::assertSame(['lower_bound' => $bound], ObjectiveBounds::statement($bound, $bound));
+        self::assertSame([
+            'lower_bound' => [0, 2, 10], 'gap_key' => 2, 'absolute_gap' => 4,
+            'relative_gap' => ['numerator' => 4, 'denominator' => 10],
+        ], ObjectiveBounds::statement([0, 2, 14, 0, 0], $bound));
+        self::assertSame(['lower_bound' => [0], 'gap_key' => 0, 'absolute_gap' => 1],
+            ObjectiveBounds::statement([1, 0, 0, 0, 0], $bound));
+        self::assertNull(ObjectiveBounds::statement([0, 1, 99, 0, 0], $bound));
+    }
+
+    /**
+     * Q1: `exact_small` exhausting its candidates on one container is no longer a proof. Four
+     * unlike items cannot fill the cube, so the bound is missed and the result says how far.
+     */
+    public static function testExhaustingASearchIsNoLongerAProof(): void
+    {
+        $items = array_map(static fn(int $n): Item => Item::create("i$n",
+            Dimensions::mm(30 + 7 * $n, 20 + 3 * $n, 15 + 5 * $n), 1), range(0, 3));
+        $result = (new Packer(PackingConfig::exactSmall(20000)))->pack(
+            $items, [Container::create('c', Dimensions::mm(100, 100, 100))]);
+        self::assertSame([], $result->unpacked);
+        self::assertSame(PackingStatus::Feasible, $result->status);
+        $fact = $result->optimality->toArray();
+        self::assertSame('not_proven', $fact['code']);
+        self::assertTrue(array_key_exists('gap_key', $fact), 'a missed bound carries its gap');
+    }
+
+    /**
+     * OPTIMALITY-GAP.md § 1.5 condition 5: a score below its bound makes the bound the
+     * suspect, so the result states nothing. Unreachable through a sound bound, so the
+     * packer's own rule is called with one that is not.
+     */
+    public static function testAScoreBelowItsBoundWithholdsTheStatement(): void
+    {
+        $stated = new \ReflectionMethod(Packer::class, 'statedOptimality');
+        self::assertSame([PackingStatus::Feasible, null],
+            $stated->invoke(null, PackingStatus::Feasible, [0, 1, 0, 0, 0], [0, 2, 0, 0, 0], true));
     }
 }

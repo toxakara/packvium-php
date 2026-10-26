@@ -11,8 +11,13 @@ use Packvium\Validation\ResultIssue;
  */
 final class ObjectiveCheck
 {
-    /** @param mixed $request @param mixed $result @param Ordered<ContainerSpec> $fabricated @param list<ResultIssue> $issues */
-    public static function check($request, $result, Context $context, Ordered $fabricated, array &$issues): void
+    /**
+     * Checks the reported score against the recomputed one, and returns the reported score.
+     *
+     * @param mixed $request @param mixed $result @param Ordered<ContainerSpec> $fabricated @param list<ResultIssue> $issues
+     * @return list<int|string>
+     */
+    public static function check($request, $result, Context $context, Ordered $fabricated, array &$issues): array
     {
         $configuration = Json::get($request, 'configuration', []);
         $selected = Json::get($configuration, 'objective', 'default');
@@ -34,6 +39,7 @@ final class ObjectiveCheck
         if (!$same) {
             $issues[] = new ResultIssue('score_mismatch', 'reported ' . PyFormat::intList($reported) . ', recomputed ' . PyFormat::intList($recomputed));
         }
+        return $reported;
     }
 
     /**

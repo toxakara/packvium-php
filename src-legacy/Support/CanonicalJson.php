@@ -29,8 +29,8 @@ namespace Packvium\Support;
  */
 final class CanonicalJson
 {
-    /** The largest magnitude every engine holds exactly. */
-    public const MAX_EXACT_MAGNITUDE = 9007199254740991;
+    /** The largest magnitude every engine holds exactly; {@see JsonValue} owns it. */
+    public const MAX_EXACT_MAGNITUDE = JsonValue::MAX_EXACT_MAGNITUDE;
 
     /**
      * @param mixed $value

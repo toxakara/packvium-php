@@ -218,11 +218,12 @@ final class LoadingDependencyGraph
         foreach ($order as $step => $index) {
             $present[] = $placements[$index];
             $units = LoadCalculator::units($present);
-            $problem = LoadCalculator::overloaded($units)
-                ?? LoadCalculator::stackLimitExceeded($units)
-                ?? LoadCalculator::stackDensityExceeded($units, $maxDensityTicks);
+            $analysis = new \Packvium\Constraint\Internal\LoadAnalysis($units);
+            $problem = $analysis->overloaded()
+                ?? $analysis->stackLimitExceeded()
+                ?? $analysis->stackDensityExceeded($maxDensityTicks);
             if ($problem === null) {
-                $counts = LoadCalculator::stackedCounts($units);
+                $counts = $analysis->stackedCounts();
                 foreach ($units as $unitIndex => $unit) {
                     if (!$present[$unitIndex]->instance->item->stackable && $counts[$unitIndex] > 0) {
                         $problem = ['non_stackable_item_has_load', $unit->label];
@@ -232,7 +233,7 @@ final class LoadingDependencyGraph
             }
             if ($problem === null && $grouped) {
                 $last = count($present) - 1;
-                $problem = (new LoadSupportGraph($units))->nonStackableFailure($present, $present[$last]->instance, $last);
+                $problem = $analysis->graph()->nonStackableFailure($present, $present[$last]->instance, $last);
             }
             if ($problem === null) {
                 $candidate = $present[count($present) - 1];

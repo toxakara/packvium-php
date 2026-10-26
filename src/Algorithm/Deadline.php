@@ -9,6 +9,12 @@ namespace Packvium\Algorithm;
  * existing call site already polls `expired()`/`check()`, so attaching an effort
  * budget (via `withEffort`) needs no changes anywhere else; leaving it unattached
  * (the default) reproduces the exact prior time-only behaviour.
+ *
+ * A spent budget answers `true` to a poll, and that poll is a search refusing further work:
+ * the deadline records it (`effortStopped()`), so the effort flag says the budget stopped the
+ * search, not that a counter equals its limit afterwards. A search that used exactly
+ * its budget and finished was not stopped. Code asking afterwards whether a search was cut
+ * reads `stopped()`, which records nothing.
  */
 final class Deadline
 {
@@ -18,6 +24,8 @@ final class Deadline
     private int $started;
     private readonly \Closure $clock;
     private readonly bool $usesRealClock;
+    /** Per-solve state: set once a poll found the effort budget spent and the search stopped there. */
+    private bool $effortStopped=false;
 
     public function __construct(
         private readonly int $limitNs,
@@ -66,7 +74,22 @@ final class Deadline
 
     public function elapsedMs():int{return intdiv(($this->clock)()-$this->started,1_000_000);}
     public function remainingNs():int{return $this->limitNs-(($this->clock)()-$this->started);}
+    /** Whether the budget is spent; a query that records nothing. */
     public function effortExceeded():bool{return $this->effortBudget!==null && $this->stats!==null && $this->effortBudget->exceeded($this->stats);}
+    /**
+     * Whether the effort budget stops the search at this poll, recording that it did. Only a
+     * caller about to do more work asks: asking is refusing it.
+     */
+    public function effortStops():bool
+    {
+        if(!$this->effortExceeded())return false;
+        $this->effortStopped=true;
+        return true;
+    }
+    /** Whether a poll found the effort budget spent and the search stopped there. */
+    public function effortStopped():bool{return $this->effortStopped;}
+    /** Whether the search was cut, by the effort budget at a poll or by the clock; records nothing. */
+    public function stopped():bool{return $this->effortStopped || $this->remainingNs()<=0;}
     /**
      * How many more search nodes counted into `$counted` may expand before `effortExceeded()`
      * trips, while nothing else that budget counts moves: zero once it has tripped, and
@@ -79,7 +102,33 @@ final class Deadline
         if($this->effortBudget===null||$this->effortBudget->maxSearchNodes===null||$this->stats!==$counted)return PHP_INT_MAX;
         return $this->effortBudget->maxSearchNodes-$counted->searchNodesExpanded;
     }
-    public function expired():bool{return $this->effortExceeded() || $this->remainingNs()<=0;}
+    /**
+     * The `placementsAttempted` and `candidatesEvaluated` values of `$counted` at which the budget
+     * stops a search, `PHP_INT_MAX` for a counter no limit reads. A scan compares a counter with
+     * its ceiling before each step, so the counter never passes its limit. O(1).
+     *
+     * @return array{int,int}
+     */
+    public function placementCeilings(SearchStats $counted):array
+    {
+        $budget=$this->effortBudget;
+        if($budget===null||$this->stats!==$counted)return [PHP_INT_MAX,PHP_INT_MAX];
+        return [$budget->maxPlacementAttempts??PHP_INT_MAX,$budget->maxCandidatesEvaluated??PHP_INT_MAX];
+    }
+    /**
+     * Whether the budget leaves room for `$candidates`, `$placements` and `$nodes` more counted
+     * steps on `$counted`, so a solver that counts a run of steps at once never passes a limit;
+     * a query that records nothing. O(1).
+     */
+    public function effortRoom(SearchStats $counted,int $candidates,int $placements,int $nodes):bool
+    {
+        $budget=$this->effortBudget;
+        if($budget===null||$this->stats!==$counted)return true;
+        return ($budget->maxCandidatesEvaluated===null||$counted->candidatesEvaluated+$candidates<=$budget->maxCandidatesEvaluated)
+            && ($budget->maxPlacementAttempts===null||$counted->placementsAttempted+$placements<=$budget->maxPlacementAttempts)
+            && ($budget->maxSearchNodes===null||$counted->searchNodesExpanded+$nodes<=$budget->maxSearchNodes);
+    }
+    public function expired():bool{return $this->effortStops() || $this->remainingNs()<=0;}
 
     public function slice(int $parts):self
     {
