@@ -27,15 +27,16 @@ final class Validator
                 throw MalformedResult::contract('result is missing ' . PyFormat::stringRepr($key));
             }
         }
-        $unit = Json::text(Json::get(Json::get($request, 'units', []), 'length', 'mm'), 'units.length');
+        $unit = Units::lengthUnit($request);
         $configuration = Json::get($request, 'configuration', []);
+        $coordinatesRequired = Json::flag($configuration, 'require_placement_coordinates', true, 'configuration');
         $clearance = Units::toTicks(Json::get($configuration, 'clearance', 0), $unit, Units::LENGTH);
         $globalSupport = Units::ratioOf(Json::get($configuration, 'minimum_support_ratio', 0));
         $items = Spec::items($request, $unit);
         $containers = Spec::containers($request, $unit);
 
         $issues = [];
-        $validated = Lattice::materialize($request, $result, $items, $containers, $clearance, $issues);
+        $validated = Lattice::materialize($coordinatesRequired, $result, $items, $containers, $clearance, $issues);
         Accounting::checkStructure($validated, $issues);
         Facts::checkAlgorithmMetrics($validated, $issues);
         Facts::checkEffortBudget($request, $validated, $issues);
@@ -50,7 +51,8 @@ final class Validator
         ObjectiveCheck::checkFixedPlacements($request, $validated, $unit, $issues);
         ObjectiveCheck::checkGroups($request, $validated, $issues);
         ObjectiveCheck::checkSolverSelection($request, $validated, $issues);
-        ObjectiveCheck::check($request, $validated, $context, $fabricated, $issues);
+        $score = ObjectiveCheck::check($request, $validated, $context, $fabricated, $issues);
+        Bound::check($request, $validated, $items, $containers, $score, $issues);
         return $issues;
     }
 

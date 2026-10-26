@@ -634,28 +634,31 @@ final class PackingTest extends TestCase
 
     // -------------------------------------------------------------------- reporting
 
-    public static function testExactSmallDoesNotClaimGlobalOptimalityWithoutACertificate(): void
+    public static function testExactSmallClaimsOptimalityOnlyThroughTheBound(): void
     {
-        // The discrete search stops at its first full packing and has no lower-bound
-        // certificate for the remaining objective keys.
+        // The discrete search proves nothing by stopping; the request's lower bound does
+        // when the packing attains it on every key (OPTIMALITY-GAP.md § 1.3). A perfect fill
+        // of one container attains it, and the result carries the bound it attained.
         $items = [Support::item('a', 100, 100, 100, ['quantity' => 2]), Support::item('b', 100, 100, 100, ['quantity' => 2])];
         $containers = [Support::box('box', 200, 200, 100)];
         $result = Support::pack($items, $containers, PackingConfig::exactSmall(5_000));
 
         self::assertTrue($result->complete());
-        self::assertSame(PackingStatus::Feasible, $result->status);
+        self::assertSame(PackingStatus::Optimal, $result->status);
+        self::assertSame(['code' => 'proven_optimal', 'lower_bound' => $result->score],
+            $result->optimality->toArray());
     }
 
-    public static function testASingleItemTypeTakesTheLatticePathAndClaimsNoProof(): void
+    public static function testASingleItemTypeOnTheLatticePathIsProvenByTheBoundAlone(): void
     {
-        // The lattice cannot prove optimality, so it must not be reported as optimal
-        // even when it happens to fill the container perfectly.
+        // The lattice cannot prove optimality itself; a perfect fill is proven by the bound,
+        // whichever solver produced it, and by nothing else.
         $items = [Support::item('cube', 100, 100, 100, ['quantity' => 4])];
         $containers = [Support::box('box', 200, 200, 100)];
         $result = Support::pack($items, $containers, PackingConfig::exactSmall(5_000));
 
         self::assertTrue($result->complete());
-        self::assertSame(PackingStatus::Feasible, $result->status);
+        self::assertSame(PackingStatus::Optimal, $result->status);
     }
 
     public static function testAnIncompleteAnswerWithinTheBudgetReportsBestFound(): void
@@ -782,7 +785,8 @@ final class PackingTest extends TestCase
 
         $result = Support::pack($items, $containers, $config);
 
-        self::assertSame(PackingStatus::Feasible, $result->status);
+        // Two hundred cubes fill a fifth of the bin; the bound proves nothing beats one bin.
+        self::assertSame(PackingStatus::Optimal, $result->status);
         self::assertSame([], $result->warnings);
         self::assertSame([], $result->containers[0]->placements);
         self::assertNotNull($result->containers[0]->latticeSummary);

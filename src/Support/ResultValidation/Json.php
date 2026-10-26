@@ -63,6 +63,24 @@ final class Json
         return $value[$key];
     }
 
+    /**
+     * A field the request schema types boolean: absent or null is its default, and any other
+     * non-boolean is refused, as every engine refuses it, rather than read by truthiness.
+     *
+     * @param mixed $value
+     */
+    public static function flag($value, string $key, bool $default, string $where): bool
+    {
+        $flag = self::get($value, $key);
+        if ($flag === null) {
+            return $default;
+        }
+        if (!\is_bool($flag)) {
+            throw MalformedResult::contract("{$where}.{$key} must be a boolean");
+        }
+        return $flag;
+    }
+
     /** Something the reference iterates; only a list is admitted. @param mixed $value @return list<mixed> */
     public static function items($value, string $what): array
     {

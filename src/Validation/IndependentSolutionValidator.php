@@ -33,7 +33,8 @@ final class IndependentSolutionValidator
                 // A stacking-group list refuses load on the same edges `stackable` does.
                 if(!$item->stackable||$item->acceptsStackingGroups!==[])$stackSensitive=true;
             }
-            $stackGraph=$stackSensitive?new LoadSupportGraph(LoadCalculator::units($placements)):null;
+            $units=LoadCalculator::units($placements);
+            $stackGraph=$stackSensitive?new LoadSupportGraph($units):null;
             foreach(self::collisionPairs($placements) as [$left,$right])
                 $issues[]=new ValidationIssue('collision',$placements[$left]->instance->id().' with '.$placements[$right]->instance->id());
             foreach($packed->placements as $index=>$p){
@@ -76,9 +77,9 @@ final class IndependentSolutionValidator
             }
             // A second, whole-container bearing pass: the per-placement check above
             // reports the first offender it meets, this one is anchored on the container.
-            $units=LoadCalculator::units($packed->placements);
             $densityLimit=$packed->container->maxStackDensity?->ticks;
-            $failure=LoadCalculator::overloaded($units)??LoadCalculator::crushed($units)??LoadCalculator::stackLimitExceeded($units)??LoadCalculator::stackDensityExceeded($units,$densityLimit);
+            $analysis=new \Packvium\Constraint\Internal\LoadAnalysis($units,$stackGraph);
+            $failure=$analysis->overloaded()??$analysis->crushed()??$analysis->stackLimitExceeded()??$analysis->stackDensityExceeded($densityLimit);
             if($failure!==null)$issues[]=new ValidationIssue($failure[0],$packed->id().': '.$failure[1]);
             if($packed->container->axles!==null){
                 $axleFailure=AxleLoad::exceeded(

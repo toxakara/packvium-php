@@ -152,7 +152,10 @@ final class GridSolver implements SingleContainerSolver
         $sameDeclaredType=count(array_unique(array_map(static function ($i) {
             return $i->item->id;
         },array_slice($items,0,$total))))===1;
-        if($total>0&&!$config->requirePlacementCoordinates&&$nestingTicks===0&&$sameDeclaredType){
+        // The fast path counts the whole lattice in one step, so it is taken only when the
+        // budget covers it; otherwise the per-item loop below places the same lattice one
+        // counted item at a time and stops on the limit, never past it.
+        if($total>0&&!$config->requirePlacementCoordinates&&$nestingTicks===0&&$sameDeclaredType&&$deadline->effortRoom($stats,$total,$total,1)){
             // Quantity-compression fast path: the lattice parameters above
             // already fully determine every coordinate in O(r); skip the O(n) loop
             // that would otherwise build one Placement per instance purely to fill

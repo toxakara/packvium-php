@@ -2,3 +2,5 @@
 /.phpunit.cache/
 /.php-cs-fixer.cache
 /composer.lock
+/build/
+/tools/php-compat/vendor/

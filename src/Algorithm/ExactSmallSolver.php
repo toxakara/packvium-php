@@ -144,6 +144,6 @@ final class ExactSmallSolver implements SingleContainerSolver
         // generated discrete points. It stops at the first full packing and does not
         // minimize the rest of the public objective vector, so it cannot claim global
         // optimality.
-        return new SingleContainerSolution($best,array_values(array_filter($items,static fn($i)=>!isset($packed[$i->id()]))),false,$deadline->expired());
+        return new SingleContainerSolution($best,array_values(array_filter($items,static fn($i)=>!isset($packed[$i->id()]))),false,$deadline->stopped());
     }
 }

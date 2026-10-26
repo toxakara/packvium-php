@@ -47,10 +47,16 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
     public const LOOKAHEAD_WIDTH=4;
     /** The lookahead's lattice-node budget per mode, as a multiple of the node limit. */
     public const LOOKAHEAD_NODE_FACTOR=64;
+    /**
+     * Lattice nodes one mode may enumerate under every profile but `quality` -- the bound
+     * `quality` gives the same solver through `containerPlanNodeLimit`.
+     */
+    public const START_NODE_LIMIT=100000;
 
     /**
-     * `fast` and `balanced` leave `containerPlanNodeLimit` at one, which would stop the
-     * lattice enumeration before its first block; their start carries its own bound.
+     * Every profile but `quality` leaves `containerPlanNodeLimit` at one, which would stop
+     * the lattice enumeration before its first block, so under them the solver carries its
+     * own bound (`nodeLimit()`); the start `fast` and `balanced` add passes it.
      *
      * @param list<PlacementConstraint> $constraints
      * @param list<string> $modes
@@ -69,19 +75,27 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
     {
         if(!$this->supports($container,$items,$config))
             return (new ExtremePointSolver($this->constraints))->packOne($container,$sequence,$items,$config,$stats,$deadline);
-        $nodeLimit=$this->nodeLimit??$config->containerPlanNodeLimit;
-        $best=null;$reached=false;
+        $nodeLimit=$this->nodeLimit($config);
+        $best=null;
         foreach($this->modes as $mode){
-            if($deadline->expired()){$reached=true;break;}
+            if($deadline->expired())break;
             $solution=$this->packMode($container,$sequence,$items,$config,$stats,$deadline,$mode,$nodeLimit);
             if($config->profile===SolverProfile::Quality&&!$deadline->expired())
                 $solution=$this->lookahead($container,$sequence,$items,$config,$stats,$deadline,$mode,$nodeLimit*self::LOOKAHEAD_NODE_FACTOR,$solution);
-            $reached=$reached||$solution->timeLimitReached;
             $byVolume=$config->objective==='maximum_volume';
             if($best===null||$this->solutionKey($solution,$byVolume)<$this->solutionKey($best,$byVolume))$best=$solution;
         }
-        if($best===null)return new SingleContainerSolution(new ContainerState($container,$sequence),$items,false,$reached);
-        return new SingleContainerSolution($best->state,$best->unpacked,false,$reached);
+        // Only the deadline or the effort budget marks the answer as stopped by a limit: the
+        // node limit is a search bound, and the answer it leaves is the search's own.
+        if($best===null)return new SingleContainerSolution(new ContainerState($container,$sequence),$items,false,$deadline->stopped());
+        return new SingleContainerSolution($best->state,$best->unpacked,false,$deadline->stopped());
+    }
+
+    /** Lattice nodes one mode may enumerate: the start's own bound, `quality`'s node limit, or START_NODE_LIMIT. */
+    private function nodeLimit(PackingConfig $config):int
+    {
+        if($this->nodeLimit!==null)return $this->nodeLimit;
+        return $config->profile===SolverProfile::Quality?$config->containerPlanNodeLimit:self::START_NODE_LIMIT;
     }
 
     public function supports(Container $container,array $items,PackingConfig $config):bool
@@ -289,7 +303,7 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
                     if($nodes+$groupNodes>$stopAt||(($nodes+$groupNodes-1)>>self::CLOCK_SHIFT)!==(($nodes-1)>>self::CLOCK_SHIFT)){
                         $expanded=self::expandable($nodes,$groupNodes,$stopAt,$deadline);
                         $nodes+=$expanded;$stats->searchNodesExpanded+=$expanded;
-                        if($expanded<$groupNodes){$reached=true;return [];}
+                        if($expanded<$groupNodes){$deadline->effortStops();$reached=true;return [];}
                     }else{$nodes+=$groupNodes;$stats->searchNodesExpanded+=$groupNodes;}
                     if($envelopeHeight>$spaceHeight)continue;
                     $maximumZ=intdiv($spaceHeight,$envelopeHeight);
@@ -341,7 +355,7 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
         $remaining=self::byType($items);
         $nodes=0;$reached=false;
         $solution=$this->complete($container,new ContainerState($container,$sequence),[new Space(new Point(0,0,0),$container->innerDimensions)],$remaining,self::rotationsOf($remaining,$config),$config,$stats,$deadline,$mode,$nodeLimit,$nodes,$reached);
-        return new SingleContainerSolution($solution->state,$solution->unpacked,false,$reached||$deadline->expired());
+        return new SingleContainerSolution($solution->state,$solution->unpacked,false,$reached||$deadline->stopped());
     }
 
     /**
@@ -392,7 +406,8 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
         while($spaces!==[]&&array_sum(array_map('count',$remaining))>0){
             $leading=self::round($container,$state,$spaces,$remaining,$rotations,$mode,1,$nodeLimit,$nodes,$stats,$deadline,$reached);
             if($leading===[]||$reached)break;
-            $spaces=self::commit($state,$spaces,$remaining,$leading[0],$config,$stats);
+            $spaces=self::commit($state,$spaces,$remaining,$leading[0],$config,$stats,$deadline);
+            if($spaces===null){$reached=true;break;}
         }
         $unpacked=[];foreach($remaining as $available)foreach($available as $instance)$unpacked[]=$instance;
         return new SingleContainerSolution($state,$unpacked,false,$reached);
@@ -427,7 +442,8 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
             $chosen=$known===null?null:[$this->solutionKey($known,$byVolume),$known,$leading[0]];
             foreach($known===null?$leading:array_slice($leading,1) as $block){
                 $trialState=$state->copy();$trialRemaining=$remaining;
-                $trialSpaces=self::commit($trialState,$spaces,$trialRemaining,$block,$config,$stats);
+                $trialSpaces=self::commit($trialState,$spaces,$trialRemaining,$block,$config,$stats,$deadline);
+                if($trialSpaces===null){$reached=true;break;}
                 $trial=$this->complete($container,$trialState,$trialSpaces,$trialRemaining,$rotations,$config,$stats,$deadline,$mode,$nodeLimit,$nodes,$reached);
                 if($reached)break;
                 $trialKey=$this->solutionKey($trial,$byVolume);
@@ -436,34 +452,58 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
             if($reached||$chosen===null)break;
             [$chosenKey,$known,$block]=$chosen;
             if($chosenKey<$bestKey){$best=$known;$bestKey=$chosenKey;}
-            $spaces=self::commit($state,$spaces,$remaining,$block,$config,$stats);
+            $spaces=self::commit($state,$spaces,$remaining,$block,$config,$stats,$deadline);
+            if($spaces===null){$reached=true;break;}
         }
-        return new SingleContainerSolution($best->state,$best->unpacked,false,$best->timeLimitReached||$deadline->expired());
+        return new SingleContainerSolution($best->state,$best->unpacked,false,$best->timeLimitReached||$deadline->stopped());
     }
 
     /**
      * Place every member of the block, bottom layer first, and return the spaces left.
      *
+     * Each member is one counted candidate and placement. When the effort budget has room for
+     * fewer than the whole block, the members it has room for are placed, the budget records the
+     * stop, and `null` says the search ends here: a counter never passes its limit.
+     *
      * @param list<Space> $spaces
      * @param array<string,list<ItemInstance>> $remaining
      * @param array<string,mixed> $best
-     * @return list<Space>
+     * @return list<Space>|null
      */
-    private static function commit(ContainerState $state,array $spaces,array &$remaining,array $best,PackingConfig $config,SearchStats $stats):array
+    private static function commit(ContainerState $state,array $spaces,array &$remaining,array $best,PackingConfig $config,SearchStats $stats,Deadline $deadline):?array
     {
-        $chosen=array_slice($remaining[$best['itemId']],0,$best['count']);
-        $remaining[$best['itemId']]=array_slice($remaining[$best['itemId']],$best['count']);
-        $clearance=$config->clearance->ticks;$index=0;
-        for($z=0;$z<$best['nz'];$z++)for($y=0;$y<$best['ny'];$y++)for($x=0;$x<$best['nx'];$x++){
+        [$attemptCeiling,$candidateCeiling]=$deadline->placementCeilings($stats);
+        $members=max(0,min($best['count'],$attemptCeiling-$stats->placementsAttempted,$candidateCeiling-$stats->candidatesEvaluated));
+        self::placeMembers($state,$remaining,$best,$members,$config,$stats);
+        if($members<$best['count']){
+            $deadline->effortStops();
+            return null;
+        }
+        $blockDimensions=new Dimensions(new Length($best['nx']*$best['envelope']->length->ticks),new Length($best['ny']*$best['envelope']->width->ticks),new Length($best['nz']*$best['envelope']->height->ticks));
+        return MaximalSpaceSolver::subtractAll($spaces,[new AxisAlignedBox($best['space']->origin,$blockDimensions)],$stats);
+    }
+
+    /**
+     * The block's first `$members` members, x fastest, then y, then z: a layer is filled before
+     * the one above it, so a member above the bottom layer rests on the member beneath it.
+     *
+     * @param array<string,list<ItemInstance>> $remaining
+     * @param array<string,mixed> $best
+     */
+    private static function placeMembers(ContainerState $state,array &$remaining,array $best,int $members,PackingConfig $config,SearchStats $stats):void
+    {
+        $chosen=array_slice($remaining[$best['itemId']],0,$members);
+        $remaining[$best['itemId']]=array_slice($remaining[$best['itemId']],$members);
+        $clearance=$config->clearance->ticks;$perLayer=$best['nx']*$best['ny'];
+        for($index=0;$index<$members;$index++){
+            $x=$index%$best['nx'];$y=intdiv($index,$best['nx'])%$best['ny'];$z=intdiv($index,$perLayer);
             $point=new Point($best['space']->origin->x+$x*$best['envelope']->length->ticks,$best['space']->origin->y+$y*$best['envelope']->width->ticks,$best['space']->origin->z+$z*$best['envelope']->height->ticks);
             $position=new Point($point->x+$clearance,$point->y+$clearance,$point->z+$clearance);
             // Above its bottom layer a member rests on an identical footprint; the
             // bottom layer rests on whatever is there.
             $support=$z===0?self::memberSupport($state,$chosen[$index],$point,$best['envelope']):1.0;
-            $state->addDirect(new Placement($chosen[$index++],$position,$best['rotation'],$best['physical'],$point,$best['envelope'],$support));
+            $state->addDirect(new Placement($chosen[$index],$position,$best['rotation'],$best['physical'],$point,$best['envelope'],$support));
             $stats->candidatesEvaluated++;$stats->placementsAttempted++;
         }
-        $blockDimensions=new Dimensions(new Length($best['nx']*$best['envelope']->length->ticks),new Length($best['ny']*$best['envelope']->width->ticks),new Length($best['nz']*$best['envelope']->height->ticks));
-        return MaximalSpaceSolver::subtractAll($spaces,[new AxisAlignedBox($best['space']->origin,$blockDimensions)],$stats);
     }
 }

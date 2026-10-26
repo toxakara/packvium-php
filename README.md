@@ -10,7 +10,7 @@ coordinates and rotations for each item, with a reason for anything that did not
 Full documentation, the constraint reference and benchmarks live at
 [packvium.com](https://packvium.com).
 
-> **Version 1.7.0 — the public API is frozen.** Field names, status codes and the
+> **Version 1.8.0 — the public API is frozen.** Field names, status codes and the
 > objective vector do not change without a major version, so any `1.x` is a safe upgrade
 > from any earlier `1.x`.
 > Read [docs/GUARANTEES.md](https://github.com/toxakara/packvium-php/blob/main/docs/GUARANTEES.md)
@@ -96,7 +96,8 @@ Lengths accept `mm`, `cm`, `m`, `in`, `ft` and ticks; weights `mg`, `g`, `kg`, `
 Pass numbers as strings or integers — the API has no float parameters for a measure. Round
 item exteriors outward and container interiors inward before building the request.
 Volumes that exceed `PHP_INT_MAX` are handled in exact decimal-string arithmetic rather
-than losing precision. See
+than losing precision. A JSON request's `units` sets only the length unit; a weight takes its
+unit from the measure or is grams, and `units.weight` is ignored today. See
 [docs/UNITS-AND-NUMERICS.md](https://github.com/toxakara/packvium-php/blob/main/docs/UNITS-AND-NUMERICS.md)
 and [`units.php`](https://github.com/toxakara/packvium-php/blob/main/examples/units.php).
 
@@ -127,6 +128,11 @@ replay. In the object API the budget is `new PackingConfig(effortBudget: new Eff
 with `Packvium\Config\EffortBudget`, part of the frozen API since 1.6.0.
 [`reproducibility.php`](https://github.com/toxakara/packvium-php/blob/main/examples/reproducibility.php)
 shows all three outcomes.
+
+`effort_limit` means the budget stopped work the search still had: a search that finishes on
+exactly its budget reads `complete`, and under a budget `time_limit_ms` is one fuse for the
+whole solve, not a slice per start. `termination.any_start_truncated` says whether the budget
+cut a start that might have won.
 
 ## Errors
 
@@ -163,6 +169,9 @@ try {
 - An unknown `objective` or `access_directions` value in a request raises
   `InvalidRequestException` with reason `not_allowed` and a `field()` pointing to
   the bad value. Direct domain constructors may raise their own argument errors.
+- Since 1.8.0, `keep_upright`, `stackable`, `must_be_on_floor` and
+  `require_placement_coordinates` must be JSON booleans: `"no"`, `0` or `1` raises
+  `InvalidRequestException` with reason `wrong_type`.
 
 A request that is valid but does not fit completely is not an error: the result lists what
 was left out, and why, in `unpacked_items`.
@@ -249,6 +258,10 @@ where their answers agree.
   maximal-space and bounded exact search, selected by problem shape and profile.
 - **Answers you can check.** Every solution is re-validated by logic independent of the
   search. Unplaced items come back with a reason code, not silently missing.
+- **A proof, or the distance to one.** Under the `default` and `lowest_cost` objectives every
+  result states `optimality.lower_bound`. A complete result that attains it reports `optimal`,
+  which proves no packing obeying the request's rules scores better; any other carries the gap
+  to the bound (`gap_key`, `absolute_gap`, `relative_gap`).
 - **Deterministic.** The same input, seed and effort budget produce the same result, and
   the result says when a clock, not the budget, stopped the search.
 - **Multi-container and nested.** Split across containers, or pack containers into
@@ -324,6 +337,21 @@ The array API (`ArrayCodec::pack`) takes and returns plain arrays of strings and
 so code written against it is the same on every version. The shipped examples are 8.2
 code and are not meant to run below it.
 
+### Rebuilding `src-legacy/`
+
+The generator ships in this repository: `scripts/build_php74.py` (Python 3), the Rector
+configuration in `tools/php-compat/rector.php`, and the Rector version pinned in
+`tools/php-compat/composer.lock`. From a checkout of a release tag, with PHP 8.2+ and
+Composer installed:
+
+```bash
+composer install --working-dir=tools/php-compat
+python3 scripts/build_php74.py            # writes build/php-legacy/
+python3 scripts/build_php74.py --verify   # checks the tree against its receipt
+```
+
+`build/php-legacy/src/` is then the tag's `src-legacy/`, byte for byte.
+
 ## The Packvium family
 
 One request and result contract, implemented independently in four engines (Rust,
@@ -339,7 +367,7 @@ Documentation, the constraint reference and the benchmarks are at
 | --- | --- | --- |
 | Python — [`packvium`](https://pypi.org/project/packvium/) | `pip install packvium` | [packvium-python](https://github.com/toxakara/packvium-python) |
 | PHP — [`packvium/packvium`](https://packagist.org/packages/packvium/packvium) | `composer require packvium/packvium` | [packvium-php](https://github.com/toxakara/packvium-php) |
-| Rust — [`packvium`](https://crates.io/crates/packvium) | `packvium = "1.7"` | [packvium-rust](https://github.com/toxakara/packvium-rust) |
+| Rust — [`packvium`](https://crates.io/crates/packvium) | `packvium = "1.8"` | [packvium-rust](https://github.com/toxakara/packvium-rust) |
 | Node.js — [`@packvium/engine`](https://www.npmjs.com/package/@packvium/engine) | `npm install @packvium/engine` | [packvium-node](https://github.com/toxakara/packvium-node) |
 | Browser / WebAssembly — [`@packvium/browser`](https://www.npmjs.com/package/@packvium/browser) | `npm install @packvium/browser` | [packvium-wasm](https://github.com/toxakara/packvium-wasm) |
 | PHP FFI bridge — [`packvium/native-bridge`](https://packagist.org/packages/packvium/native-bridge) | `composer require packvium/native-bridge` | [packvium-php-bridge](https://github.com/toxakara/packvium-php-bridge) |
@@ -363,7 +391,7 @@ CodeMeta form.
 @software{packvium_php,
   author  = {{Packvium contributors}},
   title   = {Packvium for PHP},
-  version = {1.7.0},
+  version = {1.8.0},
   license = {MIT},
   url     = {https://packvium.com}
 }

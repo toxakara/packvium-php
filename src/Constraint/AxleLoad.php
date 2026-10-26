@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 namespace Packvium\Constraint;
+use Packvium\Constraint\Internal\AxleTotals;
 use Packvium\Domain\Axle;
 use Packvium\Support\BigInt;
 
@@ -40,59 +41,12 @@ final class AxleLoad
      */
     public static function reactions(array $axles, array $units, int $tareWeightTicks=0, int $tareDoubledCenterX=0): array
     {
-        [$front, $rear] = $axles;
-        $frontX = (string)$front->position->ticks;
-        $rearX = (string)$rear->position->ticks;
-        $span = BigInt::subtract($rearX, $frontX); // positive: enforced by Container::__construct
-
-        $totalWeight = (string)$tareWeightTicks;
-        foreach ($units as $unit) {
-            $totalWeight = BigInt::add($totalWeight, (string)$unit->weightTicks);
-        }
-
-        $doubledWeightedX = BigInt::multiply((string)$tareWeightTicks, (string)$tareDoubledCenterX);
-        foreach ($units as $unit) {
-            $doubledCenterX = (string)(2 * $unit->box->origin->x + $unit->box->dimensions->length->ticks);
-            $doubledWeightedX = BigInt::add($doubledWeightedX, BigInt::multiply((string)$unit->weightTicks, $doubledCenterX));
-        }
-
-        $denominator = BigInt::multiply('2', $span);
-        $twoTotalRearX = BigInt::multiply(BigInt::multiply('2', $totalWeight), $rearX);
-        $twoTotalFrontX = BigInt::multiply(BigInt::multiply('2', $totalWeight), $frontX);
-        return [
-            'denominator' => $denominator,
-            'front_numerator' => self::signedSubtract($twoTotalRearX, $doubledWeightedX),
-            'rear_numerator' => self::signedSubtract($doubledWeightedX, $twoTotalFrontX),
-        ];
+        return AxleTotals::reactions($axles, AxleTotals::ofUnits($units, $tareWeightTicks, $tareDoubledCenterX));
     }
 
     public static function exceeded(array $axles, array $units, int $tareWeightTicks=0, int $tareDoubledCenterX=0): ?array
     {
-        [$front, $rear] = $axles;
-        $reaction = self::reactions($axles, $units, $tareWeightTicks, $tareDoubledCenterX);
-        if ($front->maxLoad !== null && self::overLimit($reaction['front_numerator'], $front->maxLoad->ticks, $reaction['denominator'])) {
-            return ['axle_overloaded', 'front'];
-        }
-        if ($rear->maxLoad !== null && self::overLimit($reaction['rear_numerator'], $rear->maxLoad->ticks, $reaction['denominator'])) {
-            return ['axle_overloaded', 'rear'];
-        }
-        return null;
-    }
-
-    private static function signedSubtract(string $left, string $right): string
-    {
-        $comparison = BigInt::compare($left, $right);
-        if ($comparison === 0) { return '0'; }
-        return $comparison > 0
-            ? BigInt::subtract($left, $right)
-            : '-'.BigInt::subtract($right, $left);
-    }
-
-    private static function overLimit(string $numerator, int $maxLoadTicks, string $denominator): bool
-    {
-        if (str_starts_with($numerator, '-')) { return false; }
-        $threshold = BigInt::multiply((string)$maxLoadTicks, $denominator);
-        return BigInt::compare($numerator, $threshold) > 0;
+        return AxleTotals::exceeded($axles, AxleTotals::ofUnits($units, $tareWeightTicks, $tareDoubledCenterX));
     }
 
     /**

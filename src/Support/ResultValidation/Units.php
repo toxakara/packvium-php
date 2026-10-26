@@ -22,9 +22,48 @@ final class Units
         'lb' => 3628738960, 'lbs' => 3628738960, 'tick' => 1, 'ticks' => 1,
     ];
 
+    /**
+     * Every name the engines read in `units.length`, after stripping ASCII whitespace and
+     * lowering ASCII case, to the `LENGTH` key it means.
+     */
+    private const REQUEST_LENGTH_UNITS = [
+        'mm' => 'mm', 'cm' => 'cm', 'm' => 'm', 'in' => 'in', 'inch' => 'inch', 'inches' => 'inches',
+        'ft' => 'ft', 'tick' => 'tick', 'ticks' => 'ticks', 'millimeter' => 'mm', 'millimeters' => 'mm',
+    ];
+
     public const TICKS_PER_MM = 16000;
     public const TICKS_PER_GRAM = 8000000;
     public const TICKS_PER_KG = 8000000000;
+
+    /**
+     * `units.length` as every engine reads it: `units` or `units.length` absent or
+     * null is millimetres; `units` that is not an object, or a length unit the engines do not
+     * know, is refused naming the field. PHP decodes `[]` and `{}` alike, so `units: []` reads
+     * as an empty object, as the PHP engine reads it.
+     *
+     * @param mixed $request
+     */
+    public static function lengthUnit($request): string
+    {
+        $units = Json::get($request, 'units');
+        if ($units === null) {
+            return 'mm';
+        }
+        if (!Json::isDict($units)) {
+            throw MalformedResult::contract('units must be an object');
+        }
+        $length = Json::get($units, 'length');
+        if ($length === null) {
+            return 'mm';
+        }
+        $key = \is_string($length)
+            ? \strtr(\trim($length, " \t\n\r\v\f"), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')
+            : '';
+        if (!\array_key_exists($key, self::REQUEST_LENGTH_UNITS)) {
+            throw MalformedResult::contract('units.length must be one of mm, cm, m, in, ft');
+        }
+        return self::REQUEST_LENGTH_UNITS[$key];
+    }
 
     /** `table[unit]`, an exact key. @param array<string,int> $table */
     public static function perUnit(array $table, string $unit): int

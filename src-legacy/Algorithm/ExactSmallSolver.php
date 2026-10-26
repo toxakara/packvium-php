@@ -156,6 +156,6 @@ final class ExactSmallSolver implements SingleContainerSolver
         // optimality.
         return new SingleContainerSolution($best,array_values(array_filter($items,static function ($i) use ($packed) {
             return !isset($packed[$i->id()]);
-        })),false,$deadline->expired());
+        })),false,$deadline->stopped());
     }
 }

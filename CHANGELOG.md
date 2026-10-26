@@ -4,6 +4,46 @@ What changed in `packvium/packvium` on Packagist, release by release. The format
 [Keep a Changelog](https://keepachangelog.com/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0]
+
+Results now say how far they can be from the best possible answer, `optimal` means a proof,
+and a mistyped flag is refused instead of guessed.
+
+### Added
+
+- **`optimality.lower_bound` and the gap** under the `default` and `lowest_cost` objectives;
+  `Packvium\Validation\validate` checks them.
+- **The `src-legacy/` generator** (`scripts/build_php74.py`, `tools/php-compat/`), which
+  rebuilds the shipped tree byte for byte from a tag.
+
+### Changed
+
+- **Attaining the bound, not search exhaustion, sets `optimal`** (`proven_optimal`).
+- **An effort budget names a stop:** a run that ends on exactly its budget is `complete`, and
+  `time_limit_ms` is no longer split across starts. Check `termination.any_start_truncated`.
+- **`ArrayCodec::pack` refuses a non-boolean `keep_upright`, `stackable`, `must_be_on_floor`
+  or `require_placement_coordinates`** as `wrong_type`; `"no"` packed as stackable. The
+  constructors are unchanged: without `strict_types`, PHP still converts the value.
+  `Packvium\Validation\validate` throws `MalformedResult` (`contract`) for such a request, and
+  reads `null` as the default.
+- **Solves 2-15% faster**, the loading-order check about twice as fast, identical answers.
+- **The JSON path avoids a redundant object check:** `ArrayCodec::pack` retains request
+  admission and model checks, and compiles fewer files. Direct measurements on the macOS
+  host removed about 0.5 ms of compilation/checking work on the unpackable request; the
+  additional end-to-end gain was within the A/A noise. This is wall time, not CPU time.
+- **Placement under axle limits is about 2.5-3x faster**, unloading orders about 5% faster;
+  answers are identical.
+
+### Fixed
+
+- **`homogeneous_blocks` named alone packs under `fast` and `balanced`**, and a node-limit
+  stop is no longer reported as `time_limit`.
+- **A bound past the declared ceiling no longer throws `BoundOverflowException`.**
+- **`validate` reads `units: null` and `units.length: null` as millimetres**, as the engines do,
+  and refuses a `units` that is not an object, or an unknown `units.length`, as a `contract`
+  `MalformedResult` naming the field. `units.weight` is not a field and is ignored: put the unit
+  on each weight.
+
 ## [1.7.0]
 
 The reference validator ships in the package, `quality` looks ahead in its block solver, and a

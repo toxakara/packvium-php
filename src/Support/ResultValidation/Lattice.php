@@ -15,12 +15,12 @@ final class Lattice
     private const SIDES = ['length', 'width', 'height'];
 
     /**
-     * @param mixed $request @param mixed $result
+     * @param mixed $result
      * @param Ordered<ItemSpec> $items @param Ordered<ContainerSpec> $containers
      * @param int|string $clearance @param list<ResultIssue> $issues
      * @return mixed the result with every valid summary expanded into placements
      */
-    public static function materialize($request, $result, Ordered $items, Ordered $containers, $clearance, array &$issues)
+    public static function materialize(bool $coordinatesRequired, $result, Ordered $items, Ordered $containers, $clearance, array &$issues)
     {
         $packedContainers = Json::items(Json::at($result, 'containers'), 'result.containers');
         $summarized = false;
@@ -30,9 +30,8 @@ final class Lattice
         if (!$summarized) {
             return $result;
         }
-        $optional = Json::get(Json::get($request, 'configuration', []), 'require_placement_coordinates') === false;
         foreach ($packedContainers as $index => $packed) {
-            $placements = self::expand($packed, $optional, $items, $containers, $clearance, $issues);
+            $placements = self::expand($packed, $coordinatesRequired, $items, $containers, $clearance, $issues);
             if ($placements !== null) {
                 $packedContainers[$index]['placements'] = $placements;
             }
@@ -46,14 +45,14 @@ final class Lattice
      * @param int|string $clearance @param list<ResultIssue> $issues
      * @return list<mixed>|null the placements to write into the container, or null to leave it
      */
-    private static function expand($packed, bool $optional, Ordered $items, Ordered $containers, $clearance, array &$issues): ?array
+    private static function expand($packed, bool $coordinatesRequired, Ordered $items, Ordered $containers, $clearance, array &$issues): ?array
     {
         $summary = Json::get($packed, 'lattice_summary');
         if ($summary === null) {
             return null;
         }
         $containerId = PyFormat::str(Json::get($packed, 'id', '?'));
-        if (!$optional) {
+        if ($coordinatesRequired) {
             $issues[] = new ResultIssue('unexpected_lattice_summary', "{$containerId}: request requires explicit placement coordinates");
         }
         if (Json::truthy(Json::get($packed, 'placements'))) {
