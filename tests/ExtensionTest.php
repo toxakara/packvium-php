@@ -260,6 +260,32 @@ final class ExtensionTest extends TestCase
         }
     }
 
+
+    /**
+     * A solver the clock stops inside a container-plan beam, whose trials run in
+     * `Internal\ContainerPlanBeam` (1.9.0): the beam ends with what it has, and the pack answers
+     * rather than letting `TimeLimitReached` escape.
+     */
+    public static function testAContainerPlanBeamKeepsAnsweringWhenItsSolverIsStoppedByTheClock(): void
+    {
+        $givesUp = new class implements SingleContainerSolver {
+            public function name(): string
+            {
+                return 'gives_up';
+            }
+
+            public function packOne(Container $container, int $sequence, array $items,
+                                    PackingConfig $config, SearchStats $stats, Deadline $deadline): SingleContainerSolution
+            {
+                throw new TimeLimitReached('this solver never finishes');
+            }
+        };
+        $items = [Support::item('a', 40, 40, 40, ['quantity' => 3])];
+        $containers = [Support::box('c', 100, 100, 100)];
+        $config = new PackingConfig(topK: 8, containerPlanBeamWidth: 2, containerPlanNodeLimit: 8);
+        $result = (new Packer($config, new ExtensionRegistry([], [], [$givesUp])))->pack($items, $containers);
+        self::assertTrue($result->complete());
+    }
     public static function testASolverThatRunsOutOfTimeOnAFixedContainerStillKeepsIt(): void
     {
         // A start whose solver gives up while filling a container that already holds a

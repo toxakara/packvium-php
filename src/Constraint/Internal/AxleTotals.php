@@ -3,7 +3,7 @@ declare(strict_types=1);
 namespace Packvium\Constraint\Internal;
 use Packvium\Constraint\LoadUnit;
 use Packvium\Domain\{AxisAlignedBox,Axle,Placement};
-use Packvium\Support\BigInt;
+use Packvium\Support\{BigInt,ExactGeometry};
 
 /**
  * The exact sums behind the two-axle check: gross weight and doubled
@@ -29,7 +29,7 @@ final class AxleTotals
         foreach ($placements as $placement) {
             $weight = (string)$placement->instance->weight()->ticks;
             $totalWeight = BigInt::add($totalWeight, $weight);
-            $doubledCenterX = (string)(2 * $placement->envelopeOrigin->x + $placement->envelopeDimensions->length->ticks);
+            $doubledCenterX = ExactGeometry::doubledCentre($placement->envelopeOrigin->x, $placement->envelopeDimensions->length->ticks);
             $doubledWeightedX = BigInt::add($doubledWeightedX, BigInt::multiply($weight, $doubledCenterX));
         }
         return [$totalWeight, $doubledWeightedX];
@@ -49,7 +49,7 @@ final class AxleTotals
         }
         $doubledWeightedX = BigInt::multiply((string)$tareWeightTicks, (string)$tareDoubledCenterX);
         foreach ($units as $unit) {
-            $doubledCenterX = (string)(2 * $unit->box->origin->x + $unit->box->dimensions->length->ticks);
+            $doubledCenterX = ExactGeometry::doubledCentre($unit->box->origin->x, $unit->box->dimensions->length->ticks);
             $doubledWeightedX = BigInt::add($doubledWeightedX, BigInt::multiply((string)$unit->weightTicks, $doubledCenterX));
         }
         return [$totalWeight, $doubledWeightedX];
@@ -64,7 +64,7 @@ final class AxleTotals
     public static function plus(array $totals, AxisAlignedBox $box, int $weightTicks): array
     {
         $weight = (string)$weightTicks;
-        $doubledCenterX = (string)(2 * $box->origin->x + $box->dimensions->length->ticks);
+        $doubledCenterX = ExactGeometry::doubledCentre($box->origin->x, $box->dimensions->length->ticks);
         return [BigInt::add($totals[0], $weight), BigInt::add($totals[1], BigInt::multiply($weight, $doubledCenterX))];
     }
 

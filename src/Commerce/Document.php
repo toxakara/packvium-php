@@ -59,7 +59,7 @@ final readonly class Document
             Shape::keys($fields, $path, ['carrier_id', 'service_id', 'versions']);
             $carrierId = Shape::text($fields['carrier_id'], "{$path}.carrier_id");
             $serviceId = Shape::text($fields['service_id'], "{$path}.service_id");
-            $key = $carrierId . "\0" . $serviceId;
+            $key = strlen($carrierId) . ':' . $carrierId . $serviceId;
             if (isset($seen[$key])) { Shape::fail($path, "duplicate tariff history for {$carrierId}/{$serviceId}"); }
             $seen[$key] = true;
             self::publishTariffVersions($registry, $carrierId, $serviceId, $fields['versions'], $path);

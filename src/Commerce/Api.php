@@ -124,6 +124,7 @@ final class Api
         Shape::keys($request, 'request', ['catalog_id', 'resolved_at'], ['version', 'as_of']);
         $catalogId = Shape::text($request['catalog_id'], 'request.catalog_id');
         $resolvedAt = Shape::integer($request['resolved_at'], 'request.resolved_at');
+        if ($resolvedAt < 0) { Shape::fail('request.resolved_at', 'cannot be negative'); }
         $version = ($request['version'] ?? null) === null ? null : Shape::integer($request['version'], 'request.version');
         $asOf = ($request['as_of'] ?? null) === null ? null : Shape::integer($request['as_of'], 'request.as_of');
         if ($version !== null && $asOf !== null) { Shape::fail('request', "expected at most one of ['version', 'as_of']"); }

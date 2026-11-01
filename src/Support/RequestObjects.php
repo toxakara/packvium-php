@@ -4,6 +4,7 @@ namespace Packvium\Support;
 
 use Packvium\Config\PackingConfig;
 use Packvium\Domain\Container;
+use Packvium\Domain\Dimensions;
 use Packvium\Domain\FixedPlacement;
 use Packvium\Domain\Item;
 use Packvium\Domain\MadeToMeasure;
@@ -61,6 +62,10 @@ final class RequestObjects
             self::container($container, "/containers/{$index}");
         }
         RequestRules::requireUniqueIds(\array_map(static fn(Container $container): string => $container->id, $containers), 'containers');
+        RequestRules::totalWeight(
+            \array_map(static fn(Item $item): array => [$item->weight->ticks, $item->quantity], $items),
+            \array_map(static fn(Container $container): int => $container->tareWeight->ticks, $containers),
+        );
         foreach ($fixedPlacements as $index => $placement) {
             self::fixedPlacement($placement, "fixed_placements[{$index}]", "/fixed_placements/{$index}");
         }
@@ -95,6 +100,7 @@ final class RequestObjects
             $property = self::CONFIGURATION_PROPERTIES[$name];
             self::optionalInteger($config->{$property}, "{$where}/{$name}", $minimum);
         }
+        RequestRules::lengthTicks($config->clearance->ticks, "{$where}/clearance");
         RequestRules::ratio($config->minimumSupportRatio, "{$where}/minimum_support_ratio", 1);
         $budget = $config->effortBudget;
         if ($budget === null) {
@@ -109,6 +115,10 @@ final class RequestObjects
     private static function item(Item $item, string $where): void
     {
         RequestRules::integer($item->quantity, "{$where}/quantity", 1);
+        RequestRules::box(self::sides($item->dimensions), "{$where}/dimensions");
+        if ($item->nestingHeight !== null) {
+            RequestRules::lengthTicks($item->nestingHeight->ticks, "{$where}/nesting_height");
+        }
         self::optionalInteger($item->maxStackedItems, "{$where}/max_stacked_items", 1);
         self::optionalInteger($item->stopIndex, "{$where}/stop_index", 0);
         self::optionalInteger($item->value, "{$where}/value", 0);
@@ -125,6 +135,10 @@ final class RequestObjects
     private static function container(Container $container, string $where): void
     {
         self::optionalInteger($container->quantity, "{$where}/quantity", 1);
+        RequestRules::box(self::sides($container->innerDimensions), "{$where}/inner_dimensions");
+        if ($container->outerDimensions !== null) {
+            RequestRules::box(self::sides($container->outerDimensions), "{$where}/outer_dimensions");
+        }
         self::optionalInteger($container->maxItems, "{$where}/max_items", 1);
         RequestRules::integer($container->costMinor, "{$where}/cost_minor", 0);
         RequestRules::ratio($container->voidFillReserveRatio, "{$where}/void_fill_reserve_ratio", 1);
@@ -191,6 +205,9 @@ final class RequestObjects
     private static function madeToMeasure(Container $container, MadeToMeasure $machine, string $where): void
     {
         $price = "{$where}/made_to_measure/cost_per_square_metre_minor";
+        foreach (['minimum' => $machine->minimum, 'increment' => $machine->increment, 'outer_allowance' => $machine->outerAllowance] as $name => $sides) {
+            RequestRules::box($sides, "{$where}/made_to_measure/{$name}");
+        }
         RequestRules::integer($machine->costPerSquareMetreMinor, $price, 0);
         if ($container->outerDimensions !== null) {
             throw new InvalidRequestException('not_allowed', "{$where}/outer_dimensions", 'cannot be combined with made_to_measure');
@@ -201,6 +218,12 @@ final class RequestObjects
         if (BigInt::compare($largest, MadeToMeasure::MAX_EXACT_INTEGER) > 0) {
             throw new InvalidRequestException('invalid_value', $price, 'prices the largest box above ' . CanonicalJson::MAX_EXACT_MAGNITUDE);
         }
+    }
+
+    /** @return array{0:int,1:int,2:int} */
+    private static function sides(Dimensions $dimensions): array
+    {
+        return [$dimensions->length->ticks, $dimensions->width->ticks, $dimensions->height->ticks];
     }
 
     private static function optionalInteger(?int $value, string $field, int $minimum): void

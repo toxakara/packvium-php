@@ -4,6 +4,43 @@ What changed in `packvium/packvium` on Packagist, release by release. The format
 [Keep a Changelog](https://keepachangelog.com/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0]
+
+No API change, but admission is stricter: some requests 1.8 accepted are now refused (see the
+weight and length limits below). More requests now agree with the reference, kilometre-scale
+requests included.
+
+### Changed
+
+- **Under a clearance a compressible item bears its load on its own footprint**, so its crush
+  check is stricter and `validate` measures its own compressed volume.
+- **A weight is at most `2^63 - 1` ticks, and so is every item's weight times its quantity plus
+  the heaviest tare**: past it, `invalid_request` / `above_maximum`; a weight written as a JSON
+  number past `2^53 - 1` is `invalid_value` and must be a string.
+- **Agrees with the other engines where 1.8 did not:** nesting under a clearance shares the
+  items' own overlap and a deep nesting column nests in pairs; a length past `2^53 - 1` ticks or
+  a box past `10^30` cubic ticks is `invalid_request` / `above_maximum`; a side that reads as zero
+  ticks is `invalid_value` / `must be positive`; an obstacle box outside its container is
+  `invalid_value` / `lies outside inner_dimensions`, each at its own pointer.
+- **`validate` checks the centroid (`centre_of_gravity_unsupported`) and the whole stack's load
+  (`top_load_exceeded`)**, an item on several bearers shared by contact area. It no longer
+  holds that item's whole weight against every bearer, so it accepts some results 1.8 rejected
+  and names the overloaded bearer.
+- **A plan beam wider than 1 compares every container type**, whatever the node limit.
+- **A request whose areas pass a 64-bit integer is answered exactly**, where it
+  threw a `TypeError`; `support_ratio` and `volume_utilization` are the correctly rounded
+  quotient, which can differ in the sixth decimal.
+- **`quality` runs the full staged portfolio:** its answer and its `alternatives` now agree
+  with the reference, at about 0.9x the time on the measured quality fixtures.
+- **`fast` is back to 1.7's peak memory on most requests** (the space-subtraction helper and the
+  fixed-placement and landed-cost checks load only when used).
+
+### Fixed
+
+- **A narrow nesting item under a clearance threw `BigInt::subtract would be negative`**, and a
+  deep nesting column on the lattice returned `invalid_result`.
+- **Greedy `quality` starts dropped `PackingConfig::accessDirections`.**
+
 ## [1.8.0]
 
 Results now say how far they can be from the best possible answer, `optimal` means a proof,

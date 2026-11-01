@@ -199,9 +199,9 @@ final class MadeToMeasureTest extends TestCase
     {
         $declared = new Container('machine', Dimensions::mm(1510, 1510, 1510), costMinor: 40, madeToMeasure: self::machine(costPerSquareMetreMinor: 1000));
         $items = Item::create('cube', Dimensions::mm(100, 100, 100), 0, 3)->instances();
-        $method = new ReflectionMethod(SolverOrchestrator::class, 'madeToMeasureTrial');
-        $method->setAccessible(true);
-        return $method->invoke(new SolverOrchestrator(), $solver, $declared, 1, $items, PackingConfig::fast(), $solver->stats ?? new SearchStats(), $deadline ?? Deadline::ofMilliseconds(60_000));
+        $bridge = new ReflectionMethod(SolverOrchestrator::class, 'bridge');
+        $bridge->setAccessible(true);
+        return \Packvium\Algorithm\Internal\MadeToMeasureTrial::madeToMeasureTrial($bridge->invoke(new SolverOrchestrator()), null, $solver, $declared, 1, $items, PackingConfig::fast(), $solver->stats ?? new SearchStats(), $deadline ?? Deadline::ofMilliseconds(60_000));
     }
 
     private static function assertRefusedWith(string $class, string $fragment, array $request): void

@@ -29,7 +29,11 @@ final class PrettyJsonStream
 {
     /** A placement counts 30 or so; a container with its placements counts thousands. */
     private const WHOLE_ELEMENTS = 64;
-    private const FLUSH_BYTES = 65536;
+    /**
+     * Small enough to stay a few heap pages: `.=` reallocates the buffer as it grows, and a
+     * 64 KB run found no room in two fragmented chunks on br1 `fast` #3 in 1.9.
+     */
+    private const FLUSH_BYTES = 8192;
     private const FLAGS = \JSON_PRETTY_PRINT | \JSON_UNESCAPED_SLASHES | \JSON_THROW_ON_ERROR;
     private const INDENT = '    ';
 

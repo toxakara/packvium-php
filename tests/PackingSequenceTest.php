@@ -841,6 +841,12 @@ final class PackingSequenceTest extends TestCase
 
     // ------------------------------------ business-rule prefix replay
 
+    public static function testAnEmptyScenePassesThePrefixReplay(): void
+    {
+        LoadingDependencyGraph::verifyLoadingPrefixBusinessRules([], [], Container::create('c', Dimensions::mm(10, 10, 20)));
+        self::assertTrue(true);
+    }
+
     public static function testALoadingPrefixThatOverloadsAFragileSupporterIsCaughtAtItsStep(): void
     {
         $fragile = Item::create('fragile', Dimensions::mm(10, 10, 5), weight: '1kg', maxTopLoad: '500g');

@@ -2,10 +2,12 @@
 declare(strict_types=1);
 namespace Packvium\Constraint;
 use Packvium\Domain\AxisAlignedBox;
+use Packvium\Support\ExactGeometry;
 
 final readonly class ContactEdge
 {
-    public function __construct(public int $index, public int $area) {}
+    /** @param int|string $area square ticks, exact past a native int */
+    public function __construct(public int $index, public int|string $area) {}
 }
 
 /**
@@ -155,7 +157,7 @@ final class ContactGraph
                 if ($otherIndex === $index) {
                     continue;
                 }
-                $matches[] = [$otherIndex, $other->overlapAreaXY($box)];
+                $matches[] = [$otherIndex, ExactGeometry::overlapAreaXY($other, $box)];
             }
             usort($matches, static fn(array $a, array $b): int => $a[0] <=> $b[0]);
             foreach ($matches as [$otherIndex, $area]) {
@@ -261,7 +263,7 @@ final class ContactGraph
         $level = $cache[$plane] ??= new ContactLevelIndex($this->cell, $buckets[$plane]);
         $matches = [];
         foreach ($level->near($box) as [$otherIndex, $other]) {
-            $area = $other->overlapAreaXY($box);
+            $area = ExactGeometry::overlapAreaXY($other, $box);
             if ($area > 0) {
                 $matches[] = [$otherIndex, $area];
             }

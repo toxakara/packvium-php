@@ -7,6 +7,7 @@ use Packvium\Domain\MadeToMeasure;
 use Packvium\Serialization\InvalidRequestException;
 use Packvium\Unit\Length;
 use Packvium\Unit\Weight;
+use Packvium\Support\Internal\RareRequestRules;
 use stdClass;
 
 /**
@@ -48,16 +49,25 @@ final class RequestRules
         'minimum_support_ratio', 'multi_start_orders', 'objective', 'require_placement_coordinates', 'seed',
         'solver_profile', 'solvers', 'time_limit_ms',
     ];
-    private const SIDES = ['length', 'width', 'height'];
+    public const SIDES = ['length', 'width', 'height'];
     /** The item fields the request schema types `boolean`, in schema order. */
     private const ITEM_BOOLEANS = ['keep_upright', 'stackable', 'must_be_on_floor'];
     /** Container fields a flat bag refuses, in reporting order (docs/DEFORMABLE-CONTAINERS.md). */
     public const BAG_EXCLUSIONS = ['obstacles', 'axles', 'access_directions', 'max_stack_density',
         'outer_dimensions', 'void_fill_reserve_ratio', 'made_to_measure'];
-    /** Every key the request schema's `made_to_measure` declares; it sets `additionalProperties: false`. */
-    private const MADE_TO_MEASURE_FIELDS = ['cost_per_square_metre_minor', 'increment', 'minimum', 'outer_allowance',
-        'tare_per_square_metre'];
-    private const WEIGHT_UNIT = 'g';
+    public const WEIGHT_UNIT = 'g';
+    /**
+     * The admission ceiling every engine refuses past: a length is a tick count
+     * every engine holds exactly, JavaScript's `Number` included, and a box encloses no more than
+     * the bound path can sum, so `volume x 10^6` stays inside Rust's `i128`.
+     */
+    public const MAX_LENGTH_TICKS = JsonValue::MAX_EXACT_MAGNITUDE;
+    public const MAX_VOLUME_TICKS3 = '1000000000000000000000000000000';
+    /**
+     * A weight, and every item's weight times its quantity plus the heaviest tare, fit a signed
+     * 64-bit integer, which is how this engine and Rust add a container's payload (R19-01).
+     */
+    public const MAX_WEIGHT_TICKS = \PHP_INT_MAX;
 
     /**
      * Refuse the request with its first violation, or return.
@@ -81,6 +91,35 @@ final class RequestRules
             self::container($raw, "/containers/{$index}", $unit);
         }
         self::requireUniqueIds(self::identifiers($containers), 'containers');
+        self::totalWeight(\array_map(
+            static fn($item): array => [self::weightOf($item, 'weight'), (int) (JsonValue::get($item, 'quantity') ?? 1)],
+            $items,
+        ), \array_map(static fn($container): int => self::weightOf($container, 'tare_weight'), $containers));
+    }
+
+    /**
+     * Every item's weight times its quantity, plus the heaviest tare, against `MAX_WEIGHT_TICKS`:
+     * no container's gross weight can pass it. Shared with `RequestObjects`. O(items + containers).
+     *
+     * @param list<array{0:int,1:int}> $itemWeights weight ticks and quantity
+     * @param list<int> $tares
+     */
+    public static function totalWeight(array $itemWeights, array $tares): void
+    {
+        $total = (string) ($tares === [] ? 0 : \max($tares));
+        foreach ($itemWeights as [$weight, $quantity]) {
+            $total = BigInt::add($total, BigInt::multiply($weight, $quantity));
+        }
+        if (BigInt::compare($total, self::MAX_WEIGHT_TICKS) > 0) {
+            throw self::refuse('above_maximum', '/items', 'must weigh at most ' . self::MAX_WEIGHT_TICKS . ' ticks in all, with the heaviest tare');
+        }
+    }
+
+    /** @param mixed $holder */
+    private static function weightOf($holder, string $name): int
+    {
+        $value = JsonValue::get($holder, $name);
+        return $value === null ? 0 : MeasureReading::ticks($value, Weight::class, self::WEIGHT_UNIT);
     }
 
     /** The RFC 6901 pointer to one member, escaping `~` and `/` in its name. */
@@ -239,70 +278,19 @@ final class RequestRules
         }
         $rateTable = JsonValue::get($container, 'rate_table');
         if ($rateTable !== null) {
-            self::rateTable($rateTable, "{$where}/rate_table");
+            RareRequestRules::rateTable(self::bridge(), $rateTable, "{$where}/rate_table");
         }
         $obstacles = JsonValue::get($container, 'obstacles');
         if ($obstacles !== null) {
-            self::obstacles($obstacles, "{$where}/obstacles", $unit);
+            RareRequestRules::obstacles(self::bridge(), $obstacles, "{$where}/obstacles", $unit, self::sideTicks(JsonValue::get($container, 'inner_dimensions'), $unit));
         }
         $boundary = JsonValue::get($container, 'deformable_boundary');
         if ($boundary !== null) {
-            self::deformableBoundary($container, $boundary, $where);
+            RareRequestRules::deformableBoundary(self::bridge(), $container, $boundary, $where);
         }
         $machine = JsonValue::get($container, 'made_to_measure');
         if ($machine !== null) {
-            self::madeToMeasure($container, $machine, $where, $unit);
-        }
-    }
-
-    /**
-     * The made-to-measure block's shape top to bottom, then each axis's four rules,
-     * then the price ceiling. Run after every other container field, so an existing error
-     * always wins. O(1).
-     *
-     * @param stdClass|array<array-key,mixed> $container
-     * @param mixed $raw
-     */
-    private static function madeToMeasure($container, $raw, string $where, string $unit): void
-    {
-        $field = "{$where}/made_to_measure";
-        $machine = self::objectAt($raw, $field);
-        self::knownFields($machine, $field, self::MADE_TO_MEASURE_FIELDS);
-        foreach (['minimum', 'increment'] as $name) {
-            self::required($machine, $name, $field);
-        }
-        foreach (['minimum', 'increment', 'outer_allowance'] as $name) {
-            $sides = JsonValue::get($machine, $name);
-            if ($sides !== null) {
-                self::dimensions($sides, "{$field}/{$name}", $unit);
-            }
-        }
-        self::optionalInteger($machine, 'cost_per_square_metre_minor', $field, 0);
-        self::optionalMeasure($machine, 'tare_per_square_metre', $field, Weight::class, self::WEIGHT_UNIT);
-        if (JsonValue::get($container, 'outer_dimensions') !== null) {
-            throw self::refuse('not_allowed', "{$where}/outer_dimensions", 'cannot be combined with made_to_measure');
-        }
-        $inner = self::sideTicks(JsonValue::get($container, 'inner_dimensions'), $unit);
-        $minimum = self::sideTicks(JsonValue::get($machine, 'minimum'), $unit);
-        $increment = self::sideTicks(JsonValue::get($machine, 'increment'), $unit);
-        foreach (self::SIDES as $axis => $side) {
-            if ($minimum[$axis] === 0) {
-                throw self::refuse('invalid_value', "{$field}/minimum/{$side}", 'must be positive');
-            }
-            if ($increment[$axis] === 0) {
-                throw self::refuse('invalid_value', "{$field}/increment/{$side}", 'must be positive');
-            }
-            if ($minimum[$axis] > $inner[$axis]) {
-                throw self::refuse('invalid_value', "{$field}/minimum/{$side}", 'exceeds inner_dimensions');
-            }
-            if (($inner[$axis] - $minimum[$axis]) % $increment[$axis] !== 0) {
-                throw self::refuse('invalid_value', "{$field}/increment/{$side}", 'does not divide inner_dimensions minus minimum');
-            }
-        }
-        $price = JsonValue::integer(JsonValue::get($machine, 'cost_per_square_metre_minor') ?? 0);
-        $fee = JsonValue::integer(JsonValue::get($container, 'cost_minor') ?? 0);
-        if (BigInt::compare(MadeToMeasure::boxCostFor((int) $price, (int) $fee, $inner), MadeToMeasure::MAX_EXACT_INTEGER) > 0) {
-            throw self::refuse('invalid_value', "{$field}/cost_per_square_metre_minor", 'prices the largest box above ' . CanonicalJson::MAX_EXACT_MAGNITUDE);
+            RareRequestRules::madeToMeasure(self::bridge(), $container, $machine, $where, $unit);
         }
     }
 
@@ -317,28 +305,6 @@ final class RequestRules
             $ticks[] = MeasureReading::ticks(JsonValue::get($sides, $side), Length::class, $unit);
         }
         return $ticks;
-    }
-
-    /**
-     * The bag's own shape, then every container field a flat bag refuses, in the
-     * order of `BAG_EXCLUSIONS`.
-     *
-     * @param stdClass|array<array-key,mixed> $container
-     * @param mixed $raw
-     */
-    private static function deformableBoundary($container, $raw, string $where): void
-    {
-        $field = "{$where}/deformable_boundary";
-        $boundary = self::objectAt($raw, $field);
-        if (!\in_array(self::required($boundary, 'kind', $field), FlatBag::KINDS, true)) {
-            throw self::refuse('not_allowed', "{$field}/kind", 'must be one of ' . CanonicalJson::spelling(FlatBag::KINDS));
-        }
-        self::knownFields($boundary, $field, ['kind']);
-        foreach (self::BAG_EXCLUSIONS as $name) {
-            if (self::setBesideABag($name, JsonValue::get($container, $name))) {
-                throw self::refuse('not_allowed', "{$where}/{$name}", 'cannot be combined with deformable_boundary');
-            }
-        }
     }
 
     /**
@@ -409,12 +375,53 @@ final class RequestRules
         }
     }
 
-    /** @param mixed $raw */
-    private static function dimensions($raw, string $where, string $unit): void
+    /**
+     * A box's three sides, each a measure; a box that holds or is something has no empty side
+     *, while a made-to-measure step states its own rule for zero.
+     *
+     * @param mixed $raw
+     */
+    private static function dimensions($raw, string $where, string $unit, bool $positive = true): void
     {
         $sides = self::objectAt($raw, $where);
         foreach (self::SIDES as $side) {
-            self::measure(self::required($sides, $side, $where), "{$where}/{$side}", Length::class, $unit);
+            $value = self::required($sides, $side, $where);
+            self::measure($value, "{$where}/{$side}", Length::class, $unit);
+            if ($positive && MeasureReading::ticks($value, Length::class, $unit) === 0) {
+                throw self::refuse('invalid_value', "{$where}/{$side}", 'must be positive');
+            }
+        }
+        self::enclosure(self::sideTicks($sides, $unit), $where);
+    }
+
+    /**
+     * A box's sides in ticks, held to the admission ceiling as the request spells them: each
+     * side, then what they enclose. Shared with `RequestObjects`. O(1).
+     *
+     * @param array{0:int,1:int,2:int} $sides
+     */
+    public static function box(array $sides, string $where): void
+    {
+        foreach (self::SIDES as $index => $side) {
+            self::lengthTicks($sides[$index], "{$where}/{$side}");
+        }
+        self::enclosure($sides, $where);
+    }
+
+    /** A length the object path holds as ticks, against `MAX_LENGTH_TICKS`. */
+    public static function lengthTicks(int $ticks, string $field): void
+    {
+        if ($ticks > self::MAX_LENGTH_TICKS) {
+            throw self::tooLong($field);
+        }
+    }
+
+    /** @param array{0:int,1:int,2:int} $sides */
+    private static function enclosure(array $sides, string $where): void
+    {
+        [$length, $width, $height] = $sides;
+        if (BigInt::compare(BigInt::multiply(BigInt::multiply($length, $width), $height), self::MAX_VOLUME_TICKS3) > 0) {
+            throw self::refuse('above_maximum', $where, 'must enclose at most 10^30 cubic ticks');
         }
     }
 
@@ -436,41 +443,6 @@ final class RequestRules
     }
 
     /** @param mixed $raw */
-    private static function rateTable($raw, string $where): void
-    {
-        $table = self::objectAt($raw, $where);
-        foreach (['weight_brackets_g' => 1, 'prices_minor' => 0] as $name => $minimum) {
-            $values = JsonValue::get($table, $name);
-            if ($values === null) {
-                continue;
-            }
-            foreach (self::listAt($values, "{$where}/{$name}") as $index => $value) {
-                self::integer($value, "{$where}/{$name}/{$index}", $minimum);
-            }
-        }
-        self::optionalInteger($table, 'minimum_charge_minor', $where, 0);
-        self::optionalInteger($table, 'fuel_surcharge_permille', $where, 0);
-    }
-
-    /** @param mixed $raw */
-    private static function obstacles($raw, string $where, string $unit): void
-    {
-        foreach (self::listAt($raw, $where) as $index => $entry) {
-            $at = "{$where}/{$index}";
-            $obstacle = self::objectAt($entry, $at);
-            $origin = JsonValue::get($obstacle, 'origin');
-            if ($origin !== null) {
-                $point = self::objectAt($origin, "{$at}/origin");
-                foreach (['x', 'y', 'z'] as $axis) {
-                    self::optionalMeasure($point, $axis, "{$at}/origin", Length::class, $unit);
-                }
-            }
-            self::dimensions(self::required($obstacle, 'dimensions', $at), "{$at}/dimensions", $unit);
-        }
-    }
-
-    // ------------------------------------------------------------------------- primitives
-
     /** @param mixed $value */
     public static function integer($value, string $field, int $minimum): void
     {
@@ -525,7 +497,9 @@ final class RequestRules
      */
     private static function measure($value, string $field, string $kind, string $unit): void
     {
-        $scalar = \is_int($value) || \is_string($value) || (\is_float($value) && JsonValue::integer($value) !== null);
+        $length = $kind === Length::class;
+        $scalar = \is_int($value) || \is_string($value)
+            || (\is_float($value) && (JsonValue::integer($value) !== null || ($length && MeasureReading::isWholeBeyondExact($value))));
         if (!$scalar && !self::isMeasureObject($value)) {
             throw self::refuse('wrong_type', $field, 'must be a measure');
         }
@@ -538,13 +512,34 @@ final class RequestRules
                 throw self::refuse('invalid_unit', $field, 'has an unknown unit ' . CanonicalJson::spelling($stated));
             }
         }
+        $amount = $scalar ? $value : JsonValue::get($value, 'value');
+        if ($length && MeasureReading::isWholeBeyondExact($amount)) {
+            throw $amount < 0 ? self::refuse('negative_measure', $field, 'cannot be negative') : self::tooLong($field);
+        }
+        // Past 2^53 - 1 JavaScript has already rounded a JSON number before it reads it, so a
+        // weight that large is written as a string, which every engine reads exactly.
+        if (!$length && MeasureReading::isWholeBeyondExact($amount)) {
+            throw $amount < 0 ? self::refuse('negative_measure', $field, 'cannot be negative') : self::refuse('invalid_value', $field, 'must be written as a string past ' . JsonValue::MAX_EXACT_MAGNITUDE);
+        }
         $verdict = MeasureReading::verdict($value, $kind, $unit);
         if ($verdict === MeasureReading::NEGATIVE) {
             throw self::refuse('negative_measure', $field, 'cannot be negative');
         }
-        if ($verdict === MeasureReading::UNREADABLE) {
+        if ($length && ($verdict === MeasureReading::TOO_LARGE
+            || ($verdict === MeasureReading::READABLE && MeasureReading::ticks($value, $kind, $unit) > self::MAX_LENGTH_TICKS))) {
+            throw self::tooLong($field);
+        }
+        if (!$length && $verdict === MeasureReading::TOO_LARGE) {
+            throw self::refuse('above_maximum', $field, 'must be at most ' . self::MAX_WEIGHT_TICKS . ' ticks');
+        }
+        if ($verdict !== MeasureReading::READABLE) {
             throw self::refuse('wrong_type', $field, 'must be a measure');
         }
+    }
+
+    private static function tooLong(string $field): InvalidRequestException
+    {
+        return self::refuse('above_maximum', $field, 'must be at most ' . self::MAX_LENGTH_TICKS . ' ticks');
     }
 
     /**
@@ -704,5 +699,11 @@ final class RequestRules
     private static function refuse(string $reason, string $field, string $detail): InvalidRequestException
     {
         return new InvalidRequestException($reason, $field, $detail);
+    }
+
+    /** `RequestRules`' own private helpers, for `Internal\RareRequestRules` (see there). */
+    private static function bridge(): \Closure
+    {
+        return static fn(string $method, ...$arguments) => self::{$method}(...$arguments);
     }
 }

@@ -3,6 +3,7 @@ declare(strict_types=1);
 namespace Packvium\Algorithm;
 use Packvium\Config\PackingConfig;
 use Packvium\Domain\{Container,LatticeSummary,Placement,Point,ShapeType};
+use Packvium\Support\ExactInteger;
 /**
  * Regular lattice for a single item type.
  *
@@ -121,7 +122,7 @@ final class GridSolver implements SingleContainerSolver
             $ny=intdiv($container->innerDimensions->width->ticks,$envelope->width->ticks);
             $layerStep=$envelope->height->ticks-$nestingTicks;
             $innerHeight=$container->innerDimensions->height->ticks;
-            $nz=$innerHeight<$envelope->height->ticks?0:intdiv($innerHeight-$envelope->height->ticks,$layerStep)+1;
+            $nz=self::columnLayers($innerHeight,$envelope->height->ticks,$nestingTicks);
             if($singleLayer)$nz=min($nz,1);
             // Every item in a uniform column has the same weight. Its bottom item
             // therefore bears `(nz - 1) * weight`, so the exact greatest safe layer
@@ -137,15 +138,16 @@ final class GridSolver implements SingleContainerSolver
             // bottom one, which is exactly the count maxStackedItems bounds. The lattice
             // can express this in its layer count, so it caps rather than falling back.
             if($prototype->maxStackedItems!==null)$nz=min($nz,$prototype->maxStackedItems+1);
-            $capacity=$nx*$ny*$nz;
-            if($container->maxItems!==null)$capacity=min($capacity,$container->maxItems);
-            if($container->maxPayload!==null&&$prototype->weight->ticks>0)$capacity=min($capacity,intdiv($container->maxPayload->ticks,$prototype->weight->ticks));
-            foreach(array_intersect($prototype->tags,array_keys($container->tagLimits)) as $tag)$capacity=min($capacity,$container->tagLimits[$tag]);
-            $score=array_merge([-$capacity],$envelope->volumeKey(),[$rotation]);
+            // Exact: tiny items in a vast container have more lattice slots than an int holds.
+            $capacity=ExactInteger::mul(ExactInteger::mul($nx,$ny),$nz);
+            if($container->maxItems!==null)$capacity=self::atMost($capacity,$container->maxItems);
+            if($container->maxPayload!==null&&$prototype->weight->ticks>0)$capacity=self::atMost($capacity,intdiv($container->maxPayload->ticks,$prototype->weight->ticks));
+            foreach(array_intersect($prototype->tags,array_keys($container->tagLimits)) as $tag)$capacity=self::atMost($capacity,$container->tagLimits[$tag]);
+            $score=array_merge(ExactInteger::descendingKey($capacity),$envelope->volumeKey(),[$rotation]);
             if($best===null||$score<$best[0])$best=[$score,$rotation,$physical,$envelope,$nx,$ny,$layerStep,$capacity];
         }
         [,$rotation,$physical,$envelope,$nx,$ny,$layerStep,$capacity]=$best;
-        $total=min($capacity,count($items));
+        $total=(int)self::atMost($capacity,count($items));
         // A group is all-or-nothing: a lattice that cannot hold every member holds none.
         if($prototype->group!==null&&$total<count($items))return new SingleContainerSolution($state, $items, false, false, true);
         $clearance=$config->clearance->ticks;
@@ -175,13 +177,13 @@ final class GridSolver implements SingleContainerSolver
             return new SingleContainerSolution($state,array_slice($items,$total));
         }
         $targetFootprint=[$physical->length->ticks,$physical->width->ticks,$physical->height->ticks];
-        $placed=0;
+        $placed=0;$perLayer=ExactInteger::mul($nx,$ny);
         for($index=0;$index<$total;$index++){
             if($deadline->expired())break;
             $stats->searchNodesExpanded++;
             $stats->candidatePointsConsidered++;
-            $x=$index%$nx;$y=intdiv($index,$nx)%$ny;$z=intdiv($index,$nx*$ny);
-            $point=new Point($x*$envelope->length->ticks,$y*$envelope->width->ticks,$z*$layerStep);
+            $x=$index%$nx;$y=intdiv($index,$nx)%$ny;$z=(int)ExactInteger::floorDiv($index,$perLayer);
+            $point=new Point($x*$envelope->length->ticks,$y*$envelope->width->ticks,self::columnLayerZ($z,$envelope->height->ticks,$nestingTicks));
             $position=new Point($point->x+$clearance,$point->y+$clearance,$point->z+$clearance);
             // A mixed-declared-type lattice group is only reached when every
             // item shares the same achievable footprint set, not necessarily the same
@@ -201,5 +203,36 @@ final class GridSolver implements SingleContainerSolver
         }
         if($prototype->group!==null&&$placed<count($items))return new SingleContainerSolution(new ContainerState($container,$sequence),$items,false,$deadline->expired(),true);
         return new SingleContainerSolution($state,array_slice($items,$placed),false,$placed<$total&&$deadline->expired(),true);
+    }
+
+    /** `min($capacity, $cap)`, exact while the capacity may exceed a native int.
+     * @param int|string $capacity
+     * @return int|string */
+    private static function atMost($capacity,int $cap)
+    {
+        return ExactInteger::compare($capacity,$cap)>0?$cap:$capacity;
+    }
+
+    /**
+     * The bottom of layer `$layer` in a column of identical envelopes `$height` tall that each
+     * sink `$nesting` into the one beneath.
+     *
+     * Only a directly adjacent pair may overlap. Once `2 x nesting > height` a third
+     * copy sunk into the second would reach into the first, so the column nests in pairs: the
+     * second sinks into the first and the third rests on the pair. O(1).
+     */
+    private static function columnLayerZ(int $layer, int $height, int $nesting): int
+    {
+        if (2 * $nesting <= $height) { return $layer * ($height - $nesting); }
+        return intdiv($layer, 2) * (2 * $height - $nesting) + ($layer % 2) * ($height - $nesting);
+    }
+
+    /** How many layers `columnLayerZ` fits under `$room`. O(1). */
+    private static function columnLayers(int $room, int $height, int $nesting): int
+    {
+        if ($room < $height) { return 0; }
+        if (2 * $nesting <= $height) { return intdiv($room - $height, $height - $nesting) + 1; }
+        $pair = 2 * $height - $nesting;
+        return 2 * intdiv($room, $pair) + ($room % $pair >= $height ? 1 : 0);
     }
 }

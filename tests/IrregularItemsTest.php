@@ -253,7 +253,7 @@ final class IrregularItemsTest extends TestCase
         $crate = new Container('cube', Dimensions::mm(100, 100, 100));
         [$lower] = self::hullItem('lower', self::lowerWedge())->instances();
         [$upper] = self::hullItem('upper', self::upperWedge())->instances();
-        $bound = new ReflectionMethod(SolverOrchestrator::class, 'additionalContainerLowerBound');
+        $bound = new ReflectionMethod(\Packvium\Algorithm\Internal\ContainerPlanBeam::class, 'additionalContainerLowerBound');
         $bound->setAccessible(true);
         $plan = ['remaining' => [$lower, $upper], 'inventory' => ['cube' => 2]];
         self::assertSame(1, $bound->invoke(null, $plan, [$crate]));

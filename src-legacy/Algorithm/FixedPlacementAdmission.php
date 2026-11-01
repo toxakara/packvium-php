@@ -3,7 +3,7 @@ declare(strict_types=1);
 namespace Packvium\Algorithm;
 use Packvium\Constraint\Internal\LoadSupportGraph;
 use Packvium\Domain\{AxisAlignedBox,Container,Dimensions,FixedPlacement,Item,ItemInstance,PackedContainer,PackingRequest,Placement,Point};
-use Packvium\Support\CanonicalJson;
+use Packvium\Support\{CanonicalJson,ExactGeometry,ExactInteger};
 use Packvium\Unit\{Length,Weight};
 use Packvium\Validation\{FixedPlacementException,IndependentSolutionValidator};
 /**
@@ -165,7 +165,7 @@ final class FixedPlacementAdmission
         if($placement->envelopeOrigin->z===0)return 1.0;
         $box=new AxisAlignedBox($placement->envelopeOrigin,$placement->envelopeDimensions);
         $support=LoadSupportGraph::candidateView($others,$placement->instance,$box);
-        return $support->supportingArea/$placement->envelopeDimensions->baseAreaTicks();
+        return ExactInteger::ratio($support->supportingArea,ExactGeometry::baseArea($placement->envelopeDimensions));
     }
 
     /** @param list<PackedContainer> $packed */

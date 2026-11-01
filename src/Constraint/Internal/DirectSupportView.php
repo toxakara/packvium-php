@@ -9,12 +9,12 @@ final readonly class DirectSupportView
     /**
      * @param list<int> $supporterIndexes
      * @param list<AxisAlignedBox> $supporterBoxes
-     * @param list<int> $supporterAreas
+     * @param list<int|string> $supporterAreas square ticks, exact past a native int
      */
     public function __construct(
         public array $supporterIndexes,
         public array $supporterBoxes,
         public array $supporterAreas,
-        public int $supportingArea,
+        public int|string $supportingArea,
     ){}
 }

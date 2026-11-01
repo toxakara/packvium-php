@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace Packvium;
 
-use Packvium\Algorithm\{Deadline, FixedPlacementAdmission, ObjectiveBoundScope, ObjectiveBounds, SolverOrchestrator};
+use Packvium\Algorithm\{Deadline, FixedLoad, FixedPlacementAdmission, ObjectiveBoundScope, ObjectiveBounds, SolverOrchestrator};
 use Packvium\Support\{RequestObjects, StableSorter, UnsupportedPlacements};
 use Packvium\Config\PackingConfig;
 use Packvium\Domain\{Container, FixedPlacement, Item, PackingRequest, UnratedWeightException};
@@ -143,7 +143,9 @@ final class Packer
                 }
             }
         }
-        $fixed = FixedPlacementAdmission::admit(
+        // Without fixed placements every instance is free; answered here so a request that
+        // fixes nothing never compiles the admission it does not use.
+        $fixed = $request->fixedPlacements === [] ? new FixedLoad([], $request->instances()) : FixedPlacementAdmission::admit(
             $request,
             $this->config->minimumSupportRatio,
             $this->config->clearance,
@@ -262,7 +264,8 @@ final class Packer
         // refused -- the same refusal the other three engines give, in the same words. The
         // refusal is deliberately here and not in the scorer: throwing while *comparing*
         // candidates would abort runs that have a perfectly shippable answer.
-        $unpriceable = LandedCostSolutionScorer::unpriceableContainer($best->containers, $this->config);
+        $landed = $this->config->objective === 'lowest_landed_cost';
+        $unpriceable = $landed ? LandedCostSolutionScorer::unpriceableContainer($best->containers, $this->config) : null;
         if ($unpriceable !== null) {
             [$containerId, $grams, $bound] = $unpriceable;
             throw new UnratedWeightException(
@@ -277,8 +280,9 @@ final class Packer
         $alternatives = array_slice(
             array_values(array_filter(
                 array_slice($selected, 1),
-                function (PackingResult $result): bool {
-                    return LandedCostSolutionScorer::unpriceableContainer($result->containers, $this->config) === null;
+                function (PackingResult $result) use ($landed): bool {
+                    return !$landed
+                        || LandedCostSolutionScorer::unpriceableContainer($result->containers, $this->config) === null;
                 },
             )),
             0,

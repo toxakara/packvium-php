@@ -17,21 +17,22 @@ final class DirectSupportView
      */
     public $supporterBoxes;
     /**
-     * @var list<int>
+     * @var list<int|string>
      * @readonly
      */
     public $supporterAreas;
     /**
      * @readonly
-     * @var int
+     * @var int|string
      */
     public $supportingArea;
     /**
      * @param list<int> $supporterIndexes
      * @param list<AxisAlignedBox> $supporterBoxes
-     * @param list<int> $supporterAreas
+     * @param list<int|string> $supporterAreas square ticks, exact past a native int
+     * @param int|string $supportingArea
      */
-    public function __construct(array $supporterIndexes, array $supporterBoxes, array $supporterAreas, int $supportingArea)
+    public function __construct(array $supporterIndexes, array $supporterBoxes, array $supporterAreas, $supportingArea)
     {
         $this->supporterIndexes = $supporterIndexes;
         $this->supporterBoxes = $supporterBoxes;

@@ -4,6 +4,7 @@ namespace Packvium\Domain;
 
 use InvalidArgumentException;
 use Packvium\Support\BigInt;
+use Packvium\Support\ExactInteger;
 
 /**
  * Compact, O(1)-to-build description of one GridSolver regular-lattice run.
@@ -105,9 +106,12 @@ final class LatticeSummary
         if ($nx <= 0 || $ny <= 0) { throw new InvalidArgumentException('a lattice summary requires positive per-axis capacity'); }
     }
 
-    private function perLayer(): int { return $this->nx * $this->ny; }
-    public function fullLayers(): int { return intdiv($this->count, $this->perLayer()); }
-    public function remainder(): int { return $this->count % $this->perLayer(); }
+    /** Exact past a native int: a tiny item in a vast container has more slots per layer than an int holds.
+     * @return int|string */
+    private function perLayer() { return ExactInteger::mul($this->nx, $this->ny); }
+    /** An int: `count` is one, and the quotient is no larger. */
+    public function fullLayers(): int { return (int)ExactInteger::floorDiv($this->count, $this->perLayer()); }
+    public function remainder(): int { return (int)ExactInteger::mod($this->count, $this->perLayer()); }
     public function layersUsed(): int { return $this->fullLayers() + ($this->remainder() > 0 ? 1 : 0); }
 
     /** Plain `int`, matching `Weight::$ticks` and the existing per-placement summation this replaces. */
@@ -131,7 +135,21 @@ final class LatticeSummary
         return $topLayerIndex * $this->layerStep + $this->envelope->height->ticks;
     }
 
-    private function triangular(int $n): int { return intdiv($n * ($n - 1), 2); }
+    /**
+     * @return int|string
+     */
+    private function triangular(int $n) { return ExactInteger::floorDiv(ExactInteger::mul($n, $n - 1), 2); }
+
+    /** `2 * pitch * indexSum + count * (2 * clearance + side)`: the lattice's doubled centres summed along one axis.
+     * @param int|string $indexSum
+     * @return int|string */
+    private function doubledCentreSum(int $pitch, $indexSum, int $clearance, int $side)
+    {
+        return ExactInteger::add(
+            ExactInteger::mul(ExactInteger::mul(2, $pitch), $indexSum),
+            ExactInteger::mul($this->count, 2 * $clearance + $side),
+        );
+    }
 
     /**
      * Closed-form equivalent of CentreOfMass::offsetPpm for a uniform lattice of
@@ -153,13 +171,23 @@ final class LatticeSummary
         $rowsInPartial = intdiv($remainder, $nx);
         $extraCols = $remainder % $nx;
 
-        $sumX = $fullLayers * $ny * $this->triangular($nx) + $rowsInPartial * $this->triangular($nx) + $this->triangular($extraCols);
-        $sumY = $fullLayers * $nx * $this->triangular($ny) + $nx * $this->triangular($rowsInPartial) + $extraCols * $rowsInPartial;
+        // Exact throughout: a lattice index sum times a doubled pitch passes a native int
+        // long before the container does.
+        $sumX = ExactInteger::sum([
+            ExactInteger::mul(ExactInteger::mul($fullLayers, $ny), $this->triangular($nx)),
+            ExactInteger::mul($rowsInPartial, $this->triangular($nx)),
+            $this->triangular($extraCols),
+        ]);
+        $sumY = ExactInteger::sum([
+            ExactInteger::mul(ExactInteger::mul($fullLayers, $nx), $this->triangular($ny)),
+            ExactInteger::mul($nx, $this->triangular($rowsInPartial)),
+            ExactInteger::mul($extraCols, $rowsInPartial),
+        ]);
 
         $clearance = $this->clearanceTicks;
         $weight = (string)$this->weightTicks;
-        $doubledWeightedX = BigInt::multiply($weight, (string)(2 * $this->envelope->length->ticks * $sumX + $this->count * (2 * $clearance + $this->physical->length->ticks)));
-        $doubledWeightedY = BigInt::multiply($weight, (string)(2 * $this->envelope->width->ticks * $sumY + $this->count * (2 * $clearance + $this->physical->width->ticks)));
+        $doubledWeightedX = BigInt::multiply($weight, (string)$this->doubledCentreSum($this->envelope->length->ticks, $sumX, $clearance, $this->physical->length->ticks));
+        $doubledWeightedY = BigInt::multiply($weight, (string)$this->doubledCentreSum($this->envelope->width->ticks, $sumY, $clearance, $this->physical->width->ticks));
         $totalWeight = (string)$this->totalWeightTicks();
 
         $offsetXPpm = $this->axisOffsetPpm($doubledWeightedX, $totalWeight, (string)$innerLengthTicks);
@@ -188,7 +216,7 @@ final class LatticeSummary
         $nx = $this->nx; $ny = $this->ny; $layerStep = $this->layerStep; $clearance = $this->clearanceTicks;
         $out = [];
         for ($index = 0; $index < $this->count; $index++) {
-            $x = $index % $nx; $y = intdiv($index, $nx) % $ny; $z = intdiv($index, $nx * $ny);
+            $x = $index % $nx; $y = intdiv($index, $nx) % $ny; $z = (int)ExactInteger::floorDiv($index, $this->perLayer());
             $point = new Point($x * $this->envelope->length->ticks, $y * $this->envelope->width->ticks, $z * $layerStep);
             $position = new Point($point->x + $clearance, $point->y + $clearance, $point->z + $clearance);
             $out[] = new Placement($items[$index], $position, $this->rotation, $this->physical, $point, $this->envelope, 1.0);

@@ -39,9 +39,9 @@ final class Compression
      *
      * @return array{string,string} numerator and denominator, both non-negative
      */
-    public static function pressure(int $topLoadTicks, int $footprintAreaTicks): array
+    public static function pressure(int $topLoadTicks, int|string $footprintAreaTicks): array
     {
-        if ($footprintAreaTicks <= 0) {
+        if (\Packvium\Support\ExactInteger::sign($footprintAreaTicks) <= 0) {
             throw new InvalidArgumentException('footprint area must be positive');
         }
         $metre = Length::TICKS_PER_MM * 1000;

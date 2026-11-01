@@ -26,10 +26,16 @@ final class ObjectiveRegistry
             'lowest_cost' => static function (?PackingConfig $config) {
                 return new LowestCostSolutionScorer();
             },
-            'shipping_cost' => \Closure::fromCallable([ShippingCostSolutionScorer::class, 'fromConfig']),
+            // Arrow functions rather than first-class callables, which load their class at once:
+            // without opcache every request compiles what it loads (1.9.0 release frontier).
+            'shipping_cost' => static function (?PackingConfig $config) {
+                return ShippingCostSolutionScorer::fromConfig($config);
+            },
             // Inherits the divisor requirement: landed cost is priced off billed
             // weight, so it needs the same dimensional-weight inputs.
-            'lowest_landed_cost' => \Closure::fromCallable([LandedCostSolutionScorer::class, 'fromConfig']),
+            'lowest_landed_cost' => static function (?PackingConfig $config) {
+                return LandedCostSolutionScorer::fromConfig($config);
+            },
             'open_dimension_height' => static function (?PackingConfig $config) {
                 return new OpenDimensionSolutionScorer();
             },

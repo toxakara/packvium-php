@@ -2,11 +2,17 @@
 declare(strict_types=1);
 namespace Packvium\Constraint;
 use Packvium\Domain\AxisAlignedBox;
+use Packvium\Support\ExactInteger as Exact;
 
 final readonly class Point2D
 {
-    public function __construct(public int $x, public int $y) {}
+    /** Doubled ticks: native ints while they fit, exact decimal strings beyond. */
+    public function __construct(public int|string $x, public int|string $y) {}
     public function equals(Point2D $other): bool { return $this->x === $other->x && $this->y === $other->y; }
+    public function compare(Point2D $other): int
+    {
+        return Exact::compare($this->x, $other->x) ?: Exact::compare($this->y, $other->y);
+    }
 }
 
 /**
@@ -14,13 +20,18 @@ final readonly class Point2D
  *
  * Overlap area is not the same as stability: an item can be supported over enough
  * area and still overhang its own centre of gravity. Every function here is exact
- * integer arithmetic, no trig or division.
+ * integer arithmetic, no trig or division, and stays exact past a native int: two doubled
+ * coordinates near `PHP_INT_MAX` ticks multiply to what Python and Rust's `i128` still hold.
  */
 final class SupportPolygon
 {
-    private static function cross(Point2D $o, Point2D $a, Point2D $b): int
+    /** The sign of the cross product (a - o) x (b - o). */
+    private static function turn(Point2D $o, Point2D $a, Point2D $b): int
     {
-        return ($a->x - $o->x) * ($b->y - $o->y) - ($a->y - $o->y) * ($b->x - $o->x);
+        return Exact::compare(
+            Exact::mul(Exact::sub($a->x, $o->x), Exact::sub($b->y, $o->y)),
+            Exact::mul(Exact::sub($a->y, $o->y), Exact::sub($b->x, $o->x)),
+        );
     }
 
     /**
@@ -36,19 +47,19 @@ final class SupportPolygon
         $unique = [];
         foreach ($points as $p) { $unique["{$p->x},{$p->y}"] = $p; }
         $pts = array_values($unique);
-        usort($pts, static fn(Point2D $a, Point2D $b): int => [$a->x, $a->y] <=> [$b->x, $b->y]);
+        usort($pts, static fn(Point2D $a, Point2D $b): int => $a->compare($b));
         if (count($pts) <= 2) { return $pts; }
 
         $lower = [];
         foreach ($pts as $p) {
-            while (count($lower) >= 2 && self::cross($lower[count($lower) - 2], $lower[count($lower) - 1], $p) <= 0) {
+            while (count($lower) >= 2 && self::turn($lower[count($lower) - 2], $lower[count($lower) - 1], $p) <= 0) {
                 array_pop($lower);
             }
             $lower[] = $p;
         }
         $upper = [];
         foreach (array_reverse($pts) as $p) {
-            while (count($upper) >= 2 && self::cross($upper[count($upper) - 2], $upper[count($upper) - 1], $p) <= 0) {
+            while (count($upper) >= 2 && self::turn($upper[count($upper) - 2], $upper[count($upper) - 1], $p) <= 0) {
                 array_pop($upper);
             }
             $upper[] = $p;
@@ -60,9 +71,14 @@ final class SupportPolygon
 
     private static function onSegment(Point2D $p, Point2D $a, Point2D $b): bool
     {
-        if (self::cross($a, $b, $p) !== 0) { return false; }
-        return min($a->x, $b->x) <= $p->x && $p->x <= max($a->x, $b->x)
-            && min($a->y, $b->y) <= $p->y && $p->y <= max($a->y, $b->y);
+        if (self::turn($a, $b, $p) !== 0) { return false; }
+        return self::between($p->x, $a->x, $b->x) && self::between($p->y, $a->y, $b->y);
+    }
+
+    private static function between(int|string $value, int|string $end, int|string $other): bool
+    {
+        [$low, $high] = Exact::compare($end, $other) <= 0 ? [$end, $other] : [$other, $end];
+        return Exact::compare($low, $value) <= 0 && Exact::compare($value, $high) <= 0;
     }
 
     /** Whether `$point` lies inside or on the boundary of a hull from `convexHull`. @param list<Point2D> $hull */
@@ -73,7 +89,7 @@ final class SupportPolygon
         if ($n === 1) { return $point->equals($hull[0]); }
         if ($n === 2) { return self::onSegment($point, $hull[0], $hull[1]); }
         for ($i = 0; $i < $n; $i++) {
-            if (self::cross($hull[$i], $hull[($i + 1) % $n], $point) < 0) { return false; }
+            if (self::turn($hull[$i], $hull[($i + 1) % $n], $point) < 0) { return false; }
         }
         return true;
     }
@@ -97,7 +113,7 @@ final class SupportPolygon
             $ox2 = min($cx2, $box->x2()); $oy2 = min($cy2, $box->y2());
             if ($ox2 > $ox1 && $oy2 > $oy1) {
                 foreach ([$ox1, $ox2] as $x) {
-                    foreach ([$oy1, $oy2] as $y) { $points[] = new Point2D(2 * $x, 2 * $y); }
+                    foreach ([$oy1, $oy2] as $y) { $points[] = new Point2D(Exact::mul(2, $x), Exact::mul(2, $y)); }
                 }
             }
         }
@@ -107,6 +123,6 @@ final class SupportPolygon
     /** Twice the box's own footprint centroid, exact for odd as well as even extents. */
     public static function doubledCentroid(AxisAlignedBox $box): Point2D
     {
-        return new Point2D($box->origin->x + $box->x2(), $box->origin->y + $box->y2());
+        return new Point2D(Exact::add($box->origin->x, $box->x2()), Exact::add($box->origin->y, $box->y2()));
     }
 }

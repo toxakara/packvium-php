@@ -5,7 +5,7 @@ use Packvium\Config\PackingConfig;
 use Packvium\Constraint\{ConstraintSet,PlacementConstraint};
 use Packvium\Domain\{Container,ItemInstance};
 use Packvium\Extension\{CandidateScorer,DefaultCandidateScorer};
-use Packvium\Support\StableSorter;
+use Packvium\Support\{ExactGeometry,ExactInteger,StableSorter};
 final class LayerSolver implements SingleContainerSolver
 {
     /**
@@ -29,7 +29,7 @@ final class LayerSolver implements SingleContainerSolver
     public function packOne(Container $container,int $sequence,array $items,PackingConfig $config,SearchStats $stats,Deadline $deadline):SingleContainerSolution
     {
         $ordered=StableSorter::sortBy($items,static function (ItemInstance $i) use ($config): array {
-            return array_merge(ItemOrdering::lead($i,$config), [-$i->dimensions()->baseAreaTicks()], $i->dimensions()->descendingVolumeKey(), [-$i->weight()->ticks, $i->id()]);
+            return array_merge(ItemOrdering::lead($i,$config), ExactInteger::descendingKey(ExactGeometry::baseArea($i->dimensions())), $i->dimensions()->descendingVolumeKey(), [-$i->weight()->ticks, $i->id()]);
         });
         return BeamPacker::pack($container,$sequence,$ordered,$config,ConstraintSet::defaults($config->minimumSupportRatio,$this->constraints,$config->accessDirections),$stats,$deadline,$this->scorer??new DefaultCandidateScorer());
     }

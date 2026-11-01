@@ -52,9 +52,10 @@ final class SpatialIndex
         return clone $this;
     }
 
+    /** Non-negative operands; `n + d - 1` would overflow for a coordinate near `PHP_INT_MAX`. */
     private static function ceilDiv(int $numerator, int $denominator): int
     {
-        return intdiv($numerator + $denominator - 1, $denominator);
+        return intdiv($numerator, $denominator) + ($numerator % $denominator === 0 ? 0 : 1);
     }
 
     /** @return array{0:int,1:int,2:int,3:int,4:int,5:int} [ix1,ix2,iy1,iy2,iz1,iz2) */

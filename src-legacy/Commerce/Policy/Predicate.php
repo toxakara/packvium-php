@@ -72,7 +72,7 @@ final class Predicate
     }
 
     /**
-     * Value equality over the JSON scalar types, matching the reference implementation's
+     * Structural equality over JSON values, matching the reference implementation's
      * semantics exactly -- including that a boolean equals the integer it stands for,
      * which is the one place a naive `===` would disagree and quietly change a decision.
      * @param mixed $left
@@ -85,9 +85,25 @@ final class Predicate
             return (is_int($left) || is_int($right)) && (int)$left === (int)$right;
         }
         if (is_array($left) && is_array($right)) {
-            if (count($left) !== count($right) || array_keys($left) !== array_keys($right)) { return false; }
+            $arrayIsListFunction = function (array $array): bool {
+                if (function_exists('array_is_list')) {
+                    return array_is_list($array);
+                }
+                if ($array === []) {
+                    return true;
+                }
+                $current_key = 0;
+                foreach ($array as $key => $noop) {
+                    if ($key !== $current_key) {
+                        return false;
+                    }
+                    ++$current_key;
+                }
+                return true;
+            };
+            if (count($left) !== count($right) || $arrayIsListFunction($left) !== array_is_list($right)) { return false; }
             foreach ($left as $key => $entry) {
-                if (!self::equals($entry, $right[$key])) { return false; }
+                if (!array_key_exists($key, $right) || !self::equals($entry, $right[$key])) { return false; }
             }
             return true;
         }
@@ -104,8 +120,25 @@ final class Predicate
     {
         if (is_string($haystack)) { return is_string($needle) && ($needle === '' || strpos($haystack, $needle) !== false); }
         if (!is_array($haystack)) {
-            throw new UnsupportedPredicateException('an in/not_in predicate needs a list or string value');
+            throw new UnsupportedPredicateException('an in/not_in predicate needs a list, object or string value');
         }
+        $arrayIsListFunction = function (array $array): bool {
+            if (function_exists('array_is_list')) {
+                return array_is_list($array);
+            }
+            if ($array === []) {
+                return true;
+            }
+            $current_key = 0;
+            foreach ($array as $key => $noop) {
+                if ($key !== $current_key) {
+                    return false;
+                }
+                ++$current_key;
+            }
+            return true;
+        };
+        if (!$arrayIsListFunction($haystack)) { return is_string($needle) && array_key_exists($needle, $haystack); }
         foreach ($haystack as $candidate) {
             if (self::equals($candidate, $needle)) { return true; }
         }

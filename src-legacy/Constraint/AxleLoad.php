@@ -3,7 +3,7 @@ declare(strict_types=1);
 namespace Packvium\Constraint;
 use Packvium\Constraint\Internal\AxleTotals;
 use Packvium\Domain\Axle;
-use Packvium\Support\BigInt;
+use Packvium\Support\{BigInt,ExactGeometry};
 
 /**
  * Two-axle weight distribution.
@@ -90,7 +90,7 @@ final class AxleLoad
         }
         $otherDoubledX = BigInt::multiply((string)$tareWeightTicks, (string)$tareDoubledCenterX);
         foreach ($otherUnits as $unit) {
-            $doubledCenterX = (string)(2 * $unit->box->origin->x + $unit->box->dimensions->length->ticks);
+            $doubledCenterX = ExactGeometry::doubledCentre($unit->box->origin->x, $unit->box->dimensions->length->ticks);
             $otherDoubledX = BigInt::add($otherDoubledX, BigInt::multiply((string)$unit->weightTicks, $doubledCenterX));
         }
         $total = BigInt::add($otherTotal, (string)$itemWeightTicks);

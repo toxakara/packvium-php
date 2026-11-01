@@ -42,7 +42,7 @@ final readonly class Container
         foreach($accessDirections as $direction)if(!in_array($direction,SweptRegion::ALL_DIRECTIONS,true))throw new InvalidArgumentException("unknown movement direction {$direction}");
         // Deduplicated into the canonical order rather than kept as given: two callers
         // naming the same doors in a different order must search identically.
-        $this->accessDirections=array_values(array_filter(SweptRegion::ALL_DIRECTIONS,static fn(string $d):bool=>in_array($d,$accessDirections,true)));}
+        $this->accessDirections=$accessDirections===[]?[]:array_values(array_filter(SweptRegion::ALL_DIRECTIONS,static fn(string $d):bool=>in_array($d,$accessDirections,true)));}
     /** The same container holding `$placements` before search. @param list<Placement> $placements */
     public function withPreloaded(array $placements):self{return new self($this->id,$this->innerDimensions,$this->outerDimensions,$this->tareWeight,$this->maxPayload,$this->costMinor,$this->quantity,$this->obstacles,$this->tags,$this->maxItems,$this->metadata,$this->voidFillReserveRatio,$this->tagLimits,$this->maxStackDensity,$this->axles,$this->rateTable,$this->accessDirections,$placements,$this->deformableBoundary,$this->madeToMeasure);}
     public function isFlatBag():bool{return $this->deformableBoundary!==null;}

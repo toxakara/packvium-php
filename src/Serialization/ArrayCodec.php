@@ -221,7 +221,8 @@ final class ArrayCodec
         // Rules compile into this engine's own constraint pipeline rather than post-filtering
         // a chosen answer: an illegal candidate is rejected during search, so the packing
         // that wins was never allowed to be illegal in the first place.
-        $extensions=new ExtensionRegistry(PolicyRuleSet::fromArray($data['policy']??null)->constraints());
+        // No policy is no policy constraint, without compiling `PolicyRuleSet` to say so.
+        $extensions=new ExtensionRegistry(($data['policy']??null)===null?[]:PolicyRuleSet::fromArray($data['policy'])->constraints());
         $items=array_map(fn($r)=>self::item($r,$unit),$data['items']);
         $containers=array_map(fn($r)=>self::container($r,$unit),$data['containers']);
         $fixed=self::fixedPlacements($data['fixed_placements']??null,$unit);

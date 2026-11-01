@@ -263,13 +263,14 @@ final class ContainerCheck
         [$supporters, $directAbove] = Stacking::supportGraph($entries);
         Stacking::checkSupportAndLoad($entries, $supporters, $directAbove, $globalSupport, $issues);
         $loads = Stacking::propagateLoad($entries, $supporters);
+        Stacking::checkStackTopLoad($entries, $loads, $issues);
         if ($spec->maxStackDensity !== null) {
             Stacking::checkStackDensity($packedId, $entries, $loads, $spec->maxStackDensity, $issues);
         }
         Stacking::checkCrush($packedId, $entries, $loads, $issues);
         Stacking::checkRouteRemovalOrder($packedId, $entries, $directAbove, $spec->inner, $spec->accessDirections, $issues);
         self::checkLimits($packed, $packedId, $placements, $spec, $items, $payload, $issues);
-        self::checkVolumes($packed, $packedId, $placements, $spec, $items, $byId, $loads, $issues);
+        self::checkVolumes($packed, $packedId, $placements, $spec, $items, $byId, $loads, $clearance, $issues);
         $totalWeight = self::payloadOf($packed, $items);
         self::checkCentreOfMass($packed, $packedId, $placements, $spec, $items, $totalWeight, $issues);
         self::checkAxles($packed, $packedId, $placements, $spec, $items, $totalWeight, $issues);
@@ -351,7 +352,8 @@ final class ContainerCheck
      * @param mixed $packed @param list<mixed> $placements @param Ordered<ItemSpec> $items
      * @param Ordered<Entry> $byId @param list<int|string> $loads @param list<ResultIssue> $issues
      */
-    private static function checkVolumes($packed, Label $packedId, array $placements, ContainerSpec $spec, Ordered $items, Ordered $byId, array $loads, array &$issues): void
+    /** @param int|string $clearance */
+    private static function checkVolumes($packed, Label $packedId, array $placements, ContainerSpec $spec, Ordered $items, Ordered $byId, array $loads, $clearance, array &$issues): void
     {
         // Every placement counts, through the envelope its item id resolves to -- a repeated id
         // resolves to its last placement, as the reference's dict does.
@@ -365,8 +367,15 @@ final class ContainerCheck
         for ($first = 0, $count = \count($entries); $first < $count; ++$first) {
             for ($second = $first + 1; $second < $count; ++$second) {
                 if (Stacking::validNesting($entries[$first], $entries[$second])) {
+                    // The envelopes sink by the nesting height; the items themselves overlap by
+                    // twice the clearance less, over their own footprint.
                     $left = $entries[$first];
-                    $used = Exact::sub($used, Exact::mul(Exact::mul($left->spec->nestingHeight, $left->envelope->length), $left->envelope->width));
+                    $margin = Exact::mul(2, $clearance);
+                    $overlap = Exact::sub($left->spec->nestingHeight, $margin);
+                    if (Exact::sign($overlap) > 0) {
+                        $footprint = Exact::mul(Exact::sub($left->envelope->length, $margin), Exact::sub($left->envelope->width, $margin));
+                        $used = Exact::sub($used, Exact::mul($overlap, $footprint));
+                    }
                 }
             }
         }

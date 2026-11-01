@@ -2,6 +2,7 @@
 declare(strict_types=1);
 namespace Packvium\Constraint;
 use Packvium\Constraint\Internal\{LoadAnalysis,PlacedSupportBase};
+use Packvium\Support\ExactInteger;
 /**
  * Rejects a placement that would rest on something unable to carry it.
  *
@@ -23,6 +24,7 @@ final class TopLoadConstraint implements PlacementConstraint
             $c->envelopeBox(),$c->item->weight()->ticks,$item->maxTopLoad?->ticks,$item->maxStackedItems,$c->item->id(),
             $item->nestingHeight===null?null:$item->id,$item->nestingHeight?->ticks,
             $item->compressionRatioPpm,$item->maxCompressionPressureKpa,
+            ExactInteger::mul($c->dimensions->length->ticks,$c->dimensions->width->ticks),
         );
         [$units,$graph]=($this->support??=new PlacedSupportBase())->withCandidate($c->placements,$unit);
         $nonStackable=$graph->nonStackableFailure($c->placements,$c->item,count($units)-1);

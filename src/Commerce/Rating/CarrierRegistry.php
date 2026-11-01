@@ -143,6 +143,6 @@ final class CarrierRegistry
 
     private static function key(string $carrierId, string $serviceId): string
     {
-        return $carrierId . "\0" . $serviceId;
+        return strlen($carrierId) . ':' . $carrierId . $serviceId;
     }
 }
