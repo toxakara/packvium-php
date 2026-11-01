@@ -4,11 +4,10 @@ namespace Packvium\Algorithm;
 
 use Packvium\Config\PackingConfig;
 use Packvium\Config\SolverProfile;
-use Packvium\Constraint\Internal\LoadSupportGraph;
 use Packvium\Constraint\PlacementConstraint;
 use Packvium\Domain\{AxisAlignedBox,Container,Dimensions,ItemInstance,Placement,Point,ShapeType};
 use Packvium\Extension\CandidateScorer;
-use Packvium\Support\BigInt;
+use Packvium\Support\{BigInt,ExactGeometry,ExactInteger};
 use Packvium\Unit\Length;
 
 /**
@@ -93,14 +92,6 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
             if($item->acceptsStackingGroups!==[])return false;
         }
         return true;
-    }
-
-    /** The share of a member's base that rests on the floor or on a box beneath it. */
-    private static function memberSupport(ContainerState $state,ItemInstance $instance,Point $point,Dimensions $envelope):float
-    {
-        if($point->z===0)return 1.0;
-        $support=LoadSupportGraph::candidateView($state->placements,$instance,new AxisAlignedBox($point,$envelope));
-        return $support->supportingArea/$envelope->baseAreaTicks();
     }
 
     private function solutionKey(SingleContainerSolution $solution,bool $byVolume=false):array
@@ -277,7 +268,8 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
                     if($envelopeLength>$spaceLength||$envelopeWidth>$spaceWidth)continue;
                     $maximumX=intdiv($spaceLength,$envelopeLength);
                     $maximumY=intdiv($spaceWidth,$envelopeWidth);
-                    $groupNodes=$maximumX*$maximumY<=$capacity?$maximumX*$maximumY:self::latticeNodes($maximumX,$maximumY,$capacity);
+                    $footprintSlots=ExactInteger::mul($maximumX,$maximumY);
+                    $groupNodes=ExactInteger::compare($footprintSlots,$capacity)<=0?(int)$footprintSlots:self::latticeNodes($maximumX,$maximumY,$capacity);
                     // Only a group that reaches a counted limit or a clock read needs the slow path.
                     if($nodes+$groupNodes>$stopAt||(($nodes+$groupNodes-1)>>self::CLOCK_SHIFT)!==(($nodes-1)>>self::CLOCK_SHIFT)){
                         $expanded=self::expandable($nodes,$groupNodes,$stopAt,$deadline);
@@ -286,11 +278,13 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
                     }else{$nodes+=$groupNodes;$stats->searchNodesExpanded+=$groupNodes;}
                     if($envelopeHeight>$spaceHeight)continue;
                     $maximumZ=intdiv($spaceHeight,$envelopeHeight);
-                    $whole=$maximumX*$maximumY*$maximumZ;
+                    // Exact: a tiny item in a vast space has more slots than an int holds.
+                    $whole=ExactInteger::mul($footprintSlots,$maximumZ);
                     $volume=$lattice['approximateVolume'];
-                    $largest=$capacity<$whole?$capacity:$whole;
+                    $fitsWhole=ExactInteger::compare($capacity,$whole)>=0;
+                    $largest=$fitsWhole?(int)$whole:$capacity;
                     if($byCount?$largest<$leadCount:$largest*$volume<$leadFloor)continue;
-                    [$count,$nx,$ny,$nz]=$capacity>=$whole?[$whole,$maximumX,$maximumY,$maximumZ]:self::largestBlock($maximumX,$maximumY,$maximumZ,$capacity);
+                    [$count,$nx,$ny,$nz]=$fitsWhole?[$largest,$maximumX,$maximumY,$maximumZ]:self::largestBlock($maximumX,$maximumY,$maximumZ,$capacity);
                     $approximateUsed=$count*$volume;
                     if($byCount?$count<$leadCount:$approximateUsed<$leadFloor)continue;
                     $candidate=['space'=>$space,'itemId'=>$itemId,'rotation'=>$lattice['rotation'],'rotationName'=>$lattice['rotationName'],'physical'=>$lattice['physical'],'envelope'=>$lattice['envelope'],'volume'=>$lattice['volume'],'approximateUsed'=>$approximateUsed,'nx'=>$nx,'ny'=>$ny,'nz'=>$nz,'count'=>$count];
@@ -459,7 +453,7 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
             return null;
         }
         $blockDimensions=new Dimensions(new Length($best['nx']*$best['envelope']->length->ticks),new Length($best['ny']*$best['envelope']->width->ticks),new Length($best['nz']*$best['envelope']->height->ticks));
-        return MaximalSpaceSolver::subtractAll($spaces,[new AxisAlignedBox($best['space']->origin,$blockDimensions)],$stats);
+        return SpaceSubtraction::subtractAll($spaces,[new AxisAlignedBox($best['space']->origin,$blockDimensions)],$stats);
     }
 
     /**
@@ -473,14 +467,42 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
     {
         $chosen=array_slice($remaining[$best['itemId']],0,$members);
         $remaining[$best['itemId']]=array_slice($remaining[$best['itemId']],$members);
-        $clearance=$config->clearance->ticks;$perLayer=$best['nx']*$best['ny'];
+        $clearance=$config->clearance->ticks;$perLayer=ExactInteger::mul($best['nx'],$best['ny']);
+        $dx=$best['envelope']->length->ticks;$dy=$best['envelope']->width->ticks;$dz=$best['envelope']->height->ticks;
+        $baseZ=$best['space']->origin->z;$baseArea=ExactGeometry::baseArea($best['envelope']);
+        $supporters=[];
+        if($baseZ>0&&$members>0){
+            $bx1=$best['space']->origin->x;$by1=$best['space']->origin->y;
+            $bx2=$bx1+$best['nx']*$dx;$by2=$by1+$best['ny']*$dy;
+            foreach($state->placements as $existing){
+                $eOrigin=$existing->envelopeOrigin;$eDims=$existing->envelopeDimensions;
+                if($eOrigin->z+$eDims->height->ticks!==$baseZ)continue;
+                $ox1=$eOrigin->x;$ox2=$ox1+$eDims->length->ticks;
+                if($ox2<=$bx1||$ox1>=$bx2)continue;
+                $oy1=$eOrigin->y;$oy2=$oy1+$eDims->width->ticks;
+                if($oy2<=$by1||$oy1>=$by2)continue;
+                $supporters[]=[$ox1,$oy1,$ox2,$oy2];
+            }
+        }
         for($index=0;$index<$members;$index++){
-            $x=$index%$best['nx'];$y=intdiv($index,$best['nx'])%$best['ny'];$z=intdiv($index,$perLayer);
-            $point=new Point($best['space']->origin->x+$x*$best['envelope']->length->ticks,$best['space']->origin->y+$y*$best['envelope']->width->ticks,$best['space']->origin->z+$z*$best['envelope']->height->ticks);
-            $position=new Point($point->x+$clearance,$point->y+$clearance,$point->z+$clearance);
+            $x=$index%$best['nx'];$y=intdiv($index,$best['nx'])%$best['ny'];$z=(int)ExactInteger::floorDiv($index,$perLayer);
+            $px1=$best['space']->origin->x+$x*$dx;$py1=$best['space']->origin->y+$y*$dy;$pz1=$baseZ+$z*$dz;
+            $point=new Point($px1,$py1,$pz1);
+            $position=new Point($px1+$clearance,$py1+$clearance,$pz1+$clearance);
             // Above its bottom layer a member rests on an identical footprint; the
             // bottom layer rests on whatever is there.
-            $support=$z===0?self::memberSupport($state,$chosen[$index],$point,$best['envelope']):1.0;
+            if($z===0&&$baseZ>0){
+                $px2=$px1+$dx;$py2=$py1+$dy;$area=0;
+                foreach($supporters as [$ox1,$oy1,$ox2,$oy2]){
+                    $ix=($px2<$ox2?$px2:$ox2)-($px1>$ox1?$px1:$ox1);
+                    if($ix<=0)continue;
+                    $iy=($py2<$oy2?$py2:$oy2)-($py1>$oy1?$py1:$oy1);
+                    if($iy>0)$area=ExactInteger::add($area,ExactInteger::mul($ix,$iy));
+                }
+                $support=ExactInteger::ratio($area,$baseArea);
+            }else{
+                $support=1.0;
+            }
             $state->addDirect(new Placement($chosen[$index],$position,$best['rotation'],$best['physical'],$point,$best['envelope'],$support));
             $stats->candidatesEvaluated++;$stats->placementsAttempted++;
         }

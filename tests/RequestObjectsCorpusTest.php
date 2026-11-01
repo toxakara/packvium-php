@@ -34,11 +34,28 @@ final class RequestObjectsCorpusTest extends TestCase
     private const UNITS = 'the request\'s length unit is an argument of each measure, not an object packed';
     private const CONSTRUCTOR_FIRST = 'two faults: a constructor refuses its own value as the object is built, '
         . 'before Packer::pack walks the request in the JSON order';
+    private const CEILING_SECOND = 'a length past the admission ceiling also breaks its constructor\'s own rule, '
+        . 'which refuses it as the object is built, before Packer::pack reaches the ceiling';
     private const NEGATIVE_POSITION = 'a Point cannot hold a negative coordinate; the measure it is read with '
         . 'refuses it as negative_measure, where the JSON path names the placement';
 
+    private const JSON_NUMBER = 'a JSON number past 2^53 - 1 is a rule of the JSON text; an object holds the exact integer';
     /** Cases with no object form: the value cannot be held, or the codec changes it. */
     private const NOT_OBJECTS = [
+        'item.weight=2^63 ticks' => 'a Weight cannot hold more than PHP_INT_MAX ticks',
+        'item.max_top_load=2^63 ticks' => 'a Weight cannot hold more than PHP_INT_MAX ticks',
+        'container.tare_weight=2^63 ticks' => 'a Weight cannot hold more than PHP_INT_MAX ticks',
+        'container.max_payload=2^63 ticks' => 'a Weight cannot hold more than PHP_INT_MAX ticks',
+        'container.max_stack_density=2^63 ticks' => 'a Weight cannot hold more than PHP_INT_MAX ticks',
+        'container.made_to_measure.tare_per_square_metre=2^63 ticks' => 'a Weight cannot hold more than PHP_INT_MAX ticks',
+        'obstacle-origin-false' => 'ArrayCodec::point takes an array, not a boolean',
+        'obstacle-origin-zero' => 'ArrayCodec::point takes an array, not a number',
+        'obstacle-origin-nonempty-list' => 'the private codec reads a coordinate list as a different, valid Point at the origin',
+        'obstacle-origin-empty-string' => 'ArrayCodec::point takes an array, not text',
+        'obstacle-additional-origin-false' => 'ArrayCodec::point takes an array, not a boolean',
+        'obstacle-additional-origin-zero' => 'ArrayCodec::point takes an array, not a number',
+        'obstacle-additional-origin-nonempty-list' => 'the private codec reads a coordinate list as a different, valid Point at the origin',
+        'obstacle-additional-origin-empty-string' => 'ArrayCodec::point takes an array, not text',
         'request-not-object' => 'a request that is not an object has no objects',
         'items-missing' => 'Packer::pack takes the items as an argument',
         'items-not-list' => 'Packer::pack takes the items as a list of Item',
@@ -77,6 +94,13 @@ final class RequestObjectsCorpusTest extends TestCase
         'item-side-fraction' => self::TYPED,
         'item-stacking-group-number' => self::TYPED,
         'fixed-position-unparsable' => 'a Point holds integer ticks, not text',
+        // A length past a native int has no `Length` to hold it.
+        'item-side-whole-beyond-exact' => self::TYPED,
+        'item-side-negative-beyond-exact' => self::TYPED,
+        'item-side-beyond-native-integers' => self::TYPED,
+        'item-side-vast-mixed-fraction' => self::TYPED,
+        'item-side-vast-with-a-unit-suffix' => self::TYPED,
+        'obstacle-additional-boxes-not-list' => 'an Obstacle holds its additional boxes as a list',
         'fixed_placements.position.x="-1"' => self::NEGATIVE_POSITION,
         'fixed_placements.position.x=-1' => self::NEGATIVE_POSITION,
         'fixed_placements.position.y="-1"' => self::NEGATIVE_POSITION,
@@ -133,12 +157,28 @@ final class RequestObjectsCorpusTest extends TestCase
         'an-item-id-before-its-quantity' => self::CONSTRUCTOR_FIRST,
         'item-ids-before-containers' => self::CONSTRUCTOR_FIRST,
         'container-ids-before-fixed-placements' => self::CONSTRUCTOR_FIRST,
+        'item.nesting_height=2^53 ticks' => self::CEILING_SECOND,
+        'container.made_to_measure.minimum.length=2^53 ticks' => self::CEILING_SECOND,
+        'container.made_to_measure.minimum.width=2^53 ticks' => self::CEILING_SECOND,
+        'container.made_to_measure.minimum.height=2^53 ticks' => self::CEILING_SECOND,
+        'container.made_to_measure.increment.length=2^53 ticks' => self::CEILING_SECOND,
+        'container.made_to_measure.increment.height=2^53 ticks' => self::CEILING_SECOND,
+        'container.obstacles.origin.x=2^53 ticks' => self::CEILING_SECOND,
+        'container.obstacles.origin.y=2^53 ticks' => self::CEILING_SECOND,
+        'container.obstacles.origin.z=2^53 ticks' => self::CEILING_SECOND,
+        'container.obstacles.dimensions.length=2^53 ticks' => self::CEILING_SECOND,
         'configuration-boolean-before-effort-budget' => 'two faults: the EffortBudget is built, and refuses its own '
             . 'value, before the PackingConfig that holds it',
+        'item.weight=2^53 as a number' => self::JSON_NUMBER,
+        'item.max_top_load=2^53 as a number' => self::JSON_NUMBER,
+        'container.tare_weight=2^53 as a number' => self::JSON_NUMBER,
+        'container.max_payload=2^53 as a number' => self::JSON_NUMBER,
+        'container.max_stack_density=2^53 as a number' => self::JSON_NUMBER,
+        'container.made_to_measure.tare_per_square_metre=2^53 as a number' => self::JSON_NUMBER,
     ];
 
     /** Pinned, so the skip set cannot grow without this line changing too. */
-    private const SKIPPED = 88;
+    private const SKIPPED = 124;
 
     public static function testTheSkipSetIsPinnedAndNamesOnlyCorpusCases(): void
     {

@@ -7,8 +7,9 @@ use Packvium\Constraint\{AxleLoad,ConstraintSet,ProvenRejection,SupportConstrain
 use Packvium\Domain\{Container,Dimensions,FlatBag,ItemInstance,MadeToMeasure,Nesting,PackedContainer,Rotation,UnpackedItem};
 use Packvium\Extension\{CandidateScorer,ContainerSelector,DefaultCandidateScorer,DefaultContainerSelector,ItemOrderStrategy};
 use Packvium\Result\StartRecord;
-use Packvium\Support\{BigInt,StableSorter};
+use Packvium\Support\{BigInt,ExactGeometry,ExactInteger,StableSorter};
 use Packvium\Objective\{LandedCostSolutionScorer,ObjectiveRegistry};
+use Packvium\Algorithm\Internal\{ConcurrentStarts,ContainerPlanBeam,MadeToMeasureTrial,QualityStages};
 final class SolverOrchestrator
 {
     /**
@@ -31,6 +32,11 @@ final class SolverOrchestrator
      * @var \Packvium\Extension\ContainerSelector|null
      */
     private $containerSelector;
+    /**
+     * Beam width and candidates per item for the refinement of a winning late-type order
+     * (`...:late_<type>:beam`), as Python's `LATE_TYPE_REFINEMENT_WIDTH`.
+     */
+    private const LATE_TYPE_REFINEMENT_WIDTH=4;
     public function __construct(array $customConstraints=[], array $customOrders=[], array $customSolvers=[], ?CandidateScorer $candidateScorer=null, ?ContainerSelector $containerSelector=null)
     {
         $this->customConstraints = $customConstraints;
@@ -61,7 +67,7 @@ final class SolverOrchestrator
         $effortBudget=$config->effortBudget;
         if($effortBudget!==null&&$effortBudget->maxRestarts!==null)$starts=array_slice($starts,0,$effortBudget->maxRestarts);
         $run=$this->eligibleForConcurrentExecution($deadline,$config)&&count($starts)>1
-            ? $this->solveConcurrent($items,$containers,$config,$deadline,$starts,$effortBudget,$preloaded)
+            ? ConcurrentStarts::solveConcurrent($this->bridge(),$this->candidateScorer,$items,$containers,$config,$deadline,$starts,$effortBudget,$preloaded)
             : $this->solveSequential($items,$containers,$config,$deadline,$starts,$effortBudget,$preloaded);
         return self::withoutABlockStartThatOnlyTies($run,$starts,$config);
     }
@@ -134,16 +140,24 @@ final class SolverOrchestrator
             },
             $starts,
         );
+        $completed=[];
+        $weights=self::sliceWeights($starts);
         foreach($starts as $position=>[$solver,$orderName,$order]){
             if($deadline->expired())break;
+            if(strncmp($orderName, 'neighborhood:', strlen('neighborhood:')) === 0||substr_compare($orderName, ':beam', -strlen(':beam')) === 0){
+                $staged=QualityStages::stagedStart($orderName,$results,$completed,$config);
+                if($staged===null)continue;
+                [$solver,$orderName,$order]=$staged;
+            }
             $stats=new SearchStats();
-            $budget=self::startBudget($deadline,$effortBudget,$stats,count($starts)-$position);
-            $startConfig=substr_compare($orderName, ':greedy', -strlen(':greedy')) === 0?self::greedyConfig($config):$config;
+            $budget=self::startBudget($deadline,$effortBudget,$stats,\array_sum(\array_slice($weights,$position)),$weights[$position]);
+            $startConfig=self::startConfig($orderName,$config);
             [$packed,$unpacked,$exhaustive,$reached,$dominantLattice]=$this->acrossContainers($solver,$order,$containers,$startConfig,$stats,$budget,$preloaded);
             [$wallReached,$effortReached]=self::limitsReached($reached,$budget->effortStopped(),$budget->remainingNs());
             $unpacked=self::effortLimited($unpacked,$effortReached);
             $id=$solver->name().':'.$orderName;
             $results[]=new RawSolution($id,$packed,$unpacked,$stats,$wallReached,$effortReached,$exhaustive);
+            $completed[$id]=[$solver,$orderName,$order];
             $records[$position]=new StartRecord($id,true,!$reached,$reached);
             // A single item type's densest possible packing is the regular lattice grid
             // just tried: no *default-scored* solver in this portfolio can place it in
@@ -175,134 +189,6 @@ final class SolverOrchestrator
     }
 
     /**
-     * Runs every start after the first one concurrently, each in its own forked
-     * process.
-     *
-     * The first start always runs in-process, exactly as `solveSequential` would
-     * run it: `starts()` always places the order-insensitive lattice first when it
-     * is eligible at all, so the grid short-circuit below can only ever
-     * fire on this one start, and running it in-process first keeps that
-     * short-circuit -- and every sequential-mode test that depends on it --
-     * byte-for-byte unchanged.
-     *
-     * Every remaining start is forked, bound to one shared absolute deadline
-     * (`Deadline::until`) computed once, right here, from however much of the
-     * portfolio's own deadline is left; `hrtime(true)` is machine-wide rather than
-     * per-process, so every child can independently compare its own fresh reading
-     * against that same instant. Forks are batched in groups of `parallelStarts` so
-     * this never spawns more concurrent processes than the caller asked for.
-     * Results are placed into `$results`/`$records` by each start's fixed position,
-     * never by completion order, so the final list handed to `Packer::pack`'s
-     * (order-independent, full-key) ranking is identical no matter how the OS
-     * scheduled the forked processes.
-     *
-     * A child communicates its outcome back to the parent over an anonymous
-     * `stream_socket_pair` (no disk I/O, unlike a temp file) as one `serialize()`d
-     * payload, written after the child's own solve finishes and read by the parent
-     * via a blocking `stream_get_contents` that returns once the child closes its
-     * end. If `pcntl_fork()` itself fails for one start (a real but rare resource
-     * exhaustion case), that one start falls back to running synchronously in the
-     * parent instead of losing it -- correctness never depends on the fork
-     * succeeding, only on whether that start gets the speed-up.
-     */
-    private function solveConcurrent(array $items,array $containers,PackingConfig $config,Deadline $deadline,array $starts,?EffortBudget $effortBudget,array $preloaded=[]):PortfolioRun
-    {
-        $records=array_map(
-            static function (array $start): StartRecord {
-                return new StartRecord($start[0]->name().':'.$start[1],false,false,false);
-            },
-            $starts,
-        );
-        $results=array_fill(0,count($starts),null);
-
-        [$solver0,$orderName0,$order0]=$starts[0];
-        $stats0=new SearchStats();
-        $budget0=self::startBudget($deadline,$effortBudget,$stats0,count($starts));
-        [$packed0,$unpacked0,$exhaustive0,$reached0,$dominantLattice0]=$this->acrossContainers($solver0,$order0,$containers,$config,$stats0,$budget0,$preloaded);
-        [$wallReached0,$effortReached0]=self::limitsReached($reached0,$budget0->effortStopped(),$budget0->remainingNs());
-        $unpacked0=self::effortLimited($unpacked0,$effortReached0);
-        $id0=$solver0->name().':'.$orderName0;
-        $results[0]=new RawSolution($id0,$packed0,$unpacked0,$stats0,$wallReached0,$effortReached0,$exhaustive0);
-        $records[0]=new StartRecord($id0,true,!$reached0,$reached0);
-
-        // Same correction as the sequential path: only a genuine lattice
-        // construction is provably no worse than what remains, never a GridSolver
-        // delegate result -- see `solveSequential`'s identical check for the full
-        // rationale.
-        $shortCircuit=$dominantLattice0&&$unpacked0===[]&&$this->candidateScorer===null;
-        $remaining=array_slice($starts,1,null,true);
-
-        if($remaining!==[]&&!$shortCircuit&&!$deadline->expired()){
-            $absoluteDeadlineNs=hrtime(true)+$deadline->remainingNs();
-            $workerCount=max(1,min($config->parallelStarts,count($remaining)));
-            foreach(array_chunk($remaining,$workerCount,true) as $batch){
-                $sockets=[];$pids=[];
-                foreach($batch as $position=>[$solver,$orderName,$order]){
-                    $pair=stream_socket_pair(STREAM_PF_UNIX,STREAM_SOCK_STREAM,STREAM_IPPROTO_IP);
-                    $pid=pcntl_fork();
-                    if($pid===-1){
-                        fclose($pair[0]);fclose($pair[1]);
-                        [$results[$position],$records[$position]]=$this->runOneStartInProcess(
-                            $solver,$orderName,$order,$containers,$config,$effortBudget,$absoluteDeadlineNs,$preloaded,
-                        );
-                        continue;
-                    }
-                    if($pid===0){
-                        fclose($pair[0]);
-                        $stats=new SearchStats();
-                        $budget=Deadline::until($absoluteDeadlineNs);
-                        if($effortBudget!==null)$budget=$budget->withEffort($effortBudget,$stats);
-                        [$packed,$unpacked,$exhaustive,$reached]=$this->acrossContainers($solver,$order,$containers,$config,$stats,$budget,$preloaded);
-                        // Trusted internal IPC: this payload only ever comes from this
-                        // process's own fork running the exact same code, never from
-                        // external/attacker-controlled input, so the default (allow
-                        // every class) `unserialize()` on the parent's side is safe.
-                        fwrite($pair[1],serialize([$packed,$unpacked,$exhaustive,$reached,$stats,$budget->effortStopped()]));
-                        fclose($pair[1]);
-                        exit(0);
-                    }
-                    fclose($pair[1]);
-                    $sockets[$position]=$pair[0];
-                    $pids[$position]=$pid;
-                }
-                foreach($sockets as $position=>$socket){
-                    [$solver,$orderName]=$batch[$position];
-                    $data=stream_get_contents($socket);
-                    fclose($socket);
-                    pcntl_waitpid($pids[$position],$status);
-                    [$packed,$unpacked,$exhaustive,$reached,$stats,$effortStopped]=unserialize($data);
-                    [$wallReached,$effortReached]=self::limitsReached($reached,$effortStopped,$absoluteDeadlineNs-hrtime(true));
-                    $unpacked=self::effortLimited($unpacked,$effortReached);
-                    $id=$solver->name().':'.$orderName;
-                    $results[$position]=new RawSolution($id,$packed,$unpacked,$stats,$wallReached,$effortReached,$exhaustive);
-                    $records[$position]=new StartRecord($id,true,!$reached,$reached);
-                }
-            }
-        }
-
-        $results=array_values(array_filter($results,static function ($result): bool {
-            return $result!==null;
-        }));
-        return $this->finishPortfolio($items,$containers,$deadline,$results,$records,$preloaded);
-    }
-
-    /** Fallback body for one start when `pcntl_fork()` itself fails -- runs synchronously, in the parent. */
-    private function runOneStartInProcess(SingleContainerSolver $solver,string $orderName,array $order,array $containers,PackingConfig $config,?EffortBudget $effortBudget,int $absoluteDeadlineNs,array $preloaded):array
-    {
-        $stats=new SearchStats();
-        $budget=Deadline::until($absoluteDeadlineNs);
-        if($effortBudget!==null)$budget=$budget->withEffort($effortBudget,$stats);
-        [$packed,$unpacked,$exhaustive,$reached,]=$this->acrossContainers($solver,$order,$containers,$config,$stats,$budget,$preloaded);
-        [$wallReached,$effortReached]=self::limitsReached($reached,$budget->effortStopped(),$budget->remainingNs());
-        $unpacked=self::effortLimited($unpacked,$effortReached);
-        $id=$solver->name().':'.$orderName;
-        return [
-            new RawSolution($id,$packed,$unpacked,$stats,$wallReached,$effortReached,$exhaustive),
-            new StartRecord($id,true,!$reached,$reached),
-        ];
-    }
-
-    /**
      * The deadline one start runs under.
      *
      * Without an effort budget each start gets an even share of what is left, so a slow start
@@ -311,9 +197,9 @@ final class SolverOrchestrator
      * deadline and `time_limit_reached` say it did. A slice would let a start the clock cut
      * lose quietly, making a budgeted answer depend on the machine's speed.
      */
-    private static function startBudget(Deadline $deadline,?EffortBudget $effortBudget,SearchStats $stats,int $startsLeft):Deadline
+    private static function startBudget(Deadline $deadline,?EffortBudget $effortBudget,SearchStats $stats,int $startsLeft,int $weight=1):Deadline
     {
-        if($effortBudget===null)return $deadline->slice($startsLeft);
+        if($effortBudget===null)return $deadline->share($weight,$startsLeft);
         return $deadline->withEffort($effortBudget,$stats);
     }
 
@@ -577,20 +463,63 @@ final class SolverOrchestrator
         $greedy=array_map(static function (array $start): array {
             return $start[0]->name()==='homogeneous_blocks'?$start:[$start[0],$start[1].':greedy',$start[2]];
         },$starts);
-        $refinements=[];foreach($starts as [$solver,$name,$order])if($solver->name()==='extreme_points'&&count($refinements)<2)$refinements[]=[$solver,$name.':beam',$order];
-        return array_merge($greedy, $refinements);
+        $extreme=null;foreach($starts as $start)if($start[0]->name()==='extreme_points'){$extreme=$start;break;}
+        if($extreme===null)return $greedy;
+        // The same stages as Python -- every greedy order, then each item type moved
+        // last in the best greedy order, then one wide refinement of the best order found.
+        // The placeholder orders are replaced when the stage runs (`stagedStart`).
+        $types=array_values(array_unique(array_map(static function (ItemInstance $instance): string {
+            return $instance->item->id;
+        },$items)));
+        usort($types,'strcmp');
+        $neighborhoods=array_map(static function (string $type) use ($extreme): array {
+            return [$extreme[0],'neighborhood:'.$type,$extreme[2]];
+        },$types);
+        return array_merge($greedy,$neighborhoods,[[$extreme[0],'best:beam',$extreme[2]]]);
     }
 
-    private static function greedyConfig(PackingConfig $config):PackingConfig
+    /**
+     * Each start's weight in the time slicing, as Python's `_slice_weights`: the late-type
+     * neighbourhoods are greedy re-runs of one order, so together they weigh one start; with T
+     * of them each weighs 1 and every other start T. Without them every start weighs 1.
+     *
+     * @param list<array{0:SingleContainerSolver,1:string,2:list<ItemInstance>}> $starts
+     * @return list<int>
+     */
+    private static function sliceWeights(array $starts):array
     {
-        return new PackingConfig(
-            $config->profile,$config->timeLimitMs,$config->topK,$config->seed,$config->maxContainers,
-            $config->clearance,$config->minimumSupportRatio,$config->exactItemLimit,$config->multiStartOrders,
-            $config->validateResult,1,$config->maxCandidatePoints,$config->solvers,$config->objective,
-            $config->effortBudget,$config->dimensionalWeightDivisor,$config->dimensionalWeightLengthUnit,
-            $config->dimensionalWeightWeightUnit,$config->requirePlacementCoordinates,1,
-            1,1,
-        );
+        $neighbourhoods=0;
+        foreach($starts as [,$name])if(strncmp($name, 'neighborhood:', strlen('neighborhood:')) === 0)$neighbourhoods++;
+        if($neighbourhoods===0)return \array_fill(0,\count($starts),1);
+        return \array_map(static function (array $start) use ($neighbourhoods): int {
+            return strncmp($start[1], 'neighborhood:', strlen('neighborhood:')) === 0?1:$neighbourhoods;
+        },$starts);
+    }
+
+    /**
+     * Whether a start keeps one candidate per item: the greedy orders and their late-type
+     * neighbourhoods. A `:beam` refinement of a winning neighbourhood still carries `:late_`
+     * in its name, yet it is the one start meant to search wide.
+     */
+    private static function runsGreedy(string $orderName):bool
+    {
+        if(substr_compare($orderName, ':beam', -strlen(':beam')) === 0)return false;
+        return substr_compare($orderName, ':greedy', -strlen(':greedy')) === 0||strpos($orderName, ':late_') !== false;
+    }
+
+    /** The configuration one portfolio start searches with, as Python's `_start_config`. */
+    private static function startConfig(string $orderName,PackingConfig $config):PackingConfig
+    {
+        if(self::runsGreedy($orderName))return QualityStages::searchWidth($config,1,1,1);
+        if(substr_compare($orderName, ':beam', -strlen(':beam')) === 0&&strpos($orderName, ':late_') !== false){
+            return QualityStages::searchWidth(
+                $config,
+                min($config->maxCandidatesPerItem,self::LATE_TYPE_REFINEMENT_WIDTH),
+                min($config->containerPlanBeamWidth,self::LATE_TYPE_REFINEMENT_WIDTH),
+                $config->containerPlanNodeLimit,
+            );
+        }
+        return $config;
     }
 
     /** The same configuration with placement coordinates required: no compact lattice form (D12). */
@@ -664,7 +593,7 @@ final class SolverOrchestrator
                 return array_merge(ItemOrdering::lead($i,$config), $i->dimensions()->descendingVolumeKey(), [-$i->dimensions()->maxEdge(), -$i->weight()->ticks, $i->id()]);
             }],
             ['base_area',static function (ItemInstance $i) use ($config): array {
-                return array_merge(ItemOrdering::lead($i,$config), [-$i->dimensions()->baseAreaTicks()], $i->dimensions()->descendingVolumeKey(), [$i->id()]);
+                return array_merge(ItemOrdering::lead($i,$config), ExactInteger::descendingKey(ExactGeometry::baseArea($i->dimensions())), $i->dimensions()->descendingVolumeKey(), [$i->id()]);
             }],
             ['weight',static function (ItemInstance $i) use ($config): array {
                 return array_merge(ItemOrdering::lead($i,$config), [-$i->weight()->ticks], $i->dimensions()->descendingVolumeKey(), [$i->id()]);
@@ -768,44 +697,7 @@ final class SolverOrchestrator
     private function trial(SingleContainerSolver $solver,Container $container,int $sequence,array $items,PackingConfig $config,SearchStats $stats,Deadline $deadline):array
     {
         if($container->madeToMeasure===null)return [$solver->packOne($container,$sequence,$items,$config,$stats,$deadline),1];
-        return $this->madeToMeasureTrial($solver,$container,$sequence,$items,$config,$stats,$deadline);
-    }
-
-    /**
-     * Try each solving envelope in ascending order and keep the first that places every item;
-     * failing that, the trial this round's own key prefers, the smaller rung on a tie.
-     *
-     * At most four solves, two trial states alive. A compact lattice cannot describe a box cut
-     * to the achieved extent, so the rung solves always report coordinates (D12), and a rung
-     * choice is a heuristic, so the trial is never exhaustive (D13).
-     *
-     * @param list<ItemInstance> $items
-     * @return array{0:SingleContainerSolution,1:int}
-     */
-    private function madeToMeasureTrial(SingleContainerSolver $solver,Container $container,int $sequence,array $items,PackingConfig $config,SearchStats $stats,Deadline $deadline):array
-    {
-        $machine=$container->madeToMeasure;
-        $maximum=[$container->innerDimensions->length->ticks,$container->innerDimensions->width->ticks,$container->innerDimensions->height->ticks];
-        $rungs=$machine->solvingEnvelopes($maximum,MadeToMeasure::instanceEdges($items,$config->clearance->ticks));
-        $rungConfig=$config->requirePlacementCoordinates?$config:self::withCoordinates($config);
-        $selector=$this->containerSelector??new DefaultContainerSelector();
-        $best=null;$bestKey=null;$last=null;$stopped=false;$trials=0;
-        foreach($rungs as $rung){
-            try{$one=$solver->packOne($container->withEnvelope($rung),$sequence,$items,$rungConfig,$stats,$deadline);}
-            catch(TimeLimitReached $limit){if($best===null)throw $limit;$stopped=true;break;}
-            $trials++;
-            $stopped=$one->timeLimitReached;
-            $last=$one;
-            if($one->state->placementCount()>0){
-                $trial=self::fabricated($container,$one);
-                if($one->state->placementCount()===count($items))return [$trial,$trials];
-                $key=self::roundScore($trial,$items,$config,$selector);
-                if($best===null||($key<=>$bestKey)<0){$best=$trial;$bestKey=$key;}
-            }
-            if($stopped||$deadline->expired()){$stopped=true;break;}
-        }
-        $chosen=$best??$last;
-        return [new SingleContainerSolution($chosen->state,$chosen->unpacked,$chosen->exhaustive,$chosen->timeLimitReached||$stopped,$chosen->dominantLattice),$trials];
+        return MadeToMeasureTrial::madeToMeasureTrial($this->bridge(),$this->containerSelector,$solver,$container,$sequence,$items,$config,$stats,$deadline);
     }
 
     /** A rung trial as the box cut for it: the achieved extent of its placements, envelope far faces with clearance, rounded up onto the machine grid (D14). O(p). */
@@ -821,7 +713,7 @@ final class SolverOrchestrator
         $beam=$config->containerPlanBeamWidth>1&&($this->containerSelector===null||$this->containerSelector instanceof DefaultContainerSelector);
         [$opened,$reached]=$this->openPreloaded($solver,$preloaded,$items,$containers,$config,$stats,$deadline);
         if($beam){
-            return $this->acrossContainerPlans($solver,$items,$containers,$config,$stats,$deadline,$opened,$reached);
+            return ContainerPlanBeam::acrossContainerPlans($this->bridge(),$solver,$items,$containers,$config,$stats,$deadline,$opened,$reached);
         }
         $remaining=$opened['remaining'];$packed=$opened['packed'];$exhaustive=$opened['exhaustive'];$dominantLattice=$opened['dominant'];
         $inventory=$opened['inventory'];$seq=$opened['sequences'];
@@ -923,122 +815,11 @@ final class SolverOrchestrator
         return [$packed,$ids];
     }
 
-    private static function planScore(array $plan,array $remaining,PackingConfig $config):array
+    /** The orchestrator's own private methods, for the parts kept in `Internal` (see there). */
+    private function bridge():\Closure
     {
-        $unpacked=array_map(static function (ItemInstance $item): UnpackedItem {
-            return new UnpackedItem($item,'search_exhausted');
-        },$remaining);
-        $raw=new RawSolution('container_plan',$plan['packed'],$unpacked,new SearchStats());
-        return ObjectiveRegistry::resolve($config->objective,$config)->score($raw)->components;
-    }
-
-    private static function additionalContainerLowerBound(array $plan,array $containers):int
-    {
-        $available=array_values(array_filter($containers,static function (Container $container) use ($plan): bool {
-            return $plan['inventory'][$container->id]===null||$plan['inventory'][$container->id]>0;
-        }));
-        if($plan['remaining']===[]||$available===[])return 0;
-        $lower=0;
-        if(!array_filter($plan['remaining'],static function (ItemInstance $item): bool {
-            return $item->item->nestingHeight!==null;
-        })){
-            $capacity='0';foreach($available as $container)if(BigInt::compare($container->innerDimensions->volumeString(),$capacity)>0)$capacity=$container->innerDimensions->volumeString();
-            if($capacity!=='0'){
-                $required='0';foreach($plan['remaining'] as $item)$required=BigInt::add($required,Nesting::itemOccupiedVolume($item));
-                $lower=max($lower,(int)BigInt::divide(BigInt::add($required,BigInt::subtract($capacity,'1')),$capacity));
-            }
-        }
-        if(array_filter($available,static function (Container $container): bool {
-            return $container->maxPayload===null;
-        })===[]){
-            $capacity=max(array_map(static function (Container $container): int {
-                return $container->maxPayload->ticks;
-            },$available));
-            if($capacity>0){$required=array_sum(array_map(static function (ItemInstance $item): int {
-                return $item->weight()->ticks;
-            },$plan['remaining']));$lower=max($lower,intdiv($required+$capacity-1,$capacity));}
-        }
-        return $lower;
-    }
-
-    private static function planBound(array $plan,array $containers,PackingConfig $config):array
-    {
-        $score=self::planScore($plan,[],$config);$index=$config->objective==='default'?1:2;
-        $score[$index]+=self::additionalContainerLowerBound($plan,$containers);
-        $score[]=implode('|',array_map(static function (ItemInstance $item): string {
-            return $item->id();
-        },$plan['remaining']));
-        return $score;
-    }
-
-    /**
-     * @param array{packed:list<PackedContainer>,remaining:list<ItemInstance>,inventory:array<string,?int>,sequences:array<string,int>,exhaustive:bool,dominant:bool} $initial
-     * @return array{0:list<PackedContainer>,1:list<UnpackedItem>,2:bool,3:bool,4:bool}
-     */
-    private function acrossContainerPlans(SingleContainerSolver $solver,array $items,array $containers,PackingConfig $config,SearchStats $stats,Deadline $deadline,array $initial,bool $reached):array
-    {
-        // Numbered per container type, as the greedy path and every other engine number
-        // them: a fixed placement names `<type>#<n>`, so the count must be the type's own.
-        $beam=$reached?[]:[$initial];$incumbent=$initial;$nodes=0;
-        $incumbentScore=self::planScore($incumbent,$incumbent['remaining'],$config);
-        $maximum=$config->maxContainers??array_sum(array_map(static function (Container $container) use ($items): int {
-            return $container->quantity??count($items);
-        },$containers));
-        $ordered=StableSorter::sortBy($containers,static function (Container $container): array {
-            return array_merge([$container->costMinor], $container->innerDimensions->volumeKey(), [$container->id]);
-        });
-        while($beam!==[]&&$nodes<$config->containerPlanNodeLimit){
-            $expansions=[];
-            foreach($beam as $plan){
-                if($plan['remaining']===[]||count($plan['packed'])>=$maximum){
-                    $planScore=self::planScore($plan,$plan['remaining'],$config);
-                    if($planScore<$incumbentScore){$incumbent=$plan;$incumbentScore=$planScore;}
-                    continue;
-                }
-                foreach($ordered as $container){
-                    if($nodes>=$config->containerPlanNodeLimit)break;
-                    if($deadline->expired()){$reached=true;break;}
-                    if($plan['inventory'][$container->id]!==null&&$plan['inventory'][$container->id]<=0)continue;
-                    // Each rung is one single-container solve, so the node limit keeps bounding
-                    // the work of a made-to-measure chain.
-                    try{[$one,$trials]=$this->trial($solver,$container,$plan['sequences'][$container->id]+1,$plan['remaining'],$config,$stats,$deadline);}catch(TimeLimitReached $exception){$nodes++;$reached=true;break;}
-                    $nodes+=$trials;
-                    $reached=$reached||$one->timeLimitReached;if($one->state->placementCount()===0)continue;
-                    [$committed,$ids]=self::commitState($one->state);$child=$plan;$child['packed'][]=$committed;$child['remaining']=array_values(array_filter($plan['remaining'],static function (ItemInstance $item) use ($ids): bool {
-                        return !isset($ids[$item->id()]);
-                    }));$child['sequences'][$container->id]++;
-                    if($child['inventory'][$container->id]!==null)$child['inventory'][$container->id]--;
-                    $child['exhaustive']=$plan['exhaustive']&&$one->exhaustive;$child['dominant']=$plan['dominant']&&$one->dominantLattice;$expansions[]=$child;
-                    $childScore=self::planScore($child,$child['remaining'],$config);
-                    if($childScore<$incumbentScore){$incumbent=$child;$incumbentScore=$childScore;}
-                    if($reached)break;
-                }
-                if($reached)break;
-            }
-            if($reached||$expansions===[])break;
-            $dominant=[];
-            foreach($expansions as $plan){
-                $signature=implode('|',array_map(static function (ItemInstance $item): string {
-                    return $item->id();
-                },$plan['remaining'])).'::'.json_encode($plan['inventory'],JSON_THROW_ON_ERROR);
-                $partialScore=self::planScore($plan,[],$config);
-                $previous=$dominant[$signature]??null;
-                if($previous===null||$partialScore<$previous[0])$dominant[$signature]=[$partialScore,$plan];
-            }
-            // planBound re-derives the additive volume/payload relaxation with BigInt
-            // string math; one evaluation per plan instead of one per stable-usort
-            // comparison leaves the ordering untouched.
-            $survivors=array_map(static function (array $pair): array {
-                return $pair[1];
-            },array_values($dominant));
-            $beam=count($survivors)>1
-                ?array_slice(StableSorter::sortBy($survivors,static function (array $plan) use ($containers, $config): array {
-                    return self::planBound($plan,$containers,$config);
-                }),0,$config->containerPlanBeamWidth)
-                :$survivors;
-        }
-        $unpacked=[];$opened=self::openedByType($incumbent['packed']);foreach($incumbent['remaining'] as $item){[$reason,$details]=$this->unpackedReason($item,$containers,$reached);if($reason==='no_feasible_placement'&&$this->supportIsTheBlocker($item,$incumbent['packed'],$config))$reason='insufficient_support';if($reason==='no_feasible_placement')$reason=self::limitReason($item,$containers,$opened,$config)??$reason;$unpacked[]=new UnpackedItem($item,$reason,$details);}
-        $proven=$incumbent['exhaustive']&&!$reached&&$unpacked===[]&&count($incumbent['packed'])===1;
-        return [$incumbent['packed'],$unpacked,$proven,$reached,$incumbent['dominant']];
+        return function (string $method, ...$arguments) {
+            return $this->{$method}(...$arguments);
+        };
     }
 }

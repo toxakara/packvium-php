@@ -4,7 +4,7 @@ namespace Packvium\Constraint\Internal;
 
 use Packvium\Constraint\{ContactEdge,LoadCalculator,LoadUnit};
 use Packvium\Domain\Compression;
-use Packvium\Support\{Arithmetic,BigInt};
+use Packvium\Support\{BigInt,ExactGeometry,ExactInteger};
 
 /**
  * Per-scene load analysis over an already constructed support graph.
@@ -53,12 +53,12 @@ final class LoadAnalysis
         foreach($order as $upperIndex){
             $supports=$graph->supporters($upperIndex);
             $totalArea=0;
-            foreach($supports as $edge)$totalArea+=$edge->area;
+            foreach($supports as $edge)$totalArea=ExactInteger::add($totalArea,$edge->area);
             if($totalArea===0)continue;
             $downward=$this->units[$upperIndex]->weightTicks+$loads[$upperIndex];
             $assigned=0;$last=count($supports)-1;
             foreach($supports as $position=>$edge){
-                $share=$position===$last?$downward-$assigned:Arithmetic::mulDiv($downward,$edge->area,$totalArea);
+                $share=$position===$last?$downward-$assigned:ExactInteger::mulDiv($downward,$edge->area,$totalArea);
                 $assigned+=$share;
                 $loads[$edge->index]+=$share;
             }
@@ -96,7 +96,7 @@ final class LoadAnalysis
             $limit=$unit->maxCompressionPressureKpa;
             if($limit===null)continue;
             $box=$unit->box;
-            $footprint=($box->x2()-$box->origin->x)*($box->y2()-$box->origin->y);
+            $footprint=$unit->footprintTicks2??ExactInteger::mul($box->x2()-$box->origin->x,$box->y2()-$box->origin->y);
             if(Compression::exceeds(Compression::pressure($loads[$index],$footprint),$limit))
                 return ['crush_violation',$unit->label];
         }
@@ -206,7 +206,7 @@ final class LoadAnalysis
         foreach($this->units as $index=>$unit){
             $total=$unit->weightTicks+$loads[$index];
             $bearing=BigInt::multiply($total,LoadCalculator::SQUARE_METRE_TICKS);
-            $allowed=BigInt::multiply($maxDensityTicks,$unit->box->dimensions->baseAreaTicks());
+            $allowed=BigInt::multiply($maxDensityTicks,ExactGeometry::baseArea($unit->box->dimensions));
             if(BigInt::compare($bearing,$allowed)>0)return ['stack_density_exceeded',$unit->label];
         }
         return null;

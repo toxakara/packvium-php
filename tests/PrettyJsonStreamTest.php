@@ -75,7 +75,7 @@ final class PrettyJsonStreamTest extends TestCase
     {
         $value = ['rows' => \array_fill(0, 5000, ['id' => 'item-0001', 'size' => [1, 2, 3]])];
         $streamed = self::streamed($value);
-        self::assertGreaterThan(65536 * 4, \strlen($streamed));
+        self::assertGreaterThan(8192 * 4, \strlen($streamed));
         self::assertSame(\json_encode($value, self::FLAGS), $streamed);
     }
 

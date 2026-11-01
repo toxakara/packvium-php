@@ -132,9 +132,15 @@ final class Deadline
 
     public function slice(int $parts):self
     {
+        return $this->share(1,$parts);
+    }
+
+    /** `$weight / $total` of what is left, never below the minimum slice; all of it when this is the last share. */
+    public function share(int $weight,int $total):self
+    {
         $remaining=$this->remainingNs();
-        if($parts<=1)return new self($remaining,$this->clock,$this->effortBudget,$this->stats);
-        return new self(max(intdiv($remaining,$parts),min($remaining,self::MINIMUM_SLICE_NS)),$this->clock,$this->effortBudget,$this->stats);
+        if($total<=$weight)return new self($remaining,$this->clock,$this->effortBudget,$this->stats);
+        return new self(max(intdiv($remaining*$weight,$total),min($remaining,self::MINIMUM_SLICE_NS)),$this->clock,$this->effortBudget,$this->stats);
     }
 
     /** Bind an effort budget to this start's own stats, keeping the same time bound. */

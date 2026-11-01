@@ -123,7 +123,7 @@ final class FixedPlacementShape
         if ($verdict === MeasureReading::NEGATIVE) {
             throw self::malformed("{$where} cannot be negative", $field);
         }
-        if ($verdict === MeasureReading::UNREADABLE) {
+        if ($verdict !== MeasureReading::READABLE) {
             throw self::malformed("{$where} is a measure", $field);
         }
     }

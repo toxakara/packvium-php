@@ -3,6 +3,7 @@ declare(strict_types=1);
 namespace Packvium\Constraint\Internal;
 use Packvium\Constraint\{ContactEdge,ContactGraph,LoadUnit};
 use Packvium\Domain\{AxisAlignedBox,Item,ItemInstance,Placement};
+use Packvium\Support\{ExactGeometry,ExactInteger};
 
 /**
  * Direct load support: ordinary face contact plus exact adjacent nesting contact.
@@ -28,6 +29,10 @@ final class LoadSupportGraph
     private ?array $descending=null;
     /** @var list<int>|null */
     private ?array $priorDescending=null;
+    /** @var list<Placement>|null */
+    private static ?array $cachedPlanePlacements=null;
+    /** @var array<int,list<array{0:int,1:AxisAlignedBox,2:int,3:int,4:int,5:int}>> */
+    private static array $cachedByTop=[];
 
     /** @param list<LoadUnit> $units */
     public function __construct(array $units, int $cellHint = 1)
@@ -87,7 +92,7 @@ final class LoadSupportGraph
                 ];
                 if(!$sameColumn)$retained[]=$edge;
             }
-            $area=$units[$lowerIndex]->box->overlapAreaXY($units[$upperIndex]->box);
+            $area=ExactGeometry::overlapAreaXY($units[$lowerIndex]->box,$units[$upperIndex]->box);
             $insertAt=0;$retainedCount=count($retained);
             while($insertAt<$retainedCount&&$retained[$insertAt]->index<$lowerIndex)$insertAt++;
             array_splice($retained,$insertAt,0,[new ContactEdge($lowerIndex,$area)]);
@@ -222,12 +227,40 @@ final class LoadSupportGraph
      */
     public static function candidateView(array $placements,ItemInstance $item,AxisAlignedBox $box):DirectSupportView
     {
-        $supporterEntries=[];$nearestLower=null;
         $nesting=$item->item->nestingHeight;
+        if($nesting===null){
+            if(self::$cachedPlanePlacements!==$placements){
+                $byTop=[];
+                foreach($placements as $index=>$placement){
+                    $other=$placement->envelopeBox();
+                    $byTop[$other->z2()][]=[$index,$other,$other->origin->x,$other->origin->y,$other->x2(),$other->y2()];
+                }
+                self::$cachedPlanePlacements=$placements;
+                self::$cachedByTop=$byTop;
+            }
+            $plane=self::$cachedByTop[$box->origin->z]??[];
+            if($plane===[])return new DirectSupportView([],[],[],0);
+            $bx1=$box->origin->x;$by1=$box->origin->y;$bx2=$box->x2();$by2=$box->y2();
+            $indexes=[];$boxes=[];$areas=[];$totalArea=0;
+            foreach($plane as [$index,$other,$ox1,$oy1,$ox2,$oy2]){
+                $dx=($bx2<$ox2?$bx2:$ox2)-($bx1>$ox1?$bx1:$ox1);
+                if($dx<=0)continue;
+                $dy=($by2<$oy2?$by2:$oy2)-($by1>$oy1?$by1:$oy1);
+                if($dy<=0)continue;
+                // Native products and sums while they fit; past that the exact forms.
+                $area=$dx*$dy;
+                if(!is_int($area))$area=ExactInteger::mul($dx,$dy);
+                $sum=$totalArea+$area;
+                $totalArea=is_int($sum)?$sum:ExactInteger::add($totalArea,$area);
+                $indexes[]=$index;$boxes[]=$other;$areas[]=$area;
+            }
+            return new DirectSupportView($indexes,$boxes,$areas,$totalArea);
+        }
+        $supporterEntries=[];$nearestLower=null;
         foreach($placements as $index=>$placement){
             $other=$placement->envelopeBox();
             if($other->z2()===$box->origin->z){
-                $area=$other->overlapAreaXY($box);
+                $area=ExactGeometry::overlapAreaXY($other,$box);
                 if($area>0)$supporterEntries[]=['index'=>$index,'box'=>$other,'area'=>$area];
             }
             $otherNesting=$placement->instance->item->nestingHeight;
@@ -249,12 +282,12 @@ final class LoadSupportGraph
             while($supporterAt<count($supporterEntries)&&$supporterEntries[$supporterAt]['index']<$predecessor['index'])$supporterAt++;
             array_splice($supporterEntries,$supporterAt,0,[[
                 'index'=>$predecessor['index'],'box'=>$predecessor['box'],
-                'area'=>$predecessor['box']->overlapAreaXY($box),
+                'area'=>ExactGeometry::overlapAreaXY($predecessor['box'],$box),
             ]]);
         }
         $indexes=[];$boxes=[];$areas=[];$totalArea=0;
         foreach($supporterEntries as $entry){
-            $indexes[]=$entry['index'];$boxes[]=$entry['box'];$areas[]=$entry['area'];$totalArea+=$entry['area'];
+            $indexes[]=$entry['index'];$boxes[]=$entry['box'];$areas[]=$entry['area'];$totalArea=ExactInteger::add($totalArea,$entry['area']);
         }
         return new DirectSupportView($indexes,$boxes,$areas,$totalArea);
     }

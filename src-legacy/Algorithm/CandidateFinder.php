@@ -4,7 +4,7 @@ namespace Packvium\Algorithm;
 use Packvium\Config\PackingConfig;
 use Packvium\Constraint\{AxleLoad,ConstraintContext,LoadCalculator,PlacementConstraint,SupportConstraint};
 use Packvium\Constraint\Internal\ConstraintActivity;
-use Packvium\Support\{BigInt,StableSorter};
+use Packvium\Support\{BigInt,ExactInteger,StableSorter};
 use Packvium\Domain\{HullShape,ItemInstance,Nesting,Placement,Point,ShapeType};
 use Packvium\Extension\CandidateScorer;
 final class CandidateFinder
@@ -147,12 +147,12 @@ final class CandidateFinder
                 if($inertChain){
                     $stats->supportChecks+=$inertSupportChecks;
                 }else{
-                    $ctx=new ConstraintContext($container,$placed,$item,$point,$rotation,$physical,$envelope,$stackSensitive,$routeSensitive);
+                    $ctx=null;
                     foreach($active as $link=>[$constraint,$countsSupport,$positionIndependent]){
                         if($countsSupport)$stats->supportChecks++;
                         $allowed=$positionIndependent
-                            ?($fixedVerdicts[$link] = $fixedVerdicts[$link] ?? $constraint->evaluate($ctx)->allowed)
-                            :$constraint->evaluate($ctx)->allowed;
+                            ?($fixedVerdicts[$link] = $fixedVerdicts[$link] ?? $constraint->evaluate($ctx = $ctx ?? new ConstraintContext($container,$placed,$item,$point,$rotation,$physical,$envelope,$stackSensitive,$routeSensitive))->allowed)
+                            :$constraint->evaluate($ctx = $ctx ?? new ConstraintContext($container,$placed,$item,$point,$rotation,$physical,$envelope,$stackSensitive,$routeSensitive))->allowed;
                         if(!$allowed){$blocked=true;break;}
                     }
                     if($blocked)continue;
@@ -163,14 +163,14 @@ final class CandidateFinder
                     if($defaultScorer){
                         if($max===1&&$best!==null&&$z1>$best->score[0])continue;
                         if($retained!==null&&$retained->count()===$max&&$z1>$retained->top()->score[0])continue;
-                        $score=[$z1,$z2>$bagZ?$z2:$bagZ,($limitX-$x2)*($limitY-$y2)+($limitZ-$z2),$y1,$x1];
+                        $score=[$z1,$z2>$bagZ?$z2:$bagZ,self::roomLeftKey($limitX-$x2,$limitY-$y2,$limitZ-$z2),$y1,$x1];
                     }else{
                         $score=$scorer->score($state,$point,$envelope);
                     }
                     $position=($nullsafeVariable1 = $tentative) ? $nullsafeVariable1->position : null;
                 }else{
                     $score=$defaultScorer
-                        ?[$z1,$z2>$bagZ?$z2:$bagZ,($limitX-$x2)*($limitY-$y2)+($limitZ-$z2),$y1,$x1]
+                        ?[$z1,$z2>$bagZ?$z2:$bagZ,self::roomLeftKey($limitX-$x2,$limitY-$y2,$limitZ-$z2),$y1,$x1]
                         :$scorer->score($state,$point,$envelope);
                     $position=(($nullsafeVariable2 = $tentative) ? $nullsafeVariable2->position : null)??new Point($x1+$clearance,$y1+$clearance,$z1+$clearance);
                     $reservePlacement=$tentative??new Placement(
@@ -217,6 +217,23 @@ final class CandidateFinder
             return $candidate->score;
         });
         return $max===null?$out:array_slice($out,0,$max);
+    }
+
+    /**
+     * `rx * ry + rz`, the score's room-left term, as an order-preserving key: the native
+     * value while it fits an int, its exact chunks past that. Any chunked key
+     * outranks every int, as its value does.
+     *
+     * @return int|list<int>
+     */
+    public static function roomLeftKey(int $rx,int $ry,int $rz)
+    {
+        $area=$rx*$ry;
+        if(is_int($area)){
+            $residual=$area+$rz;
+            if(is_int($residual))return $residual;
+        }
+        return ExactInteger::sortKey(ExactInteger::add(ExactInteger::mul($rx,$ry),$rz));
     }
 
     /** @return list<Point> */

@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 namespace Packvium\Domain;
-use Packvium\Support\{BigInt,StableSorter};
+use Packvium\Support\{BigInt,ExactGeometry,StableSorter};
 
 /**
  * Nesting overlap accounting.
@@ -28,6 +28,20 @@ final class Nesting
         [$low, $high] = $boxA->origin->z <= $boxB->origin->z ? [$boxA, $boxB] : [$boxB, $boxA];
         if ($low->origin->z === $high->origin->z) { return false; }
         return $low->z2() - $high->origin->z === $nesting->ticks;
+    }
+
+    /**
+     * The physical space a valid nesting pair shares, as a decimal string.
+     *
+     * The pair sinks by `nestingHeight` envelope to envelope, so under a clearance the items
+     * themselves overlap by twice the clearance less, over their own footprint rather than
+     * the envelope's. Equal to `nestingHeight x base area` with no clearance. O(1).
+     */
+    private static function nestedOverlap(Placement $lower, Placement $upper): string
+    {
+        $a = $lower->box(); $b = $upper->box();
+        $height = min($a->z2(), $b->z2()) - max($a->origin->z, $b->origin->z);
+        return $height > 0 ? BigInt::multiply((string)ExactGeometry::overlapAreaXY($a, $b), (string)$height) : '0';
     }
 
     /**
@@ -60,8 +74,7 @@ final class Nesting
             for ($i = 0; $i < count($group) - 1; $i++) {
                 $lower = $group[$i]; $upper = $group[$i + 1];
                 if (self::isValidNesting($lower, $upper)) {
-                    $slice = BigInt::multiply((string)$lower->instance->item->nestingHeight->ticks, (string)$lower->envelopeDimensions->baseAreaTicks());
-                    $overlap = BigInt::add($overlap, $slice);
+                    $overlap = BigInt::add($overlap, self::nestedOverlap($lower, $upper));
                 }
             }
         }
@@ -86,7 +99,7 @@ final class Nesting
         }
         if ($item->maxCompressionPressureKpa === null) { return $placement->dimensions->volumeString(); }
         $dimensions = $placement->dimensions;
-        $footprint = $dimensions->baseAreaTicks();
+        $footprint = ExactGeometry::baseArea($dimensions);
         $pressure = Compression::pressure($placement->topLoad->ticks, $footprint);
         // A crushed item has no meaningful occupied volume, and the arrangement is already
         // invalid -- the crush check refuses it and the validator reports it. Reporting the
@@ -148,8 +161,7 @@ final class Nesting
         $overlap = '0';
         foreach ($placements as $existing) {
             if (!self::isValidNesting($existing, $placement)) { continue; }
-            $slice = BigInt::multiply((string)$nesting->ticks, (string)$placement->envelopeDimensions->baseAreaTicks());
-            $overlap = BigInt::add($overlap, $slice);
+            $overlap = BigInt::add($overlap, self::nestedOverlap($existing, $placement));
         }
         return BigInt::subtract($placement->dimensions->volumeString(), $overlap);
     }

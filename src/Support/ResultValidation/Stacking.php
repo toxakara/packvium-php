@@ -113,6 +113,9 @@ final class Stacking
                 if (Exact::compare($area, self::requiredSupportArea($entry->envelope->baseArea, ContainerCheck::ratioPpm($required))) < 0) {
                     $ratio = Ratio::of($area, $entry->envelope->baseArea);
                     $issues[] = new ResultIssue('insufficient_support', "{$itemId}: " . PyFormat::fixed6($ratio->toFloat()) . ' < ' . PyFormat::fixed6($required->toFloat()));
+                } elseif (Exact::compare(Exact::mul($area, 2), $entry->envelope->baseArea) <= 0
+                    && !self::centroidSupported($entry->envelope, \array_map(static function (array $edge) use ($entries) { return $entries[$edge[0]]->envelope; }, $supporting))) {
+                    $issues[] = new ResultIssue('centre_of_gravity_unsupported', "{$itemId}: centroid outside its support hull");
                 }
             }
             foreach ($supporting as [$lower]) {
@@ -125,9 +128,6 @@ final class Stacking
                     $issues[] = new ResultIssue('non_stackable', "{$itemId} rests on {$lowerId}");
                 } elseif ($lowerSpec->acceptsStackingGroups !== [] && !Accounting::holds($lowerSpec->acceptsStackingGroups, $spec->stackingGroup)) {
                     $issues[] = new ResultIssue('stacking_group_incompatible', "{$itemId} rests on {$lowerId}");
-                }
-                if ($lowerSpec->maxTopLoad !== null && Exact::compare($spec->weight, $lowerSpec->maxTopLoad) > 0) {
-                    $issues[] = new ResultIssue('top_load_exceeded', "{$itemId} ({$spec->weight} ticks) on {$lowerId} (limit {$lowerSpec->maxTopLoad})");
                 }
             }
         }
@@ -154,6 +154,77 @@ final class Stacking
     }
 
     /** Exact `floor(baseArea * ppm / 10^6)`, the least supported area the ratio allows. @param int|string $baseArea @return int|string */
+    /**
+     * Whether the base centroid lies in the convex hull of the contact areas, the
+     * rule the searches apply once a support ratio is enforced; reached only at or below half
+     * the base, where it can refuse. Coordinates are doubled so the centroid is an
+     * integer for odd extents, and every product goes through Exact. The corners come four to
+     * a positive-area overlap, so the hull is empty or has at least three vertices.
+     * O(s log s) time and O(s) space for s supporters.
+     *
+     * @param list<Cuboid> $surfaces
+     */
+    private static function centroidSupported(Cuboid $envelope, array $surfaces): bool
+    {
+        $points = [];
+        foreach ($surfaces as $surface) {
+            foreach ([Exact::max($envelope->x, $surface->x), Exact::compare($envelope->x2, $surface->x2) <= 0 ? $envelope->x2 : $surface->x2] as $x) {
+                foreach ([Exact::max($envelope->y, $surface->y), Exact::compare($envelope->y2, $surface->y2) <= 0 ? $envelope->y2 : $surface->y2] as $y) {
+                    $points[Exact::mul($x, 2) . ',' . Exact::mul($y, 2)] = [Exact::mul($x, 2), Exact::mul($y, 2)];
+                }
+            }
+        }
+        $points = \array_values($points);
+        \usort($points, static function (array $a, array $b): int {
+            return Exact::compare($a[0], $b[0]) ?: Exact::compare($a[1], $b[1]);
+        });
+        $hull = \array_merge(self::halfHull($points), self::halfHull(\array_reverse($points)));
+        $centroid = [Exact::add($envelope->x, $envelope->x2), Exact::add($envelope->y, $envelope->y2)];
+        $count = \count($hull);
+        if ($count === 0) {
+            return false;
+        }
+        for ($index = 0; $index < $count; $index++) {
+            if (Exact::sign(self::cross($hull[$index], $hull[($index + 1) % $count], $centroid)) < 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * One half of Andrew's monotone chain, its last point dropped for the other half to close.
+     *
+     * @param list<array{0: int|string, 1: int|string}> $points
+     * @return list<array{0: int|string, 1: int|string}>
+     */
+    private static function halfHull(array $points): array
+    {
+        $chain = [];
+        foreach ($points as $point) {
+            while (\count($chain) >= 2 && Exact::sign(self::cross($chain[\count($chain) - 2], $chain[\count($chain) - 1], $point)) <= 0) {
+                \array_pop($chain);
+            }
+            $chain[] = $point;
+        }
+        \array_pop($chain);
+        return $chain;
+    }
+
+    /**
+     * @param array{0: int|string, 1: int|string} $o
+     * @param array{0: int|string, 1: int|string} $a
+     * @param array{0: int|string, 1: int|string} $b
+     * @return int|string
+     */
+    private static function cross(array $o, array $a, array $b)
+    {
+        return Exact::sub(
+            Exact::mul(Exact::sub($a[0], $o[0]), Exact::sub($b[1], $o[1])),
+            Exact::mul(Exact::sub($a[1], $o[1]), Exact::sub($b[0], $o[0]))
+        );
+    }
+
     private static function requiredSupportArea($baseArea, int $ppm)
     {
         return Exact::floorDiv(Exact::mul($baseArea, $ppm), ContainerCheck::SCORE_SCALE);
@@ -242,6 +313,24 @@ final class Stacking
         );
     }
 
+    /**
+     * `max_top_load` against the whole stack an item bears, as every engine checks it.
+     * The only top-load rule since 1.9.0: an item resting on several bearers shares its
+     * weight among them by contact area. O(n) over the loads `propagateLoad` built.
+     *
+     * @param list<Entry> $entries @param list<int|string> $loads @param list<ResultIssue> $issues
+     */
+    public static function checkStackTopLoad(array $entries, array $loads, array &$issues): void
+    {
+        foreach ($entries as $index => $entry) {
+            $limit = $entry->spec === null ? null : $entry->spec->maxTopLoad;
+            if ($limit === null || Exact::compare($loads[$index], $limit) <= 0) {
+                continue;
+            }
+            $issues[] = new ResultIssue('top_load_exceeded', PyFormat::str($entry->id) . " bears {$loads[$index]} ticks (limit {$limit})");
+        }
+    }
+
     /**: no `compressible` item may carry more pressure than it declared. @param list<Entry> $entries @param list<int|string> $loads @param list<ResultIssue> $issues */
     public static function checkCrush(Label $packedId, array $entries, array $loads, array &$issues): void
     {
@@ -250,7 +339,8 @@ final class Stacking
             if ($limit === null) {
                 continue;
             }
-            $pressure = self::pressure($loads[$index], $entry->envelope->baseArea);
+            [$length, $width] = self::physicalSides($entry->placement);
+            $pressure = self::pressure($loads[$index], Exact::mul($length, $width));
             if ($pressure->compareInt($limit) > 0) {
                 $issues[] = new ResultIssue('crush_violation', PyFormat::str($entry->id) . " in {$packedId}: " . PyFormat::fixed6($pressure->toFloat()) . " kPa exceeds {$limit} kPa");
             }
@@ -259,27 +349,38 @@ final class Stacking
 
     /**
      * Occupied height under load, rounded up, never below one tick. A crushed item keeps its
-     * height: `checkCrush` already reports it.
+     * height: `checkCrush` already reports it. The load presses on the item itself, so the
+     * footprint and the height are its own, not its envelope's.
      *
-     * @param int|string $load @return int|string
+     * @param int $height @param int|string $footprint @param int|string $load @return int|string
      */
-    public static function compressedHeight(Cuboid $envelope, ItemSpec $spec, $load)
+    public static function compressedHeight(int $height, $footprint, ItemSpec $spec, $load)
     {
         $limit = $spec->maxCompressionPressureKpa;
         if ($limit === null) {
-            return $envelope->height;
+            return $height;
         }
         if ($spec->compressionRatioPpm === null) {
             // The reference asserts the pair: a pressure limit without a ratio is not a request it reads.
             throw MalformedResult::shape("{$spec->id}: max_compression_pressure_kpa without compression_ratio");
         }
-        $pressure = self::pressure($load, $envelope->baseArea);
+        $pressure = self::pressure($load, $footprint);
         if ($pressure->compareInt($limit) > 0 || $limit === 0) {
-            return $envelope->height;
+            return $height;
         }
         $divisor = Exact::mul(Exact::mul($limit, 1000000), $pressure->denominator);
         $retained = Exact::sub($divisor, Exact::mul($spec->compressionRatioPpm, $pressure->numerator));
-        return Exact::max(1, Exact::ceilDiv(Exact::mul($envelope->height, $retained), $divisor));
+        return Exact::max(1, Exact::ceilDiv(Exact::mul($height, $retained), $divisor));
+    }
+
+    /** The placed item's own sides, without the clearance its envelope adds. @param mixed $placement @return array{0:int,1:int,2:int} */
+    private static function physicalSides($placement): array
+    {
+        $dimensions = Json::at($placement, 'dimensions');
+        $side = static function (string $name) use ($dimensions): int {
+            return Json::int(Json::at(Json::at($dimensions, $name), 'ticks'), 'a placement dimension');
+        };
+        return [$side('length'), $side('width'), $side('height')];
     }
 
     /**: weight per square metre of an item's own base, at every level of the stack. @param list<Entry> $entries @param list<int|string> $loads @param int|string $maxDensity @param list<ResultIssue> $issues */
@@ -415,18 +516,17 @@ final class Stacking
     public static function occupiedVolume(Cuboid $envelope, $placement, ?ItemSpec $spec, $load)
     {
         if ($spec !== null && $spec->maxCompressionPressureKpa !== null) {
-            return Exact::mul($envelope->baseArea, self::compressedHeight($envelope, $spec, $load));
+            [$length, $width, $height] = self::physicalSides($placement);
+            $footprint = Exact::mul($length, $width);
+            return Exact::mul($footprint, self::compressedHeight($height, $footprint, $spec, $load));
         }
         if ($spec !== null && $spec->isConvexHull() && $spec->hullVertices !== null) {
             return Geometry::hullVolume(Geometry::rotateHull($spec->hullVertices, Geometry::axes(Json::text(Json::at($placement, 'orientation'), 'orientation'))));
         }
         $solid = self::placedHull($envelope, $placement, $spec);
         if ($solid === $envelope->vertices()) {
-            $dimensions = Json::at($placement, 'dimensions');
-            $side = static function (string $name) use ($dimensions): int {
-                return Json::int(Json::at(Json::at($dimensions, $name), 'ticks'), 'a placement dimension');
-            };
-            return Exact::mul(Exact::mul($side('length'), $side('width')), $side('height'));
+            [$length, $width, $height] = self::physicalSides($placement);
+            return Exact::mul(Exact::mul($length, $width), $height);
         }
         return Geometry::hullVolume($solid);
     }

@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 namespace Packvium\Domain;
+use Packvium\Support\ExactInteger;
 use Packvium\Unit\Weight;
 final readonly class PackedContainer
 {
@@ -40,7 +41,8 @@ final readonly class PackedContainer
         return $this->latticeSummary !== null ? $this->latticeSummary->usedVolumeString() : Nesting::usedVolume($this->placements);
     }
 
-    public function utilization():float{return (float)$this->usedVolumeString()/$this->container->innerDimensions->volumeScore();}
+    /** Python's `used / inner` exactly rounded: two doubles divided would round twice, and a volume in cubic ticks passes 2^53 at a few centimetres. */
+    public function utilization():float{return ExactInteger::ratio($this->usedVolumeString(),$this->container->innerDimensions->volumeString());}
 
     public function maxZTicks(): int
     {

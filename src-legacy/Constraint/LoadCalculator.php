@@ -3,6 +3,7 @@ declare(strict_types=1);
 namespace Packvium\Constraint;
 use Packvium\Constraint\Internal\{LoadAnalysis,LoadSupportGraph};
 use Packvium\Domain\Placement;
+use Packvium\Support\ExactInteger;
 use Packvium\Unit\Length;
 final class LoadCalculator
 {
@@ -23,6 +24,7 @@ final class LoadCalculator
                 $p->envelopeBox(),$p->instance->weight()->ticks,($nullsafeVariable1 = $item->maxTopLoad) ? $nullsafeVariable1->ticks : null,$item->maxStackedItems,$p->instance->id(),
                 $nesting===null?null:$item->id,($nullsafeVariable2 = $nesting) ? $nullsafeVariable2->ticks : null,
                 $item->compressionRatioPpm,$item->maxCompressionPressureKpa,
+                ExactInteger::mul($p->dimensions->length->ticks,$p->dimensions->width->ticks),
             );
         }
         if($extra!==null)$units[]=$extra;

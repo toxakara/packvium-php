@@ -18,5 +18,8 @@ final readonly class LoadUnit
         // needs, so the crush check rides the graph that is built anyway.
         public ?int $compressionRatioPpm=null,
         public ?int $maxCompressionPressureKpa=null,
+        // The item's own footprint, which the load presses on; `box` is its envelope, grown by
+        // the clearance, and it carries the support graph. A decimal string past `int`.
+        public int|string|null $footprintTicks2=null,
     ){}
 }

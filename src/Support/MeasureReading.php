@@ -4,6 +4,7 @@ namespace Packvium\Support;
 
 use ArithmeticError;
 use InvalidArgumentException;
+use Packvium\Support\Internal\MeasureOverflow;
 use Packvium\Unit\Length;
 use Packvium\Unit\Weight;
 use TypeError;
@@ -23,11 +24,13 @@ final class MeasureReading
     public const READABLE = 'readable';
     public const NEGATIVE = 'negative';
     public const UNREADABLE = 'unreadable';
+    /** A measure the reference reads whose tick count is past every engine's integers. */
+    public const TOO_LARGE = 'too_large';
 
     /**
      * @param mixed $value
      * @param class-string<Length>|class-string<Weight> $kind
-     * @return self::READABLE|self::NEGATIVE|self::UNREADABLE
+     * @return self::READABLE|self::NEGATIVE|self::UNREADABLE|self::TOO_LARGE
      */
     public static function verdict($value, string $kind, string $unit): string
     {
@@ -38,11 +41,27 @@ final class MeasureReading
         try {
             $kind::parse($normalised, $unit);
         } catch (InvalidArgumentException $error) {
+            if (\str_contains($error->getMessage(), 'exceeds integer range')) {
+                return MeasureOverflow::beyondNativeInteger($normalised, $kind, $unit);
+            }
             return \str_contains($error->getMessage(), 'cannot be negative') ? self::NEGATIVE : self::UNREADABLE;
         } catch (TypeError | ValueError | ArithmeticError $error) {
             return self::UNREADABLE;
         }
         return self::READABLE;
+    }
+
+    /**
+     * A JSON number past 2^53 - 1 is a whole number to the caller, whether `json_decode` kept it
+     * an `int` or made it a float, and its ticks are past the ceiling in every unit a bare
+     * number can carry.
+     *
+     * @param mixed $value
+     */
+    public static function isWholeBeyondExact($value): bool
+    {
+        $whole = \is_int($value) || (\is_float($value) && \is_finite($value) && \floor($value) === $value);
+        return $whole && \abs($value) > JsonValue::MAX_EXACT_MAGNITUDE;
     }
 
     /**

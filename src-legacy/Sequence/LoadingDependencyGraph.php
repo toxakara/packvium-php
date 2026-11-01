@@ -218,39 +218,82 @@ final class LoadingDependencyGraph
         if ($sortedOrder !== $expected) {
             throw new SequenceReplayError(-1, -1, 'order is not a permutation of every placement index exactly once');
         }
+        if ($placements === []) {
+            return;
+        }
         $maxDensityTicks = ($nullsafeVariable1 = $container->maxStackDensity) ? $nullsafeVariable1->ticks : null;
         // A caller may hand this any scene, validated or not, so the stacking-group rule is
         // re-checked here too -- only when some item declares a list, and only on the edges
         // of the step's own new placement, since every earlier edge was judged at its step.
         $grouped = false;
+        $hasNonStackable = false;
+        $hasLoadLimits = false;
+        $hasGroundRules = false;
         foreach ($placements as $placement) {
-            $grouped = $grouped || $placement->instance->item->acceptsStackingGroups !== [];
+            $item = $placement->instance->item;
+            $grouped = $grouped || $item->acceptsStackingGroups !== [];
+            $hasNonStackable = $hasNonStackable || !$item->stackable;
+            $hasLoadLimits = $hasLoadLimits || $item->maxTopLoad !== null || $item->maxStackedItems !== null;
+            $hasGroundRules = $hasGroundRules || (
+                $item->groundContactRule !== null
+                && $item->groundContactRule !== 'free'
+                && $placement->envelopeBox()->origin->z !== 0
+            );
         }
+        $hasLoadRules = $maxDensityTicks !== null || $grouped || $hasNonStackable || $hasLoadLimits;
+        if (!$hasLoadRules && !$hasGroundRules) {
+            return;
+        }
+        $allUnits = LoadCalculator::units($placements);
         $present = [];
+        $units = [];
+        $elevatedBases = [];
+        $anyNesting = false;
         foreach ($order as $step => $index) {
-            $present[] = $placements[$index];
-            $units = LoadCalculator::units($present);
-            $analysis = new \Packvium\Constraint\Internal\LoadAnalysis($units);
-            $problem = $analysis->overloaded()
-                ?? $analysis->stackLimitExceeded()
-                ?? $analysis->stackDensityExceeded($maxDensityTicks);
-            if ($problem === null) {
-                $counts = $analysis->stackedCounts();
-                foreach ($units as $unitIndex => $unit) {
-                    if (!$present[$unitIndex]->instance->item->stackable && $counts[$unitIndex] > 0) {
-                        $problem = ['non_stackable_item_has_load', $unit->label];
-                        break;
+            $candidate = $placements[$index];
+            $unit = $allUnits[$index];
+            $present[] = $candidate;
+            $units[] = $unit;
+            $candidateBox = $candidate->envelopeBox();
+            if ($candidateBox->origin->z !== 0) {
+                $elevatedBases[$candidateBox->origin->z] = true;
+            }
+            if ($unit->nestingItemId !== null) {
+                $anyNesting = true;
+            }
+            $problem = null;
+            $isolatedFloorStep = $candidateBox->origin->z === 0
+                && !$anyNesting
+                && !isset($elevatedBases[$candidateBox->z2()]);
+            if ($isolatedFloorStep) {
+                if ($maxDensityTicks !== null) {
+                    $bearing = \Packvium\Support\BigInt::multiply($unit->weightTicks, LoadCalculator::SQUARE_METRE_TICKS);
+                    $allowed = \Packvium\Support\BigInt::multiply($maxDensityTicks, \Packvium\Support\ExactGeometry::baseArea($candidateBox->dimensions));
+                    if (\Packvium\Support\BigInt::compare($bearing, $allowed) > 0) {
+                        $problem = ['stack_density_exceeded', $unit->label];
                     }
                 }
+            } elseif ($hasLoadRules) {
+                $analysis = new \Packvium\Constraint\Internal\LoadAnalysis($units);
+                $problem = $analysis->overloaded()
+                    ?? $analysis->stackLimitExceeded()
+                    ?? $analysis->stackDensityExceeded($maxDensityTicks);
+                if ($problem === null && $hasNonStackable) {
+                    $counts = $analysis->stackedCounts();
+                    foreach ($units as $unitIndex => $u) {
+                        if (!$present[$unitIndex]->instance->item->stackable && $counts[$unitIndex] > 0) {
+                            $problem = ['non_stackable_item_has_load', $u->label];
+                            break;
+                        }
+                    }
+                }
+                if ($problem === null && $grouped) {
+                    $last = count($present) - 1;
+                    $problem = $analysis->graph()->nonStackableFailure($present, $candidate->instance, $last);
+                }
             }
-            if ($problem === null && $grouped) {
-                $last = count($present) - 1;
-                $problem = $analysis->graph()->nonStackableFailure($present, $present[$last]->instance, $last);
-            }
-            if ($problem === null) {
-                $candidate = $present[count($present) - 1];
+            if ($problem === null && $hasGroundRules) {
                 $rule = $candidate->instance->item->groundContactRule;
-                $candidateBox = $candidate->envelopeBox();
                 if ($rule !== null && $rule !== 'free' && $candidateBox->origin->z !== 0) {
                     $support = LoadSupportGraph::candidateView(
                         array_slice($present, 0, -1), $candidate->instance, $candidateBox,

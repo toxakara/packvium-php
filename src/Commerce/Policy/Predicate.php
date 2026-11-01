@@ -38,7 +38,7 @@ final readonly class Predicate
     }
 
     /**
-     * Value equality over the JSON scalar types, matching the reference implementation's
+     * Structural equality over JSON values, matching the reference implementation's
      * semantics exactly -- including that a boolean equals the integer it stands for,
      * which is the one place a naive `===` would disagree and quietly change a decision.
      */
@@ -49,9 +49,9 @@ final readonly class Predicate
             return (is_int($left) || is_int($right)) && (int)$left === (int)$right;
         }
         if (is_array($left) && is_array($right)) {
-            if (count($left) !== count($right) || array_keys($left) !== array_keys($right)) { return false; }
+            if (count($left) !== count($right) || array_is_list($left) !== array_is_list($right)) { return false; }
             foreach ($left as $key => $entry) {
-                if (!self::equals($entry, $right[$key])) { return false; }
+                if (!array_key_exists($key, $right) || !self::equals($entry, $right[$key])) { return false; }
             }
             return true;
         }
@@ -64,8 +64,9 @@ final readonly class Predicate
     {
         if (is_string($haystack)) { return is_string($needle) && ($needle === '' || str_contains($haystack, $needle)); }
         if (!is_array($haystack)) {
-            throw new UnsupportedPredicateException('an in/not_in predicate needs a list or string value');
+            throw new UnsupportedPredicateException('an in/not_in predicate needs a list, object or string value');
         }
+        if (!array_is_list($haystack)) { return is_string($needle) && array_key_exists($needle, $haystack); }
         foreach ($haystack as $candidate) {
             if (self::equals($candidate, $needle)) { return true; }
         }

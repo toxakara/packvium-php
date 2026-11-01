@@ -158,7 +158,7 @@ final class Container
         foreach($accessDirections as $direction)if(!in_array($direction,SweptRegion::ALL_DIRECTIONS,true))throw new InvalidArgumentException("unknown movement direction {$direction}");
         // Deduplicated into the canonical order rather than kept as given: two callers
         // naming the same doors in a different order must search identically.
-        $this->accessDirections=array_values(array_filter(SweptRegion::ALL_DIRECTIONS,static function (string $d) use ($accessDirections): bool {
+        $this->accessDirections=$accessDirections===[]?[]:array_values(array_filter(SweptRegion::ALL_DIRECTIONS,static function (string $d) use ($accessDirections): bool {
             return in_array($d,$accessDirections,true);
         }));}
     /** The same container holding `$placements` before search. @param list<Placement> $placements */

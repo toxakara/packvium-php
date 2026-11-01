@@ -8,6 +8,8 @@ use Packvium\Domain\Item;
 use Packvium\Domain\ItemInstance;
 use Packvium\Domain\ShapeType;
 use Packvium\Support\BigInt;
+use Packvium\Support\ExactGeometry;
+use Packvium\Support\ExactInteger;
 
 /**
  * Lower bounds on the objective vector, and the gap against an incumbent.
@@ -203,7 +205,7 @@ final class ObjectiveBounds
             $normalisedContainers[] = [
                 'usable' => VolumeReserve::usable($container),
                 'inner' => $container->innerDimensions->volumeString(),
-                'base_area' => $container->innerDimensions->baseAreaTicks(),
+                'base_area' => ExactGeometry::baseArea($container->innerDimensions),
                 'height' => $container->innerDimensions->height->ticks,
                 'payload' => $container->maxPayload?->ticks,
                 'max_items' => $container->maxItems,
@@ -224,7 +226,7 @@ final class ObjectiveBounds
      * so a port cannot pass the arithmetic check by copying a flag it never computes.
      *
      * @param list<array{volume:string,weight:int,shrinks:bool}> $instances
-     * @param list<array{usable:string,inner:string,base_area:int,height:int,payload:?int,max_items:?int,quantity:?int,cost_minor:int}> $containers
+     * @param list<array{usable:string,inner:string,base_area:int|string,height:int,payload:?int,max_items:?int,quantity:?int,cost_minor:int}> $containers
      * @return array{int,int,int,int,int}
      */
     public static function fromNormalised(array $instances, array $containers): array
@@ -243,7 +245,7 @@ final class ObjectiveBounds
 
         $usable = array_map(static fn(array $c): string => $c['usable'], $containers);
         $inner = array_map(static fn(array $c): string => $c['inner'], $containers);
-        $areas = array_map(static fn(array $c): int => $c['base_area'], $containers);
+        $areas = array_map(static fn(array $c): int|string => ExactInteger::normalize($c['base_area']), $containers);
         $heights = array_map(static fn(array $c): int => $c['height'], $containers);
         $payloads = array_map(static fn(array $c): ?int => $c['payload'], $containers);
         $slots = array_map(static fn(array $c): ?int => $c['max_items'], $containers);
@@ -452,7 +454,7 @@ final class ObjectiveBounds
      * before summing.
      *
      * @param list<string> $volumes ascending
-     * @param list<int> $areas
+     * @param list<int|string> $areas square ticks, exact past a native int
      * @param list<int> $heights
      */
     private static function stackHeightBound(array $volumes, bool $shrinks, int $placed,
@@ -461,9 +463,9 @@ final class ObjectiveBounds
         if ($shrinks || $opened <= 0 || $areas === []) {
             return 0;
         }
-        $widest = max($areas);
+        $widest = array_reduce($areas, ExactInteger::max(...), 0);
         $tallest = max($heights);
-        if ($widest <= 0 || $tallest <= 0) {
+        if (ExactInteger::sign($widest) <= 0 || $tallest <= 0) {
             return 0;
         }
         $required = '0';

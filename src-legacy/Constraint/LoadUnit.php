@@ -50,7 +50,15 @@ final class LoadUnit
      * @var int|null
      */
     public $maxCompressionPressureKpa;
-    public function __construct(AxisAlignedBox $box, int $weightTicks, ?int $maxTopLoadTicks, ?int $maxStackedItems, string $label, ?string $nestingItemId=null, ?int $nestingHeightTicks=null, ?int $compressionRatioPpm=null, ?int $maxCompressionPressureKpa=null)
+    /**
+     * @readonly
+     * @var int|string|null
+     */
+    public $footprintTicks2 = null;
+    /**
+     * @param int|string|null $footprintTicks2
+     */
+    public function __construct(AxisAlignedBox $box, int $weightTicks, ?int $maxTopLoadTicks, ?int $maxStackedItems, string $label, ?string $nestingItemId=null, ?int $nestingHeightTicks=null, ?int $compressionRatioPpm=null, ?int $maxCompressionPressureKpa=null, $footprintTicks2=null)
     {
         $this->box = $box;
         $this->weightTicks = $weightTicks;
@@ -64,5 +72,8 @@ final class LoadUnit
         // needs, so the crush check rides the graph that is built anyway.
         $this->compressionRatioPpm = $compressionRatioPpm;
         $this->maxCompressionPressureKpa = $maxCompressionPressureKpa;
+        // The item's own footprint, which the load presses on; `box` is its envelope, grown by
+        // the clearance, and it carries the support graph. A decimal string past `int`.
+        $this->footprintTicks2 = $footprintTicks2;
     }
 }

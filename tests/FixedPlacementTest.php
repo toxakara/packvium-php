@@ -115,6 +115,7 @@ final class FixedPlacementTest extends TestCase
             'insufficient_support' => static function (array &$d): void { $d['configuration'] = ['minimum_support_ratio' => 1]; $d['fixed_placements'][0]['position']['z'] = '50'; },
             '2 box named, 1 available' => static function (array &$d): void { $d['containers'][0]['quantity'] = 1; $d['fixed_placements'][] = self::fixed('0', '0', '0', 2); },
             'max_containers is 1' => static function (array &$d): void { $d['configuration'] = ['max_containers' => 1]; $d['fixed_placements'][] = self::fixed('0', '0', '0', 2); },
+            'centre_of_gravity_unsupported' => static function (array &$d): void { $d['configuration'] = ['minimum_support_ratio' => 0.25]; $d['fixed_placements'][] = self::fixed('40', '0', '100'); },
         ];
         foreach ($cases as $fragment => $mutate) {
             $data = self::request();

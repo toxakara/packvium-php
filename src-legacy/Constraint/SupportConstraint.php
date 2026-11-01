@@ -2,6 +2,7 @@
 declare(strict_types=1);
 namespace Packvium\Constraint;
 use Packvium\Constraint\Internal\LoadSupportGraph;
+use Packvium\Support\{ExactGeometry,ExactInteger};
 /**
  * Support ratios arrive as floats from the public API but must never decide feasibility
  * in floating point. The ratio is converted once to a scaled integer and the comparison
@@ -59,13 +60,13 @@ final class SupportConstraint implements PlacementConstraint
         $required=max($this->globalMinimum,$c->item->item->minimumSupportRatio);
         if($required<=0)return ConstraintResult::allow();
         $area=$support->supportingArea;
-        $baseArea=$c->envelopeDimensions->baseAreaTicks();
-        if($area<self::requiredArea($baseArea,self::scaled($required)))
-            return ConstraintResult::reject('insufficient_support',sprintf('%d/%d < %.6f',$area,$baseArea,$required));
+        $baseArea=ExactGeometry::baseArea($c->envelopeDimensions);
+        if(ExactInteger::compare($area,self::exactRequiredArea($baseArea,self::scaled($required)))<0)
+            return ConstraintResult::reject('insufficient_support',sprintf('%s/%s < %.6f',$area,$baseArea,$required));
         // Over half of a rectangle cannot lie strictly to one side of a line through its
         // centre (central symmetry), so any support covering >50% of the base already
         // encloses the centroid and needs no hull check.
-        if($area*2>$baseArea)return ConstraintResult::allow();
+        if(ExactInteger::compare(ExactInteger::mul($area,2),$baseArea)>0)return ConstraintResult::allow();
         // Area alone is not stability: a candidate can clear the ratio
         // while overhanging its own centre of gravity, which the ratio check above
         // cannot see. Checked only once a minimum ratio is already being enforced,
@@ -73,7 +74,7 @@ final class SupportConstraint implements PlacementConstraint
         // code and no behaviour change.
         $hull=SupportPolygon::convexHull(SupportPolygon::contactHullPoints($box,$supporters));
         if(!SupportPolygon::pointInHull(SupportPolygon::doubledCentroid($box),$hull))
-            return ConstraintResult::reject('centre_of_gravity_unsupported',sprintf('%d/%d met but centroid outside the %d-point support hull',$area,$baseArea,count($hull)));
+            return ConstraintResult::reject('centre_of_gravity_unsupported',sprintf('%s/%s met but centroid outside the %d-point support hull',$area,$baseArea,count($hull)));
         return ConstraintResult::allow();
     }
 
@@ -109,5 +110,13 @@ final class SupportConstraint implements PlacementConstraint
     public static function requiredArea(int $baseArea,int $scaled):int
     {
         return intdiv($baseArea,self::SCALE)*$scaled+intdiv(($baseArea%self::SCALE)*$scaled,self::SCALE);
+    }
+
+    /** `requiredArea` for a base area past a native int too.
+     * @param int|string $baseArea
+     * @return int|string */
+    private static function exactRequiredArea($baseArea,int $scaled)
+    {
+        return is_int($baseArea)?self::requiredArea($baseArea,$scaled):ExactInteger::floorDiv(ExactInteger::mul($baseArea,$scaled),self::SCALE);
     }
 }

@@ -136,4 +136,67 @@ final class SupportPolygonTest extends TestCase
         $hull = SupportPolygon::convexHull(SupportPolygon::contactHullPoints($candidate, [$leftRail, $rightRail]));
         self::assertTrue(SupportPolygon::pointInHull(SupportPolygon::doubledCentroid($candidate), $hull));
     }
+
+    // ------------------------------------------------------- rare and absurd supports
+
+    /** @param list<AxisAlignedBox> $supporters */
+    private static function supported(AxisAlignedBox $candidate, array $supporters): bool
+    {
+        $hull = SupportPolygon::convexHull(SupportPolygon::contactHullPoints($candidate, $supporters));
+        return SupportPolygon::pointInHull(SupportPolygon::doubledCentroid($candidate), $hull);
+    }
+
+    public static function testAOneTickKnifeEdgeUnderTheCentroidCarriesTheBox(): void
+    {
+        self::assertTrue(self::supported(self::box(0, 0, 10, 10), [self::box(5, 0, 1, 10)]));
+        self::assertFalse(self::supported(self::box(0, 0, 10, 10), [self::box(6, 0, 1, 10)]));
+    }
+
+    public static function testASupporterWiderThanTheFootprintIsClippedToIt(): void
+    {
+        $points = SupportPolygon::contactHullPoints(self::box(10, 10, 10, 10), [self::box(0, 0, 100, 100)]);
+        self::assertSame([[20, 20], [20, 40], [40, 20], [40, 40]], self::pairs($points));
+    }
+
+    public static function testACornerSquareWhoseInnerCornerIsTheCentroidCarriesIt(): void
+    {
+        self::assertTrue(self::supported(self::box(0, 0, 40, 40), [self::box(0, 0, 20, 20)]));
+        self::assertFalse(self::supported(self::box(0, 0, 40, 40), [self::box(0, 0, 20, 19)]));
+    }
+
+    /** @return list<AxisAlignedBox> */
+    private static function legsOnACircle(callable $keep): array
+    {
+        $legs = [];
+        for ($degree = 0; $degree < 360; $degree++) {
+            $angle = deg2rad($degree);
+            if ($keep($angle)) {
+                $legs[] = self::box((int) round(500 + 400 * cos($angle)), (int) round(500 + 400 * sin($angle)), 1, 1);
+            }
+        }
+        return $legs;
+    }
+
+    public static function testThreeHundredAndSixtyLegsOnACircleCarryTheCentroid(): void
+    {
+        self::assertTrue(self::supported(self::box(0, 0, 1000, 1000), self::legsOnACircle(static fn(float $a): bool => true)));
+    }
+
+    public static function testLegsOnHalfACircleLeaveTheCentroidHanging(): void
+    {
+        $legs = self::legsOnACircle(static fn(float $a): bool => sin($a) > 0.1);
+        self::assertFalse(self::supported(self::box(0, 0, 1000, 1000), $legs));
+    }
+
+    public static function testRepeatedAndReorderedSupportersGiveTheSameHull(): void
+    {
+        $legs = [self::box(0, 0, 5, 5), self::box(35, 0, 5, 5), self::box(0, 35, 5, 5)];
+        $candidate = self::box(0, 0, 40, 40);
+        $hull = static fn(array $order): array => self::pairs(
+            SupportPolygon::convexHull(SupportPolygon::contactHullPoints($candidate, $order))
+        );
+        self::assertSame($hull($legs), $hull(array_reverse($legs)));
+        self::assertSame($hull($legs), $hull(array_merge($legs, $legs)));
+        self::assertTrue(self::supported($candidate, $legs));
+    }
 }

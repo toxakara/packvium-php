@@ -18,10 +18,12 @@ use Packvium\Algorithm\HomogeneousBlockSolver;
 use Packvium\Algorithm\GroupBatcher;
 use Packvium\Algorithm\LayerSolver;
 use Packvium\Algorithm\MaximalSpaceSolver;
+use Packvium\Algorithm\RawSolution;
 use Packvium\Algorithm\SearchStats;
 use Packvium\Algorithm\SingleContainerSolution;
 use Packvium\Algorithm\SolverOrchestrator;
 use Packvium\Algorithm\Space;
+use Packvium\Algorithm\SpaceSubtraction;
 use Packvium\Algorithm\TimeLimitReached;
 use Packvium\Algorithm\UnknownSolverException;
 use Packvium\Config\PackingConfig;
@@ -564,6 +566,58 @@ final class SolverTest extends TestCase
         self::assertSame(['count','volume'],self::blockStart($cartons,PackingConfig::balanced(),$box)->modes);
     }
 
+    /**
+     * `quality` with a container-plan beam runs Python's stages -- every greedy order,
+     * each item type moved last in the best greedy order, then one wide refinement of the best
+     * order found. Pinned from Python on the same request; PHP refined the first two orders
+     * whatever they scored, and had no late-type neighbourhoods.
+     */
+    public static function testAQualityBeamRunsPythonsStagedStarts(): void
+    {
+        $items=[...self::instances('b',40,40,40,['quantity'=>2]),...self::instances('a',30,30,30)];
+        $box=Container::create('c',Dimensions::mm(100,100,100));
+        $run=(new SolverOrchestrator())->solvePortfolio($items,[$box],PackingConfig::quality(),self::generous());
+        $started=array_map(static fn($record):string=>$record->id,array_values(array_filter($run->starts,static fn($record):bool=>$record->started)));
+        self::assertSame([
+            'exact_small:small_edge:greedy','exact_small:volume:greedy','exact_small:seeded_2:greedy','exact_small:seeded_3:greedy',
+            'exact_small:seeded_4:greedy','exact_small:seeded_5:greedy','homogeneous_blocks:small_edge',
+            'extreme_points:small_edge:greedy','extreme_points:volume:greedy','extreme_points:seeded_2:greedy','extreme_points:seeded_3:greedy',
+            'extreme_points:seeded_4:greedy','extreme_points:seeded_5:greedy',
+            'maximal_spaces:small_edge:greedy','maximal_spaces:volume:greedy','maximal_spaces:seeded_2:greedy','maximal_spaces:seeded_3:greedy',
+            'maximal_spaces:seeded_4:greedy','maximal_spaces:seeded_5:greedy','layer:small_edge:greedy',
+            'extreme_points:seeded_3:greedy:late_a','extreme_points:seeded_3:greedy:late_b','extreme_points:seeded_3:greedy:beam',
+        ],$started);
+    }
+
+    public static function testEachQualityStageSearchesAtItsOwnWidth(): void
+    {
+        $config=new PackingConfig(profile:SolverProfile::Quality,maxCandidatesPerItem:16,containerPlanBeamWidth:16,containerPlanNodeLimit:100_000,accessDirections:['+x']);
+        $width=static fn(string $name):PackingConfig=>(new ReflectionMethod(SolverOrchestrator::class,'startConfig'))->invoke(null,$name,$config);
+        foreach(['volume:greedy','volume:greedy:late_a'] as $name){
+            self::assertSame([1,1,1],[$width($name)->maxCandidatesPerItem,$width($name)->containerPlanBeamWidth,$width($name)->containerPlanNodeLimit]);
+            self::assertSame(['+x'],$width($name)->accessDirections);
+        }
+        self::assertSame([4,4,100_000],[$width('volume:greedy:late_a:beam')->maxCandidatesPerItem,$width('volume:greedy:late_a:beam')->containerPlanBeamWidth,$width('volume:greedy:late_a:beam')->containerPlanNodeLimit]);
+        self::assertSame($config,$width('volume:greedy:beam'));
+    }
+
+    public static function testANeighbourhoodWaitsForAGreedyExtremePointAnswer(): void
+    {
+        $stage=new ReflectionMethod(\Packvium\Algorithm\Internal\QualityStages::class,'stagedStart');
+        $items=[...self::instances('b',40,40,40),...self::instances('a',30,30,30)];
+        $layer=new LayerSolver();
+        $layerOnly=[new RawSolution('layer:volume:greedy',[],[],new SearchStats())];
+        $completed=['layer:volume:greedy'=>[$layer,'volume:greedy',$items]];
+        self::assertSame(null,$stage->invoke(null,'neighborhood:a',$layerOnly,$completed,PackingConfig::quality()));
+        $extreme=new ExtremePointSolver();
+        $late=[new RawSolution('extreme_points:volume:greedy:late_a',[],[],new SearchStats())];
+        $completed=['extreme_points:volume:greedy:late_a'=>[$extreme,'volume:greedy:late_a',$items]];
+        self::assertSame(null,$stage->invoke(null,'neighborhood:b',$late,$completed,PackingConfig::quality()));
+        [$solver,$name,$order]=$stage->invoke(null,'best:beam',$late,$completed,PackingConfig::quality());
+        self::assertSame([$extreme,'volume:greedy:late_a:beam'],[$solver,$name]);
+        self::assertSame($items,$order);
+    }
+
     public static function testBeamPackerPrecomputedFutureMatchesStandardEvaluation(): void
     {
         $box = Container::create('box', Dimensions::mm(300, 200, 200), quantity: 1);
@@ -647,6 +701,18 @@ final class SolverTest extends TestCase
         self::assertTrue($result->complete());
         self::assertCount(3, $result->containers);
         self::assertSame([], Support::problems($result, $items, $containers));
+    }
+
+    /** Every two envelopes that intersect are a valid nesting pair. */
+    private static function assertOnlyAdjacentPairsNest(ContainerState $state): void
+    {
+        foreach ($state->placements as $index => $placement) {
+            foreach (array_slice($state->placements, $index + 1) as $other) {
+                if ($placement->envelopeBox()->intersects($other->envelopeBox())) {
+                    self::assertTrue(\Packvium\Domain\Nesting::isValidNesting($placement, $other), 'two placements overlap without nesting');
+                }
+            }
+        }
     }
 
     private static function assertPhysicallySound(ContainerState $state): void
@@ -735,6 +801,20 @@ final class SolverTest extends TestCase
         self::assertGreaterThan(0,$packed);
         self::assertTrue($packed<count($items));
         self::assertSame(count($items),$packed+count($solution->unpacked));
+    }
+
+    /** 1.9.0 release frontier: twenty late-type neighbourhoods weigh one start between them. */
+    public static function testLateTypeNeighbourhoodsWeighOneStartTogetherInTheTimeSlicing(): void
+    {
+        $weights=new ReflectionMethod(SolverOrchestrator::class,'sliceWeights');
+        $solver=new ExtremePointSolver();
+        $starts=[[$solver,'small_edge:greedy',[]],[$solver,'volume:greedy',[]],[$solver,'neighborhood:a',[]],[$solver,'neighborhood:b',[]],[$solver,'best:beam',[]]];
+        self::assertSame([2,2,1,1,2],$weights->invoke(null,$starts));
+        self::assertSame([1,1],$weights->invoke(null,\array_slice($starts,0,2)));
+        $frozen=Deadline::ofMilliseconds(1000,static fn():int=>0);
+        self::assertSame(250_000_000,$frozen->share(2,8)->remainingNs());
+        self::assertSame(1_000_000_000,$frozen->share(3,3)->remainingNs());
+        self::assertSame($frozen->share(1,4)->remainingNs(),$frozen->slice(4)->remainingNs());
     }
 
     public static function testASliceKeepsTheInjectedClock(): void
@@ -1016,7 +1096,7 @@ final class SolverTest extends TestCase
     public static function testSpaceAndNodeMetricsCountTheirOwnSolverWork(): void
     {
         $stats=new SearchStats();
-        MaximalSpaceSolver::subtractAll(
+        SpaceSubtraction::subtractAll(
             [self::space(0,0,0,100,100,100)],
             [self::solid(20,20,20,30,30,30)],
             $stats,
@@ -1170,19 +1250,19 @@ final class SolverTest extends TestCase
     public static function testCarvingNothingLeavesTheSpaceUntouched(): void
     {
         $whole = self::space(0, 0, 0, 100, 100, 100);
-        self::assertCount(1, MaximalSpaceSolver::subtractAll([$whole], []));
+        self::assertCount(1, SpaceSubtraction::subtractAll([$whole], []));
     }
 
     public static function testCarvingTheWholeSpaceLeavesNothing(): void
     {
-        self::assertSame([], MaximalSpaceSolver::subtractAll(
+        self::assertSame([], SpaceSubtraction::subtractAll(
             [self::space(0, 0, 0, 100, 100, 100)], [self::solid(0, 0, 0, 100, 100, 100)]));
     }
 
     public static function testNoRemainingSpaceOverlapsTheCarvedSolid(): void
     {
         $obstacle = self::solid(20, 20, 0, 30, 30, 100);
-        foreach (MaximalSpaceSolver::subtractAll([self::space(0, 0, 0, 100, 100, 100)], [$obstacle]) as $remaining) {
+        foreach (SpaceSubtraction::subtractAll([self::space(0, 0, 0, 100, 100, 100)], [$obstacle]) as $remaining) {
             self::assertFalse((new AxisAlignedBox($remaining->origin, $remaining->dimensions))->intersects($obstacle));
         }
     }
@@ -1191,7 +1271,7 @@ final class SolverTest extends TestCase
     {
         // Without this filter every placement multiplies the space list and the solver
         // degenerates into an exponential scan of overlapping duplicates.
-        $spaces = MaximalSpaceSolver::subtractAll(
+        $spaces = SpaceSubtraction::subtractAll(
             [self::space(0, 0, 0, 100, 100, 100)], [self::solid(20, 20, 20, 30, 30, 30)]);
         foreach ($spaces as $index => $one) {
             foreach ($spaces as $position => $other) {
@@ -1219,8 +1299,8 @@ final class SolverTest extends TestCase
             $x = ($k * 131) % 2900;
             $y = ($k * 277) % 2900;
             $z = ($k * 419) % 2900;
-            $spaces = MaximalSpaceSolver::subtractAll($spaces, [self::solid($x, $y, $z, $size, $size, $size)]);
-            self::assertLessThanOrEqual(MaximalSpaceSolver::MAX_MAXIMAL_SPACES, count($spaces));
+            $spaces = SpaceSubtraction::subtractAll($spaces, [self::solid($x, $y, $z, $size, $size, $size)]);
+            self::assertLessThanOrEqual(SpaceSubtraction::MAX_MAXIMAL_SPACES, count($spaces));
         }
     }
 
@@ -1237,7 +1317,7 @@ final class SolverTest extends TestCase
         for ($k = 0; $k < 90; $k++) {
             [$l, $w, $h] = [40 + ($k * 37) % 300, 30 + ($k * 53) % 250, 20 + ($k * 71) % 200];
             [$x, $y, $z] = [($k * 131) % 2700, $k % 3 === 0 ? 0 : ($k * 277) % 1750, $k % 4 === 0 ? 0 : ($k * 419) % 1300];
-            $spaces = MaximalSpaceSolver::subtractAll($spaces, [self::solid($x, $y, $z, $l, $w, $h), self::solid($x, $y, $z, $l, $w, intdiv($h, 2))], $stats);
+            $spaces = SpaceSubtraction::subtractAll($spaces, [self::solid($x, $y, $z, $l, $w, $h), self::solid($x, $y, $z, $l, $w, intdiv($h, 2))], $stats);
             foreach ($spaces as $space) {
                 $trace .= "{$space->origin->x},{$space->origin->y},{$space->origin->z},{$space->dimensions->length->ticks},{$space->dimensions->width->ticks},{$space->dimensions->height->ticks};";
             }
@@ -1291,7 +1371,7 @@ final class SolverTest extends TestCase
         // The decisive property of a maximal-space decomposition: carving may not lose
         // room. Sampled on a lattice across the container.
         $obstacles = [self::solid(20, 20, 0, 30, 30, 100), self::solid(70, 0, 0, 30, 100, 40)];
-        $spaces = MaximalSpaceSolver::subtractAll([self::space(0, 0, 0, 100, 100, 100)], $obstacles);
+        $spaces = SpaceSubtraction::subtractAll([self::space(0, 0, 0, 100, 100, 100)], $obstacles);
         for ($x = 0; $x < 100; $x += 7) {
             for ($y = 0; $y < 100; $y += 7) {
                 for ($z = 0; $z < 100; $z += 13) {
@@ -1422,6 +1502,36 @@ final class SolverTest extends TestCase
         self::assertCount(1, $solution->state->placements);
         self::assertCount(1, $solution->unpacked);
         self::assertPhysicallySound($solution->state);
+    }
+
+    public static function testALatticeNestsADeepColumnInPairs(): void
+    {
+        // A third 120mm cup sunk 100mm into the second would reach 80mm into the first,
+        // and only an adjacent pair may overlap, so each pair is 140mm tall.
+        $nesting = ['quantity' => 5, 'nestingHeight' => Length::mm(100), 'allowedRotations' => [Rotation::LWH]];
+        $heights = static function (int $room) use ($nesting): array {
+            $solution = (new GridSolver())->packOne(
+                Container::create('c', Dimensions::mm(100, 100, $room)), 1,
+                self::instances('cup', 100, 100, 120, $nesting), PackingConfig::fast(), new SearchStats(), self::generous(),
+            );
+            self::assertOnlyAdjacentPairsNest($solution->state);
+            return array_map(static fn($placement): int => intdiv($placement->position->z, 16000), $solution->state->placements);
+        };
+
+        self::assertSame([0, 20, 140, 160, 280], $heights(400));
+        self::assertSame([0, 20, 140, 160], $heights(399));
+    }
+
+    public static function testALatticeChainsAColumnNestingAtMostHalfItsHeight(): void
+    {
+        $nesting = ['quantity' => 3, 'nestingHeight' => Length::mm(50), 'allowedRotations' => [Rotation::LWH]];
+        $solution = (new GridSolver())->packOne(
+            Container::create('c', Dimensions::mm(100, 100, 200)), 1,
+            self::instances('cup', 100, 100, 100, $nesting), PackingConfig::fast(), new SearchStats(), self::generous(),
+        );
+
+        self::assertSame([0, 800000, 1600000], array_map(static fn($placement): int => $placement->position->z, $solution->state->placements));
+        self::assertOnlyAdjacentPairsNest($solution->state);
     }
 
     public static function testTwelveRotationEquivalentItemsSplitAcrossTwoTypesStillShareOneContainer(): void

@@ -2,6 +2,7 @@
 declare(strict_types=1);
 namespace Packvium\Domain;
 use Packvium\Support\BigInt;
+use Packvium\Support\ExactGeometry;
 
 /**
  * How far the weighted centre of mass sits from the container's own centre.
@@ -41,8 +42,8 @@ final class CentreOfMass
         $doubledWeightedY = '0';
         foreach ($placements as $p) {
             $weight = (string)$p->instance->weight()->ticks;
-            $doubledCenterX = (string)(2 * $p->position->x + $p->dimensions->length->ticks);
-            $doubledCenterY = (string)(2 * $p->position->y + $p->dimensions->width->ticks);
+            $doubledCenterX = ExactGeometry::doubledCentre($p->position->x, $p->dimensions->length->ticks);
+            $doubledCenterY = ExactGeometry::doubledCentre($p->position->y, $p->dimensions->width->ticks);
             $doubledWeightedX = BigInt::add($doubledWeightedX, BigInt::multiply($weight, $doubledCenterX));
             $doubledWeightedY = BigInt::add($doubledWeightedY, BigInt::multiply($weight, $doubledCenterY));
         }
