@@ -151,8 +151,9 @@ final class Item
         if($nestingHeight!==null&&!($nestingHeight->ticks>=0&&$nestingHeight->ticks<$dimensions->height->ticks))throw new ObjectRefusal('invalid_value',"nesting_height must be at least zero and strictly less than the item's own height");
         if($stopIndex!==null&&($stopIndex<0||$stopIndex>self::MAX_EXACT_STOP_INDEX))throw new ObjectRefusal($stopIndex<0?'below_minimum':'above_maximum','stop_index must be a non-negative safe integer');
         if($value!==null&&$value<0)throw new ObjectRefusal('below_minimum','value must be non-negative');
+        if($shapeType!==ShapeType::CONVEX_HULL)foreach($allowedRotations as $requested)if(Orientations::isSigned($requested))throw new ObjectRefusal('invalid_value',Orientations::SIGNED_CODE_NEEDS_A_HULL);
         if($keepUpright)$allowedRotations=array_values(array_filter($allowedRotations,static function (string $r) {
-            return in_array($r,Rotation::upright(),true);
+            return Orientations::isUpright($r);
         }));if($allowedRotations===[])throw new ObjectRefusal('invalid_value','At least one rotation must be allowed');
         $this->id=$id;$this->dimensions=$dimensions;$this->weight=$weight??new Weight(0);$this->quantity=$quantity;$this->allowedRotations=$allowedRotations;$this->keepUpright=$keepUpright;$this->stackable=$stackable;$this->mustBeOnFloor=$mustBeOnFloor;$this->maxTopLoad=$maxTopLoad;$this->minimumSupportRatio=$minimumSupportRatio;$this->groundContactRule=$groundContactRule;$this->group=$group;$this->tags=array_values(array_unique($tags));$this->incompatibleTags=array_values(array_unique($incompatibleTags));$this->priority=$priority;$this->metadata=$metadata;$this->maxStackedItems=$maxStackedItems;$this->eligibleContainerTags=array_values(array_unique($eligibleContainerTags));$this->nestingHeight=$nestingHeight;$this->stopIndex=$stopIndex;$this->value=$value;
         $this->shapeType=$shapeType;

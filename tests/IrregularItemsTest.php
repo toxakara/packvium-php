@@ -370,6 +370,30 @@ final class IrregularItemsTest extends TestCase
         self::assertSame(['brick#1', 'cushion#1'], $placed);
     }
 
+    /**
+     * Same size and weight once made one lattice profile, so the soft type joined the rigid
+     * type's grid lattice and was stacked with no crush check: the answer came back
+     * `invalid_result` where a valid plan existed. The shape is part of the profile now.
+     */
+    public static function testACushionThatWouldBeCrushedIsLeftOutRatherThanStackedInALattice(): void
+    {
+        $cube = ['length' => '50', 'width' => '50', 'height' => '50'];
+        $result = ArrayCodec::pack([
+            'units' => ['length' => 'mm'],
+            'items' => [
+                ['id' => 'rigid', 'dimensions' => $cube, 'weight' => ['value' => '1', 'unit' => 'kg']],
+                ['id' => 'soft', 'quantity' => 2, 'dimensions' => $cube, 'weight' => ['value' => '1', 'unit' => 'kg'],
+                 'shape_type' => 'compressible', 'compression_ratio' => 0.5, 'max_compression_pressure_kpa' => 1],
+            ],
+            'containers' => [['id' => 'c', 'inner_dimensions' => ['length' => '50', 'width' => '50', 'height' => '150']]],
+            'configuration' => ['max_containers' => 1, 'time_limit_ms' => 60000, 'effort_budget' => [
+                'max_candidates_evaluated' => 1000000, 'max_placement_attempts' => 1000000, 'max_search_nodes' => 1000000]],
+        ]);
+
+        self::assertSame('best_found', $result['status']);
+        self::assertSame(['soft'], array_column($result['unpacked_items'], 'item_type'));
+    }
+
     public static function testCompressionRefreshesVolumeBeforeReserveAdmission(): void
     {
         $request = self::wireRequest([[

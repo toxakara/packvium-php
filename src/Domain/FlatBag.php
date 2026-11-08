@@ -14,21 +14,27 @@ use Packvium\Unit\Length;
  *
  * The extents only grow as boxes are added, so a verdict reached for a candidate never flips
  * when more items follow, and any subset of an admitted set is admitted.
+ *
+ * A `gusseted_bag` (1.10) has side gussets of depth G folded into each long edge: the tube
+ * round the package's y-z section is 2(W + G) long instead of 2W, so the width sum becomes
+ * b + c <= W + G. The length sum is unchanged (no bottom gusset in 1.10), and G = 0 is the
+ * flat bag. Every method here takes the gusset depth in ticks, 0 for a flat bag.
  */
 final class FlatBag
 {
-    public const KINDS=['flat_bag'];
+    public const GUSSETED_BAG='gusseted_bag';
+    public const KINDS=['flat_bag',self::GUSSETED_BAG];
 
     /** Whether a package of extents (a, b, c) passes both girth sums; the frame is the caller's. */
-    public static function girthAdmits(Dimensions $inner,int $a,int $b,int $c):bool
+    public static function girthAdmits(Dimensions $inner,int $a,int $b,int $c,int $gusset=0):bool
     {
-        return $a+$c<=$inner->length->ticks&&$b+$c<=$inner->width->ticks;
+        return $a+$c<=$inner->length->ticks&&$b+$c<=$inner->width->ticks+$gusset;
     }
 
-    /** Whether one box of these dimensions, alone at the origin, fits a flat bag. */
-    public static function fitsAlone(Dimensions $inner,Dimensions $box):bool
+    /** Whether one box of these dimensions, alone at the origin, fits a bag. */
+    public static function fitsAlone(Dimensions $inner,Dimensions $box,int $gusset=0):bool
     {
-        return $box->fitsInside($inner)&&self::girthAdmits($inner,$box->length->ticks,$box->width->ticks,$box->height->ticks);
+        return $box->fitsInside($inner)&&self::girthAdmits($inner,$box->length->ticks,$box->width->ticks,$box->height->ticks,$gusset);
     }
 
     /**

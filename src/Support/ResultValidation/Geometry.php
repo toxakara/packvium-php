@@ -10,11 +10,39 @@ use Packvium\Validation\MalformedResult;
  */
 final class Geometry
 {
-    /** Axis permutation each orientation code applies to (length, width, height). */
+    /** The six legacy orientation codes: every box a cuboid can make, and an item's default list. */
+    public const BOX_ROTATIONS = ['LWH', 'LHW', 'WLH', 'WHL', 'HLW', 'HWL'];
+
+    /**
+     * Axis permutation each of the 24 proper rotations applies to (length, width, height), in
+     * canonical table order (1.10). Written out rather than read from the engine's
+     * `Orientations`, so this table is a second statement of the contract and not a copy.
+     */
     public const ROTATIONS = [
         'LWH' => [0, 1, 2], 'LHW' => [0, 2, 1], 'WLH' => [1, 0, 2],
         'WHL' => [1, 2, 0], 'HLW' => [2, 0, 1], 'HWL' => [2, 1, 0],
+        '+L-W-H' => [0, 1, 2], '-L+W-H' => [0, 1, 2], '-L-W+H' => [0, 1, 2],
+        '+L-H+W' => [0, 2, 1], '+L+H-W' => [0, 2, 1], '-L-H-W' => [0, 2, 1],
+        '+W-L+H' => [1, 0, 2], '+W+L-H' => [1, 0, 2], '-W-L-H' => [1, 0, 2],
+        '+W-H-L' => [1, 2, 0], '-W+H-L' => [1, 2, 0], '-W-H+L' => [1, 2, 0],
+        '+H-L-W' => [2, 0, 1], '-H+L-W' => [2, 0, 1], '-H-L+W' => [2, 0, 1],
+        '+H-W+L' => [2, 1, 0], '+H+W-L' => [2, 1, 0], '-H-W-L' => [2, 1, 0],
     ];
+
+    /** The sign each container axis carries under each code; a box ignores it, a hull does not. The legacy codes negate x exactly when their permutation is odd. */
+    public const ROTATION_SIGNS = [
+        'LWH' => [1, 1, 1], 'LHW' => [-1, 1, 1], 'WLH' => [-1, 1, 1],
+        'WHL' => [1, 1, 1], 'HLW' => [1, 1, 1], 'HWL' => [-1, 1, 1],
+        '+L-W-H' => [1, -1, -1], '-L+W-H' => [-1, 1, -1], '-L-W+H' => [-1, -1, 1],
+        '+L-H+W' => [1, -1, 1], '+L+H-W' => [1, 1, -1], '-L-H-W' => [-1, -1, -1],
+        '+W-L+H' => [1, -1, 1], '+W+L-H' => [1, 1, -1], '-W-L-H' => [-1, -1, -1],
+        '+W-H-L' => [1, -1, -1], '-W+H-L' => [-1, 1, -1], '-W-H+L' => [-1, -1, 1],
+        '+H-L-W' => [1, -1, -1], '-H+L-W' => [-1, 1, -1], '-H-L+W' => [-1, -1, 1],
+        '+H-W+L' => [1, -1, 1], '+H+W-L' => [1, 1, -1], '-H-W-L' => [-1, -1, -1],
+    ];
+
+    /** Orientations that keep the item's own height vertical and pointing up: z takes `+H`. */
+    public const UPRIGHT_ROTATIONS = ['LWH', 'WLH', '-L-W+H', '+W-L+H'];
 
     /** `ROTATIONS[orientation]`. @return array{0:int,1:int,2:int} */
     public static function axes(string $orientation): array
@@ -71,27 +99,26 @@ final class Geometry
     }
 
     /**
-     * Reorient a hull the way `ROTATIONS` reorients its box, flipping one axis on an odd
-     * permutation so it stays a proper rotation, then translated so its bounds start at 0.
+     * Reorient a hull by one of the 24 proper rotations, without ever mirroring it:
+     * `v'[i] = s[i] * v[src[i]]` from `ROTATIONS` and `ROTATION_SIGNS`, where every code has
+     * determinant +1. The result is translated so its bounds start at 0, the frame a placement
+     * position is expressed in.
      *
      * @param list<array{0:int|string,1:int|string,2:int|string}> $vertices
-     * @param array{0:int,1:int,2:int} $axes
      * @return list<array{0:int|string,1:int|string,2:int|string}>
      */
-    public static function rotateHull(array $vertices, array $axes): array
+    public static function rotateHull(array $vertices, string $orientation): array
     {
-        $inversions = 0;
-        for ($first = 0; $first < 3; ++$first) {
-            for ($second = $first + 1; $second < 3; ++$second) {
-                if ($axes[$first] > $axes[$second]) {
-                    ++$inversions;
-                }
-            }
-        }
+        $axes = self::axes($orientation);
+        $signs = self::ROTATION_SIGNS[$orientation];
         $turned = [];
         foreach ($vertices as $vertex) {
-            $x = $vertex[$axes[0]];
-            $turned[] = [$inversions % 2 === 1 ? Exact::negate($x) : $x, $vertex[$axes[1]], $vertex[$axes[2]]];
+            $point = [];
+            for ($axis = 0; $axis < 3; ++$axis) {
+                $value = $vertex[$axes[$axis]];
+                $point[] = $signs[$axis] < 0 ? Exact::negate($value) : $value;
+            }
+            $turned[] = $point;
         }
         if ($turned === []) {
             throw MalformedResult::shape('a hull without vertices');

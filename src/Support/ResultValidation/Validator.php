@@ -38,6 +38,7 @@ final class Validator
         $issues = [];
         $validated = Lattice::materialize($coordinatesRequired, $result, $items, $containers, $clearance, $issues);
         Accounting::checkStructure($validated, $issues);
+        self::checkCurrency($request, $validated, $issues);
         Facts::checkAlgorithmMetrics($validated, $issues);
         Facts::checkEffortBudget($request, $validated, $issues);
         Facts::checkResultFacts($validated, $issues);
@@ -49,11 +50,28 @@ final class Validator
         self::checkContainerCounts($validated, $configuration, $containers, $issues);
 
         ObjectiveCheck::checkFixedPlacements($request, $validated, $unit, $issues);
+        PlacementIds::check($result, $issues);
         ObjectiveCheck::checkGroups($request, $validated, $issues);
         ObjectiveCheck::checkSolverSelection($request, $validated, $issues);
         $score = ObjectiveCheck::check($request, $validated, $context, $fabricated, $issues);
         Bound::check($request, $validated, $items, $containers, $score, $issues);
         return $issues;
+    }
+
+    /**
+     * The result echoes the request's currency, and states none the request did not declare.
+     * A null is the field left out, on either side. O(1).
+     *
+     * @param mixed $request @param mixed $result @param list<ResultIssue> $issues
+     */
+    private static function checkCurrency($request, $result, array &$issues): void
+    {
+        $requested = Json::get($request, 'currency');
+        $reported = Json::get($result, 'currency');
+        if (!Json::equals($reported, $requested)) {
+            $issues[] = new ResultIssue('currency_mismatch', 'reported ' . PyFormat::repr($reported)
+                . ', requested ' . PyFormat::repr($requested));
+        }
     }
 
     /** @param mixed $result @param list<ResultIssue> $issues */

@@ -53,6 +53,7 @@ final class ResultValidationBoundTest extends TestCase
             self::skip('the shared cross-language scene fixture is not part of this package');
         }
         $scene = \json_decode((string)\file_get_contents($path), true);
+        self::assertSame('packvium-objective-bounds/v2', $scene['format']);
         $compared = 0;
         foreach (\array_merge($scene['cases'], $scene['edges']) as $case) {
             $containers = \array_map(static function (array $container): array {
@@ -69,7 +70,15 @@ final class ResultValidationBoundTest extends TestCase
             }, $case['containers']);
             $shrinks = \in_array(true, \array_column($case['instances'], 'shrinks'), true);
             $computed = Bound::lowerBound(self::runs($case['instances'], 'volume'), self::runs($case['instances'], 'weight'), $shrinks, $containers);
-            self::assertSame($case['bounds'], $computed, 'bound diverges from the oracle on ' . ($case['name'] ?? $case['fixture']));
+            $name = $case['name'] ?? $case['fixture'];
+            self::assertSame($case['bounds'], $computed, "bound diverges from the oracle on {$name}");
+            $volumes = self::runs($case['instances'], 'volume');
+            $weights = self::runs($case['instances'], 'weight');
+            $values = self::runs($case['instances'], 'value');
+            foreach ($case['objectives'] as $objective => $expected) {
+                [$stated] = Bound::objectiveBound($volumes, $weights, $values, $shrinks, $containers, $objective);
+                self::assertSame($expected, $stated, "{$objective} diverges from the oracle on {$name}");
+            }
             ++$compared;
         }
         self::assertGreaterThan(400, $compared);
@@ -85,6 +94,39 @@ final class ResultValidationBoundTest extends TestCase
         $container['quantity'] = null;
         self::assertSame([0, 1, 3, 1000000, 0], Bound::lowerBound([[0, 2]], [[1, 2]], false, [$container]));
         self::assertSame([1, 0, 0, 0, 0], Bound::lowerBound([[1, 1]], [[0, 1]], false, []));
+    }
+
+    /**: an objective's own key past the portable ceiling withholds that objective alone. */
+    public static function testAnObjectiveKeyPastThePortableCeilingWithholdsOnlyThatObjective(): void
+    {
+        $container = [
+            'inner_volume' => 1000, 'base_area' => 100, 'height' => 10, 'usable' => 1000, 'cost_minor' => 0,
+            'payload' => null, 'max_items' => null, 'quantity' => 1,
+        ];
+        $values = Bound::runs([[9007199254740991, 2], [1, 1]]);
+        self::assertSame([null, 'the maximum_value key is past the portable ceiling'],
+            Bound::objectiveBound([[600, 3]], [[0, 3]], $values, false, [$container], 'maximum_value'));
+        self::assertSame([[444445, 2, 1, 0, 400000], ''],
+            Bound::objectiveBound([[600, 3]], [[0, 3]], $values, false, [$container], 'maximum_volume'));
+        self::assertSame([[0, 0, 1, 0, 0], ''],
+            Bound::objectiveBound([[600, 3]], [[0, 3]], $values, true, [$container], 'open_dimension_height'));
+        // An unlimited inventory and a request of nothing both force no volume out.
+        $container['quantity'] = null;
+        self::assertSame(0, Bound::objectiveBound([[600, 3]], [[0, 3]], $values, false, [$container], 'maximum_volume')[0][0]);
+        self::assertSame(0, Bound::objectiveBound([], [], [], false, [$container], 'maximum_volume')[0][0]);
+    }
+
+    /**: a request's `value` reaches the stated `maximum_value` bound end to end. */
+    public static function testAMaximumValueBoundIsReadFromTheRequestsValues(): void
+    {
+        $request = self::REQUEST;
+        $request['items'][0]['quantity'] = 3;
+        $request['items'][0]['value'] = 5;
+        $request['containers'][0]['quantity'] = 1;
+        $request['configuration'] = ['objective' => 'maximum_value'];
+        $result = ArrayCodec::pack($request);
+        $result['optimality'] = ['code' => 'not_proven', 'lower_bound' => [1, 6]];
+        self::assertContains('reported [1, 6], recomputed [1, 5]', \array_map(static function (ResultIssue $issue): string { return $issue->detail; }, validate($request, $result)));
     }
 
     /** @param array<string,mixed> $optimality @return list<string> */

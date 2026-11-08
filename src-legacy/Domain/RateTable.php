@@ -40,6 +40,11 @@ final class RateTable
      */
     public $fuelSurchargePermille = 0;
     /**
+     * @readonly
+     * @var string|null
+     */
+    public $currency;
+    /**
      * @param list<int> $weightBracketsG
      * @param list<int> $pricesMinor
      */
@@ -47,12 +52,16 @@ final class RateTable
         array $weightBracketsG,
         array $pricesMinor,
         int $minimumChargeMinor = 0,
-        int $fuelSurchargePermille = 0
+        int $fuelSurchargePermille = 0,
+        ?string $currency = null
     ) {
         $this->weightBracketsG = $weightBracketsG;
         $this->pricesMinor = $pricesMinor;
         $this->minimumChargeMinor = $minimumChargeMinor;
         $this->fuelSurchargePermille = $fuelSurchargePermille;
+        // The ISO 4217 code the prices are in, or null for the request's own (1.10). Checked
+        // where the table sits in a request, against the request's currency, by `Packer::pack`.
+        $this->currency = $currency;
         if ($weightBracketsG === []) {
             throw new ObjectRefusal('invalid_value', 'rate_table requires at least one weight bracket');
         }

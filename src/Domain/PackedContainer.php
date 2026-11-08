@@ -77,17 +77,22 @@ final readonly class PackedContainer
     /**
      * The largest envelope x2, y2 and z2 of its placements: a flat bag's conformed package
      *, or a made-to-measure box's extent before it is rounded onto the machine grid
-     *; null for any other container. O(p).
+     *; a pallet's deck grown by the overhang it used, at its load's height;
+     * null for any other container. O(p).
      */
     public function achievedDimensions():?Dimensions
     {
+        $deck=$this->container->deck;
+        if($deck!==null)return PalletOverhang::achievedDimensions($deck,$this->placements);
         if(!$this->container->isFlatBag()&&$this->container->madeToMeasure===null)return null;
         return FlatBag::asDimensions(FlatBag::extentOf($this->placements));
     }
 
-    /** What a carrier measures: a bag's achieved package, else the declared outer size. */
+    /** What a carrier measures: a bag's achieved package, a pallet's footprint grown by its overhang, else the declared outer size. */
     public function billedDimensions():Dimensions
     {
+        $deck=$this->container->deck;
+        if($deck!==null)return PalletOverhang::billedDimensions($this->container,$deck,$this->placements);
         $achieved=$this->container->isFlatBag()?$this->achievedDimensions():null;
         return $achieved??$this->container->outerDimensions??$this->container->innerDimensions;
     }

@@ -52,6 +52,19 @@ final class Units
         if (!Json::isDict($units)) {
             throw MalformedResult::contract('units must be an object');
         }
+        // A key other than `length`, the first in code-point order. PHP turns a
+        // numeric key into an int, so each is compared as the string it was; UTF-8 byte
+        // order is code-point order.
+        $unknown = \array_values(\array_filter(
+            \array_map('strval', \array_keys($units)),
+            static function (string $key): bool {
+                return $key !== 'length';
+            }
+        ));
+        if ($unknown !== []) {
+            \usort($unknown, 'strcmp');
+            throw MalformedResult::contract('units.' . $unknown[0] . ' is not a known field');
+        }
         $length = Json::get($units, 'length');
         if ($length === null) {
             return 'mm';

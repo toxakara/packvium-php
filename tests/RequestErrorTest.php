@@ -192,7 +192,9 @@ final class RequestErrorTest extends TestCase
     public static function testARefusalWithItsOwnCodeIsNotRelabelled(): void
     {
         $request = self::request();
-        $request['containers'][0]['pallet_overhang_limit'] = '10';
+        // A pallet's axles are positioned in the declared frame its overhang widens.
+        $request['containers'][0]['pallet_overhang_limit'] = ['length' => '10', 'width' => '10'];
+        $request['containers'][0]['axles'] = [['position' => '0'], ['position' => '10']];
         self::assertThrows(UnsupportedFeatureException::class, static fn() => ArrayCodec::pack($request));
 
         $request = self::request();

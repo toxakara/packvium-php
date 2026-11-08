@@ -22,22 +22,6 @@ final class TopLoadConstraint implements PlacementConstraint
     public function evaluate(ConstraintContext $c):ConstraintResult
     {
         if(!$c->stackSensitive)return ConstraintResult::allow();
-        $item=$c->item->item;
-        $unit=new LoadUnit(
-            $c->envelopeBox(),$c->item->weight()->ticks,($nullsafeVariable1 = $item->maxTopLoad) ? $nullsafeVariable1->ticks : null,$item->maxStackedItems,$c->item->id(),
-            $item->nestingHeight===null?null:$item->id,($nullsafeVariable2 = $item->nestingHeight) ? $nullsafeVariable2->ticks : null,
-            $item->compressionRatioPpm,$item->maxCompressionPressureKpa,
-            ExactInteger::mul($c->dimensions->length->ticks,$c->dimensions->width->ticks),
-        );
-        [$units,$graph]=($this->support = $this->support ?? new PlacedSupportBase())->withCandidate($c->placements,$unit);
-        $nonStackable=$graph->nonStackableFailure($c->placements,$c->item,count($units)-1);
-        if($nonStackable!==null)return ConstraintResult::reject($nonStackable[0],$nonStackable[1]);
-        $densityLimit=($nullsafeVariable3 = $c->container->maxStackDensity) ? $nullsafeVariable3->ticks : null;
-        $analysis=new LoadAnalysis($units,$graph);
-        $failure=$analysis->overloaded()
-            ??$analysis->crushed()
-            ??$analysis->stackLimitExceeded()
-            ??$analysis->stackDensityExceeded($densityLimit);
-        return $failure===null?ConstraintResult::allow():ConstraintResult::reject($failure[0],$failure[1]);
+        return ($this->support = $this->support ?? new PlacedSupportBase())->evaluateTopLoad($c);
     }
 }

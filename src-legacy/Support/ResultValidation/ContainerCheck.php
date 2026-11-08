@@ -55,6 +55,45 @@ final class ContainerCheck
     }
 
     /**
+     * The deck grown by the overhang the placements use past each of its edges.
+     *
+     * @param mixed $packed @param array{0:int|string,1:int|string,2:int|string,3:int|string} $deck @param int|string $clearance
+     * @return array{0:int|string,1:int|string}
+     */
+    public static function palletFootprint($packed, array $deck, $clearance): array
+    {
+        [$x, $y, $length, $width] = $deck;
+        [$lowX, $lowY, $highX, $highY] = [$x, $y, Exact::add($x, $length), Exact::add($y, $width)];
+        foreach (Json::items(Json::at($packed, 'placements'), 'placements') as $placement) {
+            $box = self::envelope($placement, $clearance);
+            $lowX = Exact::compare($box->x, $lowX) < 0 ? $box->x : $lowX;
+            $lowY = Exact::compare($box->y, $lowY) < 0 ? $box->y : $lowY;
+            $highX = Exact::max($highX, $box->x2);
+            $highY = Exact::max($highY, $box->y2);
+        }
+        return [Exact::sub($highX, $lowX), Exact::sub($highY, $lowY)];
+    }
+
+    /**
+     * What a carrier measures: a bag's package; a pallet's declared footprint or its
+     * grown deck, the larger per axis; else the declared outer, else inner size.
+     *
+     * @param mixed $packed @param int|string $clearance @return array{0:int|string,1:int|string,2:int|string}
+     */
+    public static function billedSize($packed, ContainerSpec $spec, $clearance): array
+    {
+        if ($spec->flatBag) {
+            return self::achievedExtent($packed, $clearance);
+        }
+        if ($spec->deck === null) {
+            return $spec->outer ?? $spec->inner;
+        }
+        [$length, $width] = self::palletFootprint($packed, $spec->deck, $clearance);
+        $base = $spec->outer ?? [$spec->deck[2], $spec->deck[3], $spec->inner[2]];
+        return [Exact::max($base[0], $length), Exact::max($base[1], $width), $base[2]];
+    }
+
+    /**
      * `achieved_dimensions` is present exactly when the container declares a soft size, and equals
      * the tight extent; a flat bag's extent must pass the girth rule.
      *
@@ -72,6 +111,9 @@ final class ContainerCheck
             return;
         }
         [$a, $b, $c] = self::achievedExtent($packed, $clearance);
+        if ($spec->deck !== null) {
+            [$a, $b] = self::palletFootprint($packed, $spec->deck, $clearance);
+        }
         $stated = null;
         if (Json::isDict($reported)) {
             $stated = [];
@@ -82,8 +124,9 @@ final class ContainerCheck
         if (!self::matches($stated, [$a, $b, $c])) {
             $issues[] = new ResultIssue('achieved_dimensions_mismatch', "{$packedId}: reported " . self::optionalTuple($stated) . ', computed ' . PyFormat::intTuple([$a, $b, $c]));
         }
-        if ($spec->flatBag && (Exact::compare(Exact::add($a, $c), $spec->inner[0]) > 0 || Exact::compare(Exact::add($b, $c), $spec->inner[1]) > 0)) {
-            $issues[] = new ResultIssue('bag_girth_exceeded', "{$packedId}: a + c = " . Exact::add($a, $c) . ', b + c = ' . Exact::add($b, $c) . ", flat size {$spec->inner[0]} x {$spec->inner[1]}");
+        if ($spec->flatBag && (Exact::compare(Exact::add($a, $c), $spec->inner[0]) > 0 || Exact::compare(Exact::add($b, $c), Exact::add($spec->inner[1], $spec->sideGusset)) > 0)) {
+            $gusset = Exact::sign($spec->sideGusset) === 0 ? '' : ", side gusset {$spec->sideGusset}";
+            $issues[] = new ResultIssue('bag_girth_exceeded', "{$packedId}: a + c = " . Exact::add($a, $c) . ', b + c = ' . Exact::add($b, $c) . ", flat size {$spec->inner[0]} x {$spec->inner[1]}{$gusset}");
         }
         $packedId->verify();
     }
@@ -129,6 +172,36 @@ final class ContainerCheck
     }
 
     /**
+     * Whether a reported box larger than the tight cut is a reserve cut: the tight box
+     * breaks the void-fill reserve, and the reported one is on the machine grid between the tight
+     * box and the maximum. That it keeps the reserve is the ordinary reserve check's. Reads the
+     * reported used volume, which `used_volume_mismatch` holds to the placements. O(1).
+     *
+     * @param mixed $packed @param array{0:int|string,1:int|string,2:int|string} $tight @param list<mixed>|null $reported
+     */
+    private static function reserveCut($packed, ContainerSpec $spec, MachineSpec $machine, array $tight, ?array $reported): bool
+    {
+        if ($spec->voidFillReserveRatio->compareInt(0) === 0 || $reported === null) {
+            return false;
+        }
+        foreach ($reported as $axis => $side) {
+            if (!\is_int($side) || Exact::compare($tight[$axis], $side) > 0 || Exact::compare($side, $spec->inner[$axis]) > 0
+                || Exact::sign(Exact::mod(Exact::sub($side, $machine->minimum[$axis]), $machine->increment[$axis])) !== 0) {
+                return false;
+            }
+        }
+        $used = Json::get($packed, 'used_volume_ticks3');
+        if (!\is_string($used) || \preg_match('/^[0-9]+$/', $used) !== 1) {
+            return false;
+        }
+        $volume = Exact::mul(Exact::mul($tight[0], $tight[1]), $tight[2]);
+        $scaled = self::ratioPpm($spec->voidFillReserveRatio);
+        $reserved = Exact::add(Exact::mul(Exact::floorDiv($volume, self::SCORE_SCALE), $scaled),
+            Exact::floorDiv(Exact::mul(Exact::mod($volume, self::SCORE_SCALE), $scaled), self::SCORE_SCALE));
+        return Exact::compare(Exact::normalize(\ltrim($used, '0') ?: '0'), Exact::sub($volume, $reserved)) > 0;
+    }
+
+    /**
      * Recompute a made-to-measure container's box from its placements alone and return the spec
      * every later check uses: the recomputed box, never the reported one.
      *
@@ -167,6 +240,10 @@ final class ContainerCheck
             }
         }
         $reportedInner = self::reportedTicks(Json::get($packed, 'inner_dimensions'));
+        if (!self::matches($reportedInner, $fabricated) && self::reserveCut($packed, $spec, $machine, $fabricated, $reportedInner)) {
+            /** @var array{0:int,1:int,2:int} $reportedInner reserveCut admits integer sides alone */
+            $fabricated = $reportedInner;
+        }
         if (!self::matches($reportedInner, $fabricated)) {
             $issues[] = new ResultIssue('fabricated_dimensions_mismatch', "{$containerId}: reported " . self::optionalTuple($reportedInner) . ', computed ' . PyFormat::intTuple($fabricated));
         }
@@ -262,6 +339,9 @@ final class ContainerCheck
         self::checkPairs($entries, $packedId, $issues);
         [$supporters, $directAbove] = Stacking::supportGraph($entries);
         Stacking::checkSupportAndLoad($entries, $supporters, $directAbove, $globalSupport, $issues);
+        if ($spec->deck !== null) {
+            Stacking::checkDeckSupport($entries, $spec->deck, $globalSupport, $issues);
+        }
         $loads = Stacking::propagateLoad($entries, $supporters);
         Stacking::checkStackTopLoad($entries, $loads, $issues);
         if ($spec->maxStackDensity !== null) {

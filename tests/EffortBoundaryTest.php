@@ -11,6 +11,7 @@ use Packvium\Algorithm\EffortBudget;
 use Packvium\Algorithm\ExtremePointSolver;
 use Packvium\Algorithm\MaximalSpaceSolver;
 use Packvium\Algorithm\SearchStats;
+use Packvium\Algorithm\Space;
 use Packvium\Algorithm\SolverOrchestrator;
 use Packvium\Algorithm\TimeLimitReached;
 use Packvium\Config\PackingConfig;
@@ -18,8 +19,10 @@ use Packvium\Constraint\ConstraintSet;
 use Packvium\Domain\Container;
 use Packvium\Domain\Dimensions;
 use Packvium\Domain\Item;
+use Packvium\Domain\Point;
 use Packvium\Extension\DefaultCandidateScorer;
 use Packvium\Serialization\ArrayCodec;
+use Packvium\Unit\Weight;
 
 /**
  * An effort budget names a stop, never a counter that merely reached its limit.
@@ -209,6 +212,23 @@ final class EffortBoundaryTest extends TestCase
     private static function cubes(int $quantity): array
     {
         return Item::create('cube', Dimensions::mm(30, 20, 10), quantity: $quantity)->instances();
+    }
+
+    public static function testAnItemNoSpaceCanTakeStillChecksTheClockOncePerSpace(): void
+    {
+        // An item past the container's payload is refused before any space is scanned, yet the
+        // scan it skips must stay as interruptible as the one it replaces: one clock check per space.
+        $state = new ContainerState(Container::create('c', Dimensions::mm(100, 100, 100), maxPayload: new Weight(1)), 1);
+        [$heavy] = Item::create('heavy', Dimensions::mm(10, 10, 10), new Weight(2))->instances();
+        $space = new Space(new Point(0, 0, 0), Dimensions::mm(100, 100, 100));
+        $config = PackingConfig::balanced();
+        $choose = static fn(Deadline $deadline): mixed => CandidateFinder::chooseInSpaces(
+            $state, [$space, $space], $heavy, $config, ConstraintSet::defaults(0.0), new SearchStats(), $deadline,
+            new DefaultCandidateScorer(),
+        );
+
+        self::assertNull($choose(Deadline::ofMilliseconds(60_000)));
+        self::assertThrows(TimeLimitReached::class, static fn() => $choose(new Deadline(0, static fn(): int => 1)));
     }
 
     public static function testAFeasibleCandidatePastItsLimitStopsTheScanInsideAPoint(): void

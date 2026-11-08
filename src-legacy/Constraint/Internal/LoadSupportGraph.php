@@ -35,6 +35,10 @@ final class LoadSupportGraph
     private $descending;
     /** @var list<int>|null */
     private $priorDescending;
+    /** @var array<int,list<array{0:int,1:int,2:int,3:int,4:int}>>|null */
+    private $planeByTop;
+    /** @var array<int,list<array{0:int,1:int,2:int,3:int,4:int}>>|null */
+    private $planeByBottom;
     /** @var list<Placement>|null */
     private static $cachedPlanePlacements;
     /** @var array<int,list<array{0:int,1:AxisAlignedBox,2:int,3:int,4:int,5:int}>> */
@@ -137,12 +141,63 @@ final class LoadSupportGraph
         $graph=clone $this;
         $graph->descending=null;
         $graph->priorDescending=$this->descendingIndices();
+        $graph->planeByTop=null;
+        $graph->planeByBottom=null;
         $graph->face=$this->face->withBox($unit->box);
         $graph->units[]=$unit;
         // Without nesting this graph *is* the face graph, so read the edges straight off
         // it rather than patching a copy of the old ones. Re-deriving them by hand would
         // be a second implementation of the same rule, free to drift from the first.
         return $graph;
+    }
+
+    public function isNested():bool{return $this->nested;}
+
+    /** @return list<ContactEdge> */
+    public function contactsBelow(AxisAlignedBox $box):array
+    {
+        if($this->planeByTop===null)$this->buildPlaneExtents();
+        $entries=$this->planeByTop[$box->origin->z]??[];
+        if($entries===[])return [];
+        $bx1=$box->origin->x;$by1=$box->origin->y;$bx2=$box->x2();$by2=$box->y2();
+        $out=[];
+        foreach($entries as [$otherIndex,$ox1,$oy1,$ox2,$oy2]){
+            $dx=($bx2<$ox2?$bx2:$ox2)-($bx1>$ox1?$bx1:$ox1);
+            if($dx<=0)continue;
+            $dy=($by2<$oy2?$by2:$oy2)-($by1>$oy1?$by1:$oy1);
+            if($dy>0)$out[]=new ContactEdge($otherIndex,ExactInteger::mul($dx,$dy));
+        }
+        return $out;
+    }
+
+    /** @return list<ContactEdge> */
+    public function contactsAbove(AxisAlignedBox $box):array
+    {
+        if($this->planeByBottom===null)$this->buildPlaneExtents();
+        $entries=$this->planeByBottom[$box->z2()]??[];
+        if($entries===[])return [];
+        $bx1=$box->origin->x;$by1=$box->origin->y;$bx2=$box->x2();$by2=$box->y2();
+        $out=[];
+        foreach($entries as [$otherIndex,$ox1,$oy1,$ox2,$oy2]){
+            $dx=($bx2<$ox2?$bx2:$ox2)-($bx1>$ox1?$bx1:$ox1);
+            if($dx<=0)continue;
+            $dy=($by2<$oy2?$by2:$oy2)-($by1>$oy1?$by1:$oy1);
+            if($dy>0)$out[]=new ContactEdge($otherIndex,ExactInteger::mul($dx,$dy));
+        }
+        return $out;
+    }
+
+    private function buildPlaneExtents():void
+    {
+        $byTop=[];$byBottom=[];
+        foreach($this->units as $index=>$unit){
+            $b=$unit->box;
+            $entry=[$index,$b->origin->x,$b->origin->y,$b->x2(),$b->y2()];
+            $byTop[$b->z2()][]=$entry;
+            $byBottom[$b->origin->z][]=$entry;
+        }
+        $this->planeByTop=$byTop;
+        $this->planeByBottom=$byBottom;
     }
 
     /** @return list<int> Canonical load order, shared across candidate siblings. */
@@ -206,7 +261,7 @@ final class LoadSupportGraph
     }
 
     /** Why `$lower` refuses an item of `$upperGroup` resting directly on it, or null. O(1). */
-    private static function stackingRefusal(Item $lower,?string $upperGroup):?string
+    public static function stackingRefusal(Item $lower,?string $upperGroup):?string
     {
         if(!$lower->stackable)return 'non_stackable';
         if(!$lower->acceptsStackingGroup($upperGroup))return 'stacking_group_incompatible';

@@ -32,20 +32,40 @@ final readonly class Container
      * carries the container with this emptied again (docs/PLAN-REVISIONS.md).
      *
      * `$deformableBoundary`: `'flat_bag'` makes this a flexible bag whose package conforms to its
-     * contents (`FlatBag`); null is a rigid container.
+     * contents (`FlatBag`); `'gusseted_bag'` is one whose width girth is widened by
+     * `$sideGussetDepth`, which that kind requires and every other container refuses (1.10).
+     * null is a rigid container.
+     *
+     * `$palletOverhangLimit`: how far a load may pass this pallet deck's edges (,
+     * `PalletOverhang`). `$deck`: the deck inside a solving frame, set only by
+     * `PalletOverhang::solvingFrame`, which widens `$innerDimensions` to the frame and drops the
+     * limit.
      *
      * @param list<Obstacle> $obstacles @param list<string> $tags @param array<string,int> $tagLimits @param array{0:Axle,1:Axle}|null $axles @param list<string> $accessDirections @param list<Placement> $preloaded
      */
-    public function __construct(public string $id,public Dimensions $innerDimensions,public ?Dimensions $outerDimensions=null,public Weight $tareWeight=new Weight(0),public ?Weight $maxPayload=null,public int $costMinor=0,public ?int $quantity=null,public array $obstacles=[],public array $tags=[],public ?int $maxItems=null,public array $metadata=[],public float $voidFillReserveRatio=0.0,public array $tagLimits=[],public ?Weight $maxStackDensity=null,public ?array $axles=null,public ?RateTable $rateTable=null,array $accessDirections=[],public array $preloaded=[],public ?string $deformableBoundary=null,public ?MadeToMeasure $madeToMeasure=null)
-    {if($id==='')throw new ObjectRefusal('invalid_value','Container id is required');$madeToMeasure?->admits([$innerDimensions->length->ticks,$innerDimensions->width->ticks,$innerDimensions->height->ticks]);if($deformableBoundary!==null)self::requireBagFields($deformableBoundary,$obstacles,$axles,$accessDirections,$maxStackDensity,$outerDimensions,$voidFillReserveRatio);if($quantity!==null&&$quantity<=0)throw new ObjectRefusal('below_minimum','Container quantity must be positive');if($costMinor<0)throw new ObjectRefusal('below_minimum','Container cost cannot be negative');if($maxItems!==null&&$maxItems<1)throw new ObjectRefusal('below_minimum','Container max_items must be at least 1');if(!($voidFillReserveRatio>=0&&$voidFillReserveRatio<=1))throw ObjectRefusal::ratio($voidFillReserveRatio,'void_fill_reserve_ratio must be between 0 and 1');foreach($tagLimits as $limit)if($limit<1)throw new ObjectRefusal('below_minimum','tag_limits must be at least 1');if($outerDimensions!==null&&!$innerDimensions->fitsInside($outerDimensions))throw new ObjectRefusal('invalid_value','Outer dimensions cannot be smaller than inner dimensions');$boundary=new AxisAlignedBox(new Point(0,0,0),$innerDimensions);foreach($obstacles as $o)foreach($o->boxes() as $box)if(!$boundary->contains($box))throw new ObjectRefusal('invalid_value',"Obstacle {$o->id} lies outside container");
+    public function __construct(public string $id,public Dimensions $innerDimensions,public ?Dimensions $outerDimensions=null,public Weight $tareWeight=new Weight(0),public ?Weight $maxPayload=null,public int $costMinor=0,public ?int $quantity=null,public array $obstacles=[],public array $tags=[],public ?int $maxItems=null,public array $metadata=[],public float $voidFillReserveRatio=0.0,public array $tagLimits=[],public ?Weight $maxStackDensity=null,public ?array $axles=null,public ?RateTable $rateTable=null,array $accessDirections=[],public array $preloaded=[],public ?string $deformableBoundary=null,public ?MadeToMeasure $madeToMeasure=null,public ?OverhangLimit $palletOverhangLimit=null,public ?Deck $deck=null,public ?Length $sideGussetDepth=null)
+    {if($id==='')throw new ObjectRefusal('invalid_value','Container id is required');$madeToMeasure?->admits([$innerDimensions->length->ticks,$innerDimensions->width->ticks,$innerDimensions->height->ticks]);if($deformableBoundary!==null)self::requireBagFields($deformableBoundary,$innerDimensions,$sideGussetDepth,$obstacles,$axles,$accessDirections,$maxStackDensity,$outerDimensions,$voidFillReserveRatio,$palletOverhangLimit);elseif($sideGussetDepth!==null)throw new ObjectRefusal('not_allowed','side_gusset_depth requires deformable_boundary gusseted_bag');if($palletOverhangLimit!==null)self::requirePalletFields($obstacles,$axles,$accessDirections,$voidFillReserveRatio,$madeToMeasure);if($quantity!==null&&$quantity<=0)throw new ObjectRefusal('below_minimum','Container quantity must be positive');if($costMinor<0)throw new ObjectRefusal('below_minimum','Container cost cannot be negative');if($maxItems!==null&&$maxItems<1)throw new ObjectRefusal('below_minimum','Container max_items must be at least 1');if(!($voidFillReserveRatio>=0&&$voidFillReserveRatio<=1))throw ObjectRefusal::ratio($voidFillReserveRatio,'void_fill_reserve_ratio must be between 0 and 1');foreach($tagLimits as $limit)if($limit<1)throw new ObjectRefusal('below_minimum','tag_limits must be at least 1');if($outerDimensions!==null&&!self::declaredInnerOf($innerDimensions,$deck)->fitsInside($outerDimensions))throw new ObjectRefusal('invalid_value','Outer dimensions cannot be smaller than inner dimensions');$boundary=new AxisAlignedBox(new Point(0,0,0),$innerDimensions);foreach($obstacles as $o)foreach($o->boxes() as $box)if(!$boundary->contains($box))throw new ObjectRefusal('invalid_value',"Obstacle {$o->id} lies outside container");
         if($axles!==null){[$front,$rear]=$axles;if($front->position->ticks>=$rear->position->ticks)throw new ObjectRefusal('invalid_value','The front axle must be strictly nearer the origin than the rear axle');if($front->position->ticks<0||$rear->position->ticks>$innerDimensions->length->ticks)throw new ObjectRefusal('invalid_value',"Axle positions must lie within the container's length");}
         foreach($accessDirections as $direction)if(!in_array($direction,SweptRegion::ALL_DIRECTIONS,true))throw new InvalidArgumentException("unknown movement direction {$direction}");
         // Deduplicated into the canonical order rather than kept as given: two callers
         // naming the same doors in a different order must search identically.
         $this->accessDirections=$accessDirections===[]?[]:array_values(array_filter(SweptRegion::ALL_DIRECTIONS,static fn(string $d):bool=>in_array($d,$accessDirections,true)));}
     /** The same container holding `$placements` before search. @param list<Placement> $placements */
-    public function withPreloaded(array $placements):self{return new self($this->id,$this->innerDimensions,$this->outerDimensions,$this->tareWeight,$this->maxPayload,$this->costMinor,$this->quantity,$this->obstacles,$this->tags,$this->maxItems,$this->metadata,$this->voidFillReserveRatio,$this->tagLimits,$this->maxStackDensity,$this->axles,$this->rateTable,$this->accessDirections,$placements,$this->deformableBoundary,$this->madeToMeasure);}
+    public function withPreloaded(array $placements):self{return new self($this->id,$this->innerDimensions,$this->outerDimensions,$this->tareWeight,$this->maxPayload,$this->costMinor,$this->quantity,$this->obstacles,$this->tags,$this->maxItems,$this->metadata,$this->voidFillReserveRatio,$this->tagLimits,$this->maxStackDensity,$this->axles,$this->rateTable,$this->accessDirections,$placements,$this->deformableBoundary,$this->madeToMeasure,$this->palletOverhangLimit,$this->deck,$this->sideGussetDepth);}
     public function isFlatBag():bool{return $this->deformableBoundary!==null;}
+    /** The side gusset depth G in ticks; 0 for a flat bag and every rigid container. */
+    public function sideGussetTicks():int{return $this->sideGussetDepth===null?0:$this->sideGussetDepth->ticks;}
+    /**
+     * The same container packed in `$inner` with `$deck` as its only weight-bearing floor, and
+     * no overhang limit: how `PalletOverhang` builds a pallet's solving frame and its deck rung
+     *. A frame states no limit, so it is never widened twice. O(1).
+     *
+     * @internal
+     */
+    public function framed(Dimensions $inner,?Deck $deck):self{return new self($this->id,$inner,$this->outerDimensions,$this->tareWeight,$this->maxPayload,$this->costMinor,$this->quantity,$this->obstacles,$this->tags,$this->maxItems,$this->metadata,$this->voidFillReserveRatio,$this->tagLimits,$this->maxStackDensity,$this->axles,$this->rateTable,$this->accessDirections,$this->preloaded,$this->deformableBoundary,$this->madeToMeasure,null,$deck,$this->sideGussetDepth);}
+    /** The inner size the caller declared: a solving frame's deck at its height, else `innerDimensions`. */
+    public function declaredInner():Dimensions{return self::declaredInnerOf($this->innerDimensions,$this->deck);}
+    private static function declaredInnerOf(Dimensions $inner,?Deck $deck):Dimensions{return $deck===null?$inner:new Dimensions(new Length($deck->length),new Length($deck->width),$inner->height);}
     /** The declared container solved inside `$rung`: same id, everything else unchanged. @param array{0:int,1:int,2:int} $rung */
     public function withEnvelope(array $rung):self{return $this->resized(self::dimensionsOf($rung),null,$this->costMinor,$this->tareWeight);}
     /**
@@ -68,7 +88,7 @@ final readonly class Container
         }
         return $this->resized(self::dimensionsOf($sides),self::dimensionsOf($outer),$machine->boxCostMinor($this->costMinor,$sides),new Weight($machine->boxTareTicks($this->tareWeight->ticks,$sides)));
     }
-    private function resized(Dimensions $inner,?Dimensions $outer,int $costMinor,Weight $tareWeight):self{return new self($this->id,$inner,$outer,$tareWeight,$this->maxPayload,$costMinor,$this->quantity,$this->obstacles,$this->tags,$this->maxItems,$this->metadata,$this->voidFillReserveRatio,$this->tagLimits,$this->maxStackDensity,$this->axles,$this->rateTable,$this->accessDirections,$this->preloaded,$this->deformableBoundary,$this->madeToMeasure);}
+    private function resized(Dimensions $inner,?Dimensions $outer,int $costMinor,Weight $tareWeight):self{return new self($this->id,$inner,$outer,$tareWeight,$this->maxPayload,$costMinor,$this->quantity,$this->obstacles,$this->tags,$this->maxItems,$this->metadata,$this->voidFillReserveRatio,$this->tagLimits,$this->maxStackDensity,$this->axles,$this->rateTable,$this->accessDirections,$this->preloaded,$this->deformableBoundary,$this->madeToMeasure,$this->palletOverhangLimit,$this->deck,$this->sideGussetDepth);}
     /** @param array{0:int,1:int,2:int} $sides */
     private static function dimensionsOf(array $sides):Dimensions{return new Dimensions(new Length($sides[0]),new Length($sides[1]),new Length($sides[2]));}
     /**
@@ -78,11 +98,38 @@ final readonly class Container
      *
      * @param list<Obstacle> $obstacles @param array{0:Axle,1:Axle}|null $axles @param list<string> $accessDirections
      */
-    private static function requireBagFields(string $kind,array $obstacles,?array $axles,array $accessDirections,?Weight $maxStackDensity,?Dimensions $outerDimensions,float $voidFillReserveRatio):void
+    private static function requireBagFields(string $kind,Dimensions $inner,?Length $sideGussetDepth,array $obstacles,?array $axles,array $accessDirections,?Weight $maxStackDensity,?Dimensions $outerDimensions,float $voidFillReserveRatio,?OverhangLimit $palletOverhangLimit):void
     {
         if(!in_array($kind,FlatBag::KINDS,true))throw new ObjectRefusal('not_allowed',"unknown deformable_boundary kind {$kind}");
-        $present=['obstacles'=>$obstacles!==[],'axles'=>$axles!==null,'access_directions'=>$accessDirections!==[],'max_stack_density'=>$maxStackDensity!==null,'outer_dimensions'=>$outerDimensions!==null,'void_fill_reserve_ratio'=>$voidFillReserveRatio>0];
+        self::requireGussetRule($kind===FlatBag::GUSSETED_BAG,$inner,$sideGussetDepth);
+        $present=['obstacles'=>$obstacles!==[],'axles'=>$axles!==null,'access_directions'=>$accessDirections!==[],'max_stack_density'=>$maxStackDensity!==null,'outer_dimensions'=>$outerDimensions!==null,'void_fill_reserve_ratio'=>$voidFillReserveRatio>0,'pallet_overhang_limit'=>$palletOverhangLimit!==null];
         foreach($present as $name=>$set)if($set)throw new ObjectRefusal('not_allowed',"{$name} cannot be combined with deformable_boundary");
     }
-    public static function create(string $id,Dimensions $innerDimensions,Weight|int|string|array $tareWeight=0,Weight|int|string|array|null $maxPayload=null,?Dimensions $outerDimensions=null,int $costMinor=0,?int $quantity=null,array $obstacles=[],array $tags=[],?int $maxItems=null,array $metadata=[],float $voidFillReserveRatio=0.0,array $tagLimits=[],Weight|int|string|array|null $maxStackDensity=null,?array $axles=null,?RateTable $rateTable=null,array $accessDirections=[],?string $deformableBoundary=null):self{return new self($id,$innerDimensions,$outerDimensions,Weight::parse($tareWeight),$maxPayload===null?null:Weight::parse($maxPayload),$costMinor,$quantity,$obstacles,$tags,$maxItems,$metadata,$voidFillReserveRatio,$tagLimits,$maxStackDensity===null?null:Weight::parse($maxStackDensity),$axles,$rateTable,$accessDirections,[],$deformableBoundary);}
+    /**
+     * A gusseted bag's side gusset is required, positive and no deeper than the bag is wide: a
+     * deeper fold would have no flat sheet left to fold from. A flat bag takes none. O(1).
+     */
+    private static function requireGussetRule(bool $gusseted,Dimensions $inner,?Length $sideGussetDepth):void
+    {
+        if($sideGussetDepth===null){
+            if($gusseted)throw new ObjectRefusal('missing_field','a gusseted_bag requires side_gusset_depth');
+            return;
+        }
+        if(!$gusseted)throw new ObjectRefusal('not_allowed','side_gusset_depth requires deformable_boundary gusseted_bag');
+        if($sideGussetDepth->ticks<=0)throw new ObjectRefusal('invalid_value','side_gusset_depth must be positive');
+        if($sideGussetDepth->ticks>$inner->width->ticks)throw new ObjectRefusal('invalid_value','side_gusset_depth exceeds inner_dimensions width');
+    }
+    /**
+     * The fields a pallet with an overhang limit refuses: each reads the declared frame or a wall
+     * the widened frame moves. The JSON path refuses the same combinations as
+     * `unsupported_feature` first.
+     *
+     * @param list<Obstacle> $obstacles @param array{0:Axle,1:Axle}|null $axles @param list<string> $accessDirections
+     */
+    private static function requirePalletFields(array $obstacles,?array $axles,array $accessDirections,float $voidFillReserveRatio,?MadeToMeasure $madeToMeasure):void
+    {
+        $present=['obstacles'=>$obstacles!==[],'axles'=>$axles!==null,'access_directions'=>$accessDirections!==[],'void_fill_reserve_ratio'=>$voidFillReserveRatio>0,'made_to_measure'=>$madeToMeasure!==null];
+        foreach($present as $name=>$set)if($set)throw new ObjectRefusal('not_allowed',"{$name} cannot be combined with pallet_overhang_limit");
+    }
+    public static function create(string $id,Dimensions $innerDimensions,Weight|int|string|array $tareWeight=0,Weight|int|string|array|null $maxPayload=null,?Dimensions $outerDimensions=null,int $costMinor=0,?int $quantity=null,array $obstacles=[],array $tags=[],?int $maxItems=null,array $metadata=[],float $voidFillReserveRatio=0.0,array $tagLimits=[],Weight|int|string|array|null $maxStackDensity=null,?array $axles=null,?RateTable $rateTable=null,array $accessDirections=[],?string $deformableBoundary=null,?Length $sideGussetDepth=null):self{return new self($id,$innerDimensions,$outerDimensions,Weight::parse($tareWeight),$maxPayload===null?null:Weight::parse($maxPayload),$costMinor,$quantity,$obstacles,$tags,$maxItems,$metadata,$voidFillReserveRatio,$tagLimits,$maxStackDensity===null?null:Weight::parse($maxStackDensity),$axles,$rateTable,$accessDirections,[],$deformableBoundary,null,null,null,$sideGussetDepth);}
 }

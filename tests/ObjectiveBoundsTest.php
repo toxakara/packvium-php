@@ -39,8 +39,31 @@ final class ObjectiveBoundsTest extends TestCase
         }
         $decoded = json_decode((string)file_get_contents($path), true);
         self::assertTrue(is_array($decoded), "the scene at $path is not readable JSON");
-        self::assertSame('packvium-objective-bounds/v1', $decoded['format']);
+        self::assertSame('packvium-objective-bounds/v2', $decoded['format']);
         return $decoded;
+    }
+
+    /**
+     * Every covered objective's vector for one normalised input, null where a ceiling
+     * withholds it -- the shape the scene's `objectives` records.
+     *
+     * @param list<array<string,mixed>> $instances
+     * @param list<array<string,mixed>> $containers
+     * @return array<string,?list<int>>
+     */
+    private static function objectives(array $instances, array $containers): array
+    {
+        $vectors = [];
+        foreach (ObjectiveBounds::OBJECTIVE_ORDERS as $objective => $order) {
+            try {
+                $vectors[$objective] = ObjectiveBounds::objectiveVector($instances, $containers, $order);
+            } catch (BoundOverflowException $refused) {
+                $vectors[$objective] = null;
+            }
+        }
+        // Keyed by name: the scene lists them alphabetically, the constant by score family.
+        ksort($vectors);
+        return $vectors;
     }
 
     public static function testEveryCorpusCaseMatchesPythonExactly(): void
@@ -57,6 +80,9 @@ final class ObjectiveBoundsTest extends TestCase
                 "bounds diverge from Python on {$case['fixture']}: expected "
                 . json_encode($case['bounds']) . ', got ' . json_encode($computed),
             );
+            ksort($case['objectives']);
+            self::assertSame($case['objectives'], self::objectives($case['instances'], $case['containers']),
+                "objective vectors diverge from Python on {$case['fixture']}");
         }
     }
 
@@ -296,20 +322,39 @@ final class ObjectiveBoundsTest extends TestCase
                 self::assertSame($edge['bounds'],
                     ObjectiveBounds::fromNormalised($edge['instances'], $containers), $edge['name']);
             }
+            ksort($edge['objectives']);
+            self::assertSame($edge['objectives'], self::objectives($edge['instances'], $edge['containers']),
+                "{$edge['name']}: objective vectors");
         }
     }
 
-    /** `lowest_cost` reads the same five numbers in its own order; nothing else gets any. */
+    /**
+     * `lowest_cost` reads the same five numbers in its own order; `maximum_value`,
+     * `open_dimension_height` and `maximum_volume` add the one key each ranks by alone
+     *; the two shipping objectives get none.
+     */
     public static function testTheRequestBoundIsStatedOnlyForTheCoveredObjectives(): void
     {
-        $items = self::instancesOf(Item::create('i', Dimensions::mm(60, 50, 40)), 2);
+        $item = Item::create('i', Dimensions::mm(60, 50, 40), value: 4);
+        $items = self::instancesOf($item, 2);
         $crate = [Container::create('c', Dimensions::mm(100, 100, 100), costMinor: 7)];
         $default = ObjectiveBounds::forRequest($items, $crate, 'default');
         self::assertSame(ObjectiveBounds::compute($items, $crate), $default);
         [$unpacked, $count, $cost, $unused, $height] = $default;
         self::assertSame([$unpacked, $cost, $count, $unused, $height],
             ObjectiveBounds::forRequest($items, $crate, 'lowest_cost'));
-        foreach (['maximum_value', 'maximum_volume', 'open_dimension_height', 'shipping_cost'] as $objective) {
+        // Unlimited crates: nothing is forced out, so nothing is forgone and no volume is lost;
+        // the two boxes stand at least their volume over the crate's floor.
+        $floor = (100 * Length::TICKS_PER_MM) ** 2;
+        $placed = 2 * 60 * 50 * 40 * Length::TICKS_PER_MM ** 3;
+        $achieved = intdiv($placed + $floor - 1, $floor);
+        self::assertSame([$unpacked, 0, $count, $cost, $unused],
+            ObjectiveBounds::forRequest($items, $crate, 'maximum_value'));
+        self::assertSame([$unpacked, $achieved, $count, $cost, $unused],
+            ObjectiveBounds::forRequest($items, $crate, 'open_dimension_height'));
+        self::assertSame([0, $unpacked, $count, $cost, $unused],
+            ObjectiveBounds::forRequest($items, $crate, 'maximum_volume'));
+        foreach (['shipping_cost', 'lowest_landed_cost'] as $objective) {
             self::assertNull(ObjectiveBounds::forRequest($items, $crate, $objective), $objective);
         }
 
@@ -318,6 +363,67 @@ final class ObjectiveBoundsTest extends TestCase
         $machine = [new Container('m', Dimensions::mm(1510, 1510, 1510),
             madeToMeasure: new MadeToMeasure($ticks(60), $ticks(25)))];
         self::assertNull(ObjectiveBounds::forRequest($items, $machine, 'default'));
+    }
+
+    /**
+     * The oracle's hand-checked objective-only keys, so each branch of the three
+     * terms is pinned here and not only by whatever the corpus happens to contain.
+     */
+    public static function testEachObjectiveReadsItsOwnKey(): void
+    {
+        $instance = static fn(int $value, bool $shrinks = false): array
+            => ['volume' => '600', 'weight' => 0, 'shrinks' => $shrinks, 'value' => $value];
+        $container = static fn(int $area, int $height, ?int $quantity): array
+            => ['usable' => '1000', 'inner' => '1000', 'base_area' => $area, 'height' => $height,
+                'payload' => null, 'max_items' => null, 'quantity' => $quantity, 'cost_minor' => 0];
+        $oneSlot = [$container(100, 10, 1)];
+
+        // One of three fits: the two cheapest forgo 10 + 50, the one placed stands 600 / 100,
+        // and 800 of 1800 cannot fit, 444444.4 ppm rounded up.
+        $three = [$instance(50), $instance(10), $instance(90)];
+        self::assertSame([
+            'default' => [2, 1, 0, 400000, 600000],
+            'lowest_cost' => [2, 0, 1, 400000, 600000],
+            'maximum_value' => [2, 60, 1, 0, 400000],
+            'maximum_volume' => [444445, 2, 1, 0, 400000],
+            'open_dimension_height' => [2, 6, 1, 0, 400000],
+        ], self::objectives($three, $oneSlot));
+
+        // The two cheapest values sum to 2^53: only maximum_value is withheld.
+        $max = (int)ObjectiveBounds::MAX_BOUND_VALUE;
+        $past = self::objectives([$instance($max), $instance(1), $instance($max)], $oneSlot);
+        self::assertNull($past['maximum_value']);
+        self::assertSame([2, 6, 1, 0, 400000], $past['open_dimension_height']);
+
+        // The widest floor sets the height term, and unlimited stock forces no volume out.
+        $wide = self::objectives([$instance(0), $instance(0), $instance(0)],
+            [$container(100, 10, null), $container(250, 4, 1)]);
+        self::assertSame([0, 8, 2, 0, 199999], $wide['open_dimension_height']);
+        self::assertSame([0, 0, 2, 0, 199999], $wide['maximum_volume']);
+
+        // An instance smaller than its box drops both volume terms.
+        $nested = self::objectives(array_fill(0, 3, $instance(3, true)), $oneSlot);
+        self::assertSame([0, 0, 1, 0, 0], $nested['open_dimension_height']);
+        self::assertSame([0, 0, 1, 0, 0], $nested['maximum_volume']);
+
+        // No floor to stand on, and nothing requested: both terms claim nothing.
+        self::assertSame(0, self::objectives([$instance(0)], [$container(0, 10, 1)])['open_dimension_height'][1]);
+        $flat = ['volume' => '0', 'weight' => 0, 'shrinks' => false, 'value' => 0];
+        self::assertSame(0, self::objectives([$flat], $oneSlot)['open_dimension_height'][1],
+            'a placed volume of nothing stands no height');
+        self::assertSame([1, 0, 0, 0, 0], self::objectives([$instance(0)], [])['maximum_value']);
+        self::assertSame(0, self::objectives([], $oneSlot)['maximum_volume'][0]);
+    }
+
+    /** The value term selects the smallest values without sorting them all. */
+    public static function testTheSmallestValuesAreSelectedWithoutASort(): void
+    {
+        $smallest = new \ReflectionMethod(ObjectiveBounds::class, 'smallestValues');
+        self::assertSame([], $smallest->invoke(null, [5, 1, 3], 0));
+        self::assertSame([5, 1, 3], $smallest->invoke(null, [5, 1, 3], 3));
+        $two = $smallest->invoke(null, [5, 1, 9, 3, 7], 2);
+        sort($two);
+        self::assertSame([1, 3], $two);
     }
 
     /** A custom solution scorer ranks by positions the bound knows nothing about. */

@@ -16,8 +16,17 @@ use Packvium\Validation\ResultIssue;
  */
 final class Bound
 {
-    /** Where each covered objective reads `(L0, L1, L2, L3, L4)` in its own score order. */
-    private const ORDERS = ['default' => [0, 1, 2, 3, 4], 'lowest_cost' => [0, 2, 1, 3, 4]];
+    /**
+     * Where each covered objective reads `(L0, L1, L2, L3, L4)` in its own score order, a name
+     * standing for the one key only that objective ranks by.
+     */
+    private const ORDERS = [
+        'default' => [0, 1, 2, 3, 4],
+        'lowest_cost' => [0, 2, 1, 3, 4],
+        'maximum_value' => [0, 'value_forgone', 1, 2, 3],
+        'open_dimension_height' => [0, 'achieved_height', 1, 2, 3],
+        'maximum_volume' => ['unpacked_volume_ppm', 0, 1, 2, 3],
+    ];
     private const MAX_BOUND_SUM = '1000000000000000000000000000000';
     private const MAX_BOUND_VALUE = 9007199254740991;
     private const SCORE_SCALE = 1000000;
@@ -148,28 +157,82 @@ final class Bound
         if (Json::isText($status, 'invalid_result')) {
             return [null, "status is 'invalid_result'"];
         }
-        [$volumes, $weights, $shrinks, $types] = self::inputs($items, $containers);
-        $bound = self::lowerBound($volumes, $weights, $shrinks, $types);
+        [$volumes, $weights, $values, $shrinks, $types] = self::inputs($items, $containers);
+        return self::objectiveBound($volumes, $weights, $values, $shrinks, $types, $name);
+    }
+
+    /**
+     * The bound in a covered objective's score order, or null with the reason a ceiling withholds
+     * it -- the one predicate's, or the objective's own key's, which withholds that objective
+     * alone. Public so the shared scene can hold every objective's vector to the oracle.
+     *
+     * @param list<array{0:int|string,1:int|string}> $volumes value runs sorted ascending
+     * @param list<array{0:int|string,1:int|string}> $weights @param list<array{0:int|string,1:int|string}> $values
+     * @param list<array<string,int|string|null>> $containers
+     * @return array{0:list<int|string>|null,1:string}
+     */
+    public static function objectiveBound(array $volumes, array $weights, array $values, bool $shrinks, array $containers, string $objective): array
+    {
+        $bound = self::lowerBound($volumes, $weights, $shrinks, $containers);
         if ($bound === null) {
             return [null, 'the request is past a declared ceiling'];
         }
-        return [\array_map(static function (int $position) use ($bound) { return $bound[$position]; }, self::ORDERS[$name]), ''];
+        $stated = \array_map(static function ($position) use ($bound, $volumes, $values, $shrinks, $containers) {
+            return \is_int($position) ? $bound[$position] : self::objectiveTerm($position, $volumes, $values, $shrinks, $containers, $bound[0]);
+        }, self::ORDERS[$objective]);
+        foreach ($stated as $value) {
+            if (Exact::compare($value, self::MAX_BOUND_VALUE) > 0) {
+                return [null, "the {$objective} key is past the portable ceiling"];
+            }
+        }
+        return [$stated, ''];
+    }
+
+    /**
+     * The key only one objective ranks by, each conditional on `L0` like the five: the
+     * least value forgone and the least summed top of a packing leaving `unpacked` behind, and
+     * the least unpacked share of requested volume any packing scores. O(t log t + c).
+     *
+     * @param list<array{0:int|string,1:int|string}> $volumes @param list<array{0:int|string,1:int|string}> $values
+     * @param list<array<string,int|string|null>> $containers @param int|string $unpacked @return int|string
+     */
+    private static function objectiveTerm(string $name, array $volumes, array $values, bool $shrinks, array $containers, $unpacked)
+    {
+        if ($name === 'value_forgone') {
+            return self::smallest($values, $unpacked);
+        }
+        if ($shrinks) {
+            return 0;
+        }
+        if ($name === 'achieved_height') {
+            $placed = Exact::sub(self::runCount($volumes), $unpacked);
+            $floors = self::positive(self::column($containers, 'base_area'));
+            return Exact::sign($placed) > 0 && $floors !== [] ? Exact::ceilDiv(self::smallest($volumes, $placed), self::largest($floors)) : 0;
+        }
+        $requested = self::sumRuns($volumes);
+        $capacity = self::capacityTotal(self::column($containers, 'usable'), self::column($containers, 'quantity'));
+        if (Exact::sign($requested) === 0 || $capacity === null) {
+            return 0;
+        }
+        return Exact::ceilDiv(Exact::mul(Exact::max(0, Exact::sub($requested, $capacity)), self::SCORE_SCALE), $requested);
     }
 
     /**
      * The request as the bound reads it: every instance, fixed ones included, and every type.
      *
-     * @param Ordered<ItemSpec> $items @param Ordered<ContainerSpec> $containers @return array{0:list<array{0:int|string,1:int|string}>,1:list<array{0:int|string,1:int|string}>,2:bool,3:list<array<string,int|string|null>>}
+     * @param Ordered<ItemSpec> $items @param Ordered<ContainerSpec> $containers @return array{0:list<array{0:int|string,1:int|string}>,1:list<array{0:int|string,1:int|string}>,2:list<array{0:int|string,1:int|string}>,3:bool,4:list<array<string,int|string|null>>}
      */
     private static function inputs(Ordered $items, Ordered $containers): array
     {
         $volumes = [];
         $weights = [];
+        $values = [];
         $shrinks = false;
         foreach ($items->values() as $spec) {
             $quantity = Json::int($spec->quantity, 'quantity');
             $volumes[] = [Exact::mul(Exact::mul($spec->dimensions[0], $spec->dimensions[1]), $spec->dimensions[2]), $quantity];
             $weights[] = [$spec->weight, $quantity];
+            $values[] = [Json::truthy($spec->value) ? Json::int($spec->value, 'value') : 0, $quantity];
             $shrinks = $shrinks || ($quantity > 0 && ($spec->nestingHeight !== null
                 || Json::isText($spec->shapeType, 'convex_hull') || Json::isText($spec->shapeType, 'compressible')));
         }
@@ -192,7 +255,7 @@ final class Bound
                 'quantity' => $spec->quantity,
             ];
         }
-        return [self::runs($volumes), self::runs($weights), $shrinks, $types];
+        return [self::runs($volumes), self::runs($weights), self::runs($values), $shrinks, $types];
     }
 
     /** @param list<array<string,int|string|null>> $containers @return list<int|string|null> */

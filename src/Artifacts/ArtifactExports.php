@@ -2,6 +2,7 @@
 declare(strict_types=1);
 namespace Packvium\Artifacts;
 
+use Packvium\Support\CanonicalJson;
 use Packvium\Support\JsonValue;
 
 /**
@@ -312,10 +313,18 @@ final class ArtifactExports
      */
     private static function successor($index): string
     {
+        if (self::isIntegralFloat($index)) {
+            return self::text($index);
+        }
         if (!\is_int($index)) {
             throw new OperationalArtifactException('invalid_value', 'a container_index is not an integer');
         }
-        return (string) ($index + 1);
+        // Checked before the addition, which past PHP_INT_MAX would turn into a float: the
+        // number shown is the index plus one, so 2^53 - 1 is already one past the ceiling.
+        if ($index >= CanonicalJson::MAX_EXACT_MAGNITUDE) {
+            throw new OperationalArtifactException('number_out_of_range', "container index {$index} is beyond what every engine holds exactly");
+        }
+        return self::text($index + 1);
     }
 
     // ----------------------------------------------------------------------------- helpers
@@ -335,11 +344,28 @@ final class ArtifactExports
         if (\is_string($value)) {
             return $value;
         }
+        // Beyond 2^53 - 1 JavaScript has already rounded the integer, so its decimal would
+        // differ; past PHP_INT_MAX json_decode has made it a float, but it is still a whole number.
+        if (self::isIntegralFloat($value)
+            || (\is_int($value) && ($value > CanonicalJson::MAX_EXACT_MAGNITUDE || $value < -CanonicalJson::MAX_EXACT_MAGNITUDE))) {
+            throw new OperationalArtifactException('number_out_of_range', \json_encode($value) . ' is beyond what every engine holds exactly');
+        }
         if (\is_int($value)) {
             return (string) $value;
         }
         $type = \is_object($value) ? \get_class($value) : \gettype($value);
         throw new OperationalArtifactException('invalid_value', "a {$type} has no single rendering in a work order");
+    }
+
+    /**
+     * A whole number json_decode could only hold as a float, past PHP_INT_MAX.
+     *
+     * @param mixed $value
+     */
+    private static function isIntegralFloat($value): bool
+    {
+        return \is_float($value) && \is_finite($value) && \floor($value) === $value
+            && \abs($value) > CanonicalJson::MAX_EXACT_MAGNITUDE;
     }
 
     /**

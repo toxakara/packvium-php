@@ -22,16 +22,6 @@ final class RouteOrderConstraint implements PlacementConstraint
     public function evaluate(ConstraintContext $c):ConstraintResult
     {
         if(!$c->routeSensitive)return ConstraintResult::allow();
-        $candidate=new LoadUnit(
-            $c->envelopeBox(),$c->item->weight()->ticks,null,null,$c->item->id(),
-            $c->item->item->nestingHeight===null?null:$c->item->item->id,($nullsafeVariable1 = $c->item->item->nestingHeight) ? $nullsafeVariable1->ticks : null,
-        );
-        $stops=[];
-        foreach($c->placements as $p)$stops[]=$p->instance->item->stopIndex===null?INF:(float)$p->instance->item->stopIndex;
-        $stops[]=$c->item->item->stopIndex===null?INF:(float)$c->item->item->stopIndex;
-        if(!LoadAnalysis::routed($stops))return ConstraintResult::allow();
-        [$units,$graph]=($this->support = $this->support ?? new PlacedSupportBase())->withCandidate($c->placements,$candidate);
-        $failure=(new LoadAnalysis($units,$graph))->routeOrderViolated($stops);
-        return $failure===null?ConstraintResult::allow():ConstraintResult::reject($failure[0],$failure[1]);
+        return ($this->support = $this->support ?? new PlacedSupportBase())->evaluateRouteOrder($c);
     }
 }

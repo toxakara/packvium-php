@@ -4,11 +4,12 @@ declare(strict_types=1);
 namespace Packvium\Tests;
 
 use InvalidArgumentException;
-use Packvium\Algorithm\{ContainerState, Deadline, SearchStats, SingleContainerSolution, SingleContainerSolver, SolverOrchestrator};
+use Packvium\Algorithm\{ContainerState, Deadline, SearchStats, SingleContainerSolution, SingleContainerSolver, SolverOrchestrator, TimeLimitReached};
 use Packvium\Config\PackingConfig;
 use Packvium\Domain\{Container, Dimensions, Item, MadeToMeasure, PackedContainer, PackingRequest, Placement, Point, Rotation};
 use Packvium\Serialization\{ArrayCodec, InvalidRequestException, UnsupportedFeatureException};
 use Packvium\Unit\Length;
+use Packvium\Support\ResultValidation\Validator;
 use Packvium\Validation\IndependentSolutionValidator;
 use ReflectionMethod;
 
@@ -108,6 +109,21 @@ final class MadeToMeasureTest extends TestCase
         self::assertTrue($one->timeLimitReached);
     }
 
+    public static function testARungThatRunsOutOfTimeStopsTheChainWithTheBestSoFar(): void
+    {
+        $solver = new ScriptedRungSolver([[1, 100], [-1, 0], [3, 100], [3, 100]]);
+        [$one, $trials] = self::chain($solver);
+        self::assertSame(1, $trials);
+        self::assertCount(2, $solver->envelopes, 'no rung is tried after the one that ran out of time');
+        self::assertSame(1, $one->state->placementCount());
+        self::assertTrue($one->timeLimitReached);
+    }
+
+    public static function testAFirstRungThatRunsOutOfTimeLeavesNothingToKeep(): void
+    {
+        self::assertThrows(TimeLimitReached::class, static fn() => self::chain(new ScriptedRungSolver([[-1, 0], [3, 100]])));
+    }
+
     public static function testTheWorkedOrderIsCutToA210MillimetreBox(): void
     {
         $packed = ArrayCodec::pack(self::request())['containers'][0];
@@ -147,7 +163,6 @@ final class MadeToMeasureTest extends TestCase
         $cases = [
             'container.made_to_measure+axles' => ['axles' => [['position' => '0'], ['position' => '1510']]],
             'container.made_to_measure+obstacles' => ['obstacles' => [['id' => 'post', 'dimensions' => self::mm(10, 10, 10)]]],
-            'container.made_to_measure+void_fill_reserve_ratio' => ['void_fill_reserve_ratio' => 0.5],
         ];
         foreach ($cases as $name => $fields) {
             $request = self::request();
@@ -192,6 +207,68 @@ final class MadeToMeasureTest extends TestCase
         $stale = new Container('machine', $good->innerDimensions, $good->outerDimensions, costMinor: 40, madeToMeasure: $declared->madeToMeasure);
         $codes = array_map(static fn($issue) => $issue->code, $validator->validate($request, [new PackedContainer($stale, 1, [$placement])])->issues);
         self::assertSame(['made_to_measure_cost_mismatch'], $codes);
+    }
+
+    public static function testAReserveTheTightBoxWouldBreakIsKeptByCuttingTheRung(): void
+    {
+        // A 210 mm cut holds the eight cubes but not half its volume in reserve; the
+        // 260 mm rung they were solved in does.
+        $request = self::reserved();
+        $result = json_decode((string) json_encode(ArrayCodec::pack($request)), true);
+        $packed = $result['containers'][0];
+        self::assertSame(['260', '263', '200'], [$packed['inner_dimensions']['length']['value'], $packed['outer_dimensions']['width']['value'], $packed['achieved_dimensions']['height']['value']]);
+        self::assertSame('feasible', $result['status']);
+        self::assertSame([], Validator::validate($request, $result));
+        self::assertSame([], self::resultCodes($request, $result, 260));
+        // Off the machine grid, or with no reserve to keep, the larger box is a mismatch.
+        self::assertContains('fabricated_dimensions_mismatch', self::resultCodes($request, $result, 261));
+        $unreserved = $request;
+        unset($unreserved['containers'][0]['void_fill_reserve_ratio']);
+        self::assertContains('fabricated_dimensions_mismatch', self::resultCodes($unreserved, $result, 260));
+        $unmeasured = $result;
+        // The reported used volume is a decimal string; a number is not read as one.
+        $unmeasured['containers'][0]['used_volume_ticks3'] = (int) $unmeasured['containers'][0]['used_volume_ticks3'];
+        self::assertContains('fabricated_dimensions_mismatch', self::resultCodes($request, $unmeasured, 260));
+    }
+
+    public static function testTheInternalValidatorAdmitsAReserveCutOnTheGrid(): void
+    {
+        $item = Item::create('cube', Dimensions::mm(100, 100, 100), 0, 8);
+        $placements = [];
+        foreach ($item->instances() as $index => $instance) {
+            $origin = new Point(($index % 2) * 100 * self::MM, (intdiv($index, 2) % 2) * 100 * self::MM, intdiv($index, 4) * 100 * self::MM);
+            $placements[] = new Placement($instance, $origin, Rotation::LWH, $instance->dimensions(), $origin, $instance->dimensions());
+        }
+        $validator = new IndependentSolutionValidator();
+        $codes = static function (float $reserve, array $sides) use ($item, $placements, $validator): array {
+            $declared = new Container('machine', Dimensions::mm(1510, 1510, 1510), costMinor: 40, voidFillReserveRatio: $reserve, madeToMeasure: self::machine(costPerSquareMetreMinor: 1000));
+            $box = $declared->fabricate(self::ticks(...$sides));
+            return array_map(static fn($issue) => $issue->code, $validator->validate(new PackingRequest([$item], [$declared]), [new PackedContainer($box, 1, $placements)])->issues);
+        };
+        self::assertSame([], $codes(0.5, [260, 260, 260]));
+        self::assertSame([], $codes(0.5, [285, 260, 260]));
+        self::assertContains('fabricated_dimensions_mismatch', $codes(0.0, [260, 260, 260]));
+        // A cut the tight box already keeps the reserve in is no reserve cut.
+        self::assertContains('fabricated_dimensions_mismatch', $codes(0.1, [260, 260, 260]));
+    }
+
+    /** @param array<string,mixed> $request @param array<string,mixed> $result @return list<string> */
+    private static function resultCodes(array $request, array $result, int $sideMm): array
+    {
+        foreach (['length', 'width', 'height'] as $side) {
+            $result['containers'][0]['inner_dimensions'][$side]['ticks'] = $sideMm * self::MM;
+        }
+        return array_values(array_unique(array_map(static fn($issue): string => $issue->code, Validator::validate($request, $result))));
+    }
+
+    /** @return array<string,mixed> */
+    private static function reserved(): array
+    {
+        $request = self::request();
+        $request['configuration']['solver_profile'] = 'balanced';
+        $request['containers'][0]['void_fill_reserve_ratio'] = 0.5;
+        $request['containers'][0]['made_to_measure']['tare_per_square_metre'] = '500';
+        return $request;
     }
 
     /** @return array{0:SingleContainerSolution,1:int} */
@@ -248,7 +325,10 @@ final class MadeToMeasureTest extends TestCase
     }
 }
 
-/** Places a scripted number of items per rung, along x at the scripted pitch in millimetres. */
+/**
+ * Places a scripted number of items per rung, along x at the scripted pitch in millimetres; a
+ * negative count is a rung whose solve runs out of time before it returns.
+ */
 final class ScriptedRungSolver implements SingleContainerSolver
 {
     /** @var list<Dimensions> */
@@ -268,6 +348,9 @@ final class ScriptedRungSolver implements SingleContainerSolver
     {
         [$count, $pitch] = $this->script[count($this->envelopes)];
         $this->envelopes[] = $container->innerDimensions;
+        if ($count < 0) {
+            throw new TimeLimitReached('Packing time limit reached');
+        }
         $stats->searchNodesExpanded++;
         $state = new ContainerState($container, $sequence);
         foreach (array_slice($items, 0, $count) as $index => $instance) {

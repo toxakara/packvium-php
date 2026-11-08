@@ -1101,4 +1101,32 @@ final class PackingSequenceTest extends TestCase
             self::assertContains(1, $e->stuck);
         }
     }
+
+    public static function testOutOfZOrderFloorBoxSlidingUnderElevatedBoxDeactivatesIsolatedFloorShortcut(): void
+    {
+        $heavyUpper = Item::create('upper', Dimensions::mm(10, 10, 5), weight: '5kg', stackingGroup: 'C');
+        $fragileFloor = Item::create('floor-fragile', Dimensions::mm(10, 10, 5), weight: '1kg', maxTopLoad: '1kg');
+        $nonStackFloor = Item::create('floor-ns', Dimensions::mm(10, 10, 5), stackable: false);
+        $groupFloor = Item::create('floor-grp', Dimensions::mm(10, 10, 5), acceptsStackingGroups: ['A']);
+        $container = Container::create('c', Dimensions::mm(10, 10, 20));
+
+        foreach ([
+            [$fragileFloor, 'top_load_exceeded: floor-fragile#1'],
+            [$nonStackFloor, 'non_stackable_item_has_load: floor-ns#1'],
+            [$groupFloor, 'stacking_group_incompatible: floor-grp'],
+        ] as [$baseItem, $expectedReason]) {
+            $placements = [
+                self::stackedPlacement($baseItem, 0, 0, 0),
+                self::stackedPlacement($heavyUpper, 0, 0, 5),
+            ];
+            try {
+                LoadingDependencyGraph::verifyLoadingPrefixBusinessRules($placements, [1, 0], $container);
+                self::fail('expected SequenceReplayError');
+            } catch (SequenceReplayError $error) {
+                self::assertSame(0, $error->index);
+                self::assertSame(1, $error->step);
+                self::assertSame($expectedReason, $error->reason);
+            }
+        }
+    }
 }

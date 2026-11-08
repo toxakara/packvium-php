@@ -94,6 +94,37 @@ final class Stacking
     }
 
     /**
+     * A floor placement on a pallet rests on its overlap with the deck alone, judged
+     * by the ratio and centre-of-gravity rule a supporting item would be. O(p).
+     *
+     * @param list<Entry> $entries @param array{0:int|string,1:int|string,2:int|string,3:int|string} $deck
+     * @param list<ResultIssue> $issues
+     */
+    public static function checkDeckSupport(array $entries, array $deck, Ratio $globalSupport, array &$issues): void
+    {
+        [$x, $y, $length, $width] = $deck;
+        $surface = new Cuboid($x, $y, -1, $length, $width, 1);
+        foreach ($entries as $entry) {
+            $spec = $entry->spec;
+            if ($spec === null || Exact::sign($entry->envelope->z) !== 0) {
+                continue;
+            }
+            $required = $globalSupport->compare($spec->minimumSupportRatio) < 0 ? $spec->minimumSupportRatio : $globalSupport;
+            if ($required->compareInt(0) <= 0) {
+                continue;
+            }
+            $area = $entry->envelope->overlapAreaXy($surface);
+            $itemId = PyFormat::str($entry->id);
+            if (Exact::compare($area, self::requiredSupportArea($entry->envelope->baseArea, ContainerCheck::ratioPpm($required))) < 0) {
+                $ratio = Ratio::of($area, $entry->envelope->baseArea);
+                $issues[] = new ResultIssue('insufficient_support', "{$itemId}: " . PyFormat::fixed6($ratio->toFloat()) . ' < ' . PyFormat::fixed6($required->toFloat()) . ' on the deck');
+            } elseif (Exact::compare(Exact::mul($area, 2), $entry->envelope->baseArea) <= 0 && !self::centroidSupported($entry->envelope, [$surface])) {
+                $issues[] = new ResultIssue('centre_of_gravity_unsupported', "{$itemId}: centroid outside the deck");
+            }
+        }
+    }
+
+    /**
      * @param list<Entry> $entries @param list<list<array{0:int,1:int|string}>> $supporters
      * @param list<array<int,true>> $directAbove @param list<ResultIssue> $issues
      */
@@ -521,7 +552,8 @@ final class Stacking
             return Exact::mul($footprint, self::compressedHeight($height, $footprint, $spec, $load));
         }
         if ($spec !== null && $spec->isConvexHull() && $spec->hullVertices !== null) {
-            return Geometry::hullVolume(Geometry::rotateHull($spec->hullVertices, Geometry::axes(Json::text(Json::at($placement, 'orientation'), 'orientation'))));
+            // A proper rotation keeps the volume, so the authored vertices answer for every orientation.
+            return Geometry::hullVolume($spec->hullVertices);
         }
         $solid = self::placedHull($envelope, $placement, $spec);
         if ($solid === $envelope->vertices()) {
@@ -539,10 +571,12 @@ final class Stacking
      */
     public static function placedHull(Cuboid $envelope, $placement, ?ItemSpec $spec): array
     {
-        if ($spec === null || $spec->hullVertices === null || !$spec->isConvexHull() || $spec->stopIndex !== null) {
+        if ($spec === null || $spec->hullVertices === null || !$spec->isConvexHull() || $spec->stopIndex !== null
+            || !Geometry::isRotation(Json::at($placement, 'orientation'))) {
             return $envelope->vertices();
         }
-        $axes = Geometry::axes(Json::text(Json::at($placement, 'orientation'), 'orientation'));
+        $orientation = Json::text(Json::at($placement, 'orientation'), 'orientation');
+        $axes = Geometry::axes($orientation);
         $rotated = [$spec->dimensions[$axes[0]], $spec->dimensions[$axes[1]], $spec->dimensions[$axes[2]]];
         if (Exact::compare($envelope->length, $rotated[0]) !== 0 || Exact::compare($envelope->width, $rotated[1]) !== 0
             || Exact::compare($envelope->height, $rotated[2]) !== 0) {
@@ -550,6 +584,6 @@ final class Stacking
         }
         return \array_map(static function (array $vertex) use ($envelope): array {
             return [Exact::add($envelope->x, $vertex[0]), Exact::add($envelope->y, $vertex[1]), Exact::add($envelope->z, $vertex[2])];
-        }, Geometry::rotateHull($spec->hullVertices, $axes));
+        }, Geometry::rotateHull($spec->hullVertices, $orientation));
     }
 }

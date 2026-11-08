@@ -19,9 +19,15 @@ final class PackingRequest
      * @var mixed[]
      */
     public $fixedPlacements = [];
-    /** @param list<Item> $items @param list<Container> $containers @param list<FixedPlacement> $fixedPlacements */ public function __construct(array $items,array $containers,array $fixedPlacements=[]){$this->items = $items;
+    /**
+     * @readonly
+     * @var string|null
+     */
+    public $currency;
+    /** @param list<Item> $items @param list<Container> $containers @param list<FixedPlacement> $fixedPlacements */ public function __construct(array $items,array $containers,array $fixedPlacements=[],?string $currency=null){$this->items = $items;
     $this->containers = $containers;
     $this->fixedPlacements = $fixedPlacements;
+    $this->currency = $currency;
     if($items===[])throw new ObjectRefusal('invalid_value','At least one item is required');if($containers===[])throw new ObjectRefusal('invalid_value','At least one container is required');self::unique(array_map(function (Item $i) {
         return $i->id;
     },$items),'item');self::unique(array_map(function (Container $c) {

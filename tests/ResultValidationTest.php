@@ -59,8 +59,11 @@ final class ResultValidationTest extends TestCase
     {
         $result = ArrayCodec::pack(self::REQUEST);
         $result['containers'][0]['placements'][1]['position'] = $result['containers'][0]['placements'][0]['position'];
+        $result['containers'][0]['placements'][1] = Support::restatedId($result['containers'][0]['placements'][1], 'box#1');
         $issues = validate(self::REQUEST, $result);
-        self::assertCount(1, $issues);
+        // Two items in one place also share one id; the collision is still named first.
+        self::assertCount(2, $issues);
+        self::assertSame('duplicate_placement_id', $issues[1]->code);
         self::assertTrue($issues[0] instanceof ResultIssue);
         self::assertSame('collision: cube#1 with cube#2 in box#1', (string)$issues[0]);
     }
@@ -327,16 +330,44 @@ final class ResultValidationTest extends TestCase
         // WLH is an odd permutation, so the hull is mirrored back into a proper rotation
         // (`_rotate_hull` gives ((1, 0, 0), (1, 2, 0), (0, 0, 0)) for the same three vertices).
         self::assertSame([[1, 0, 0], [1, 2, 0], [0, 0, 0]],
-            Geometry::rotateHull([[0, 0, 0], [2, 0, 0], [0, 1, 0]], Geometry::axes('WLH')));
+            Geometry::rotateHull([[0, 0, 0], [2, 0, 0], [0, 1, 0]], 'WLH'));
+        // -L-W+H is the half-turn about the vertical: x and y both change sign.
+        self::assertSame([[2, 1, 0], [0, 1, 0], [2, 0, 0]],
+            Geometry::rotateHull([[0, 0, 0], [2, 0, 0], [0, 1, 0]], '-L-W+H'));
         $refusals = [
             static function (): void { Geometry::axes('XYZ'); },
-            static function (): void { Geometry::rotateHull([], [0, 1, 2]); },
+            static function (): void { Geometry::rotateHull([], 'LWH'); },
+            static function (): void { Geometry::rotateHull([[0, 0, 0]], '+L+W+H'); },
             static function (): void { Units::perUnit(Units::LENGTH, 'furlong'); },
             static function (): void { Units::parseFraction('1e999'); },
         ];
         foreach ($refusals as $index => $refusal) {
             self::assertThrows(MalformedResult::class, $refusal, "refusal {$index}");
         }
+    }
+
+    /**
+     * `units` is closed; the first unknown key in code-point order is named before
+     * `length` is read. U+FFFD sorts before U+1F600 by code point, after it in UTF-16, and a
+     * numeric key that PHP turns into an int is named as the string it was.
+     */
+    public static function testAUnitsKeyOtherThanLengthIsAContractBreak(): void
+    {
+        $cases = [
+            'units.weight is not a known field' => ['length' => 'furlong', 'weight' => 'kg'],
+            "units.\u{FFFD} is not a known field" => ["\u{1F600}" => 1, "\u{FFFD}" => 1],
+            'units.1 is not a known field' => ['1' => 'kg', 'length' => 'mm'],
+        ];
+        foreach ($cases as $expected => $units) {
+            $message = null;
+            try {
+                Units::lengthUnit(['units' => $units]);
+            } catch (MalformedResult $error) {
+                $message = $error->getMessage();
+            }
+            self::assertSame($expected, $message);
+        }
+        self::assertSame('cm', Units::lengthUnit(['units' => ['length' => 'cm']]));
     }
 
     /** The reference prints a missing id as `?`; the port refuses an issue it would have to name so. */

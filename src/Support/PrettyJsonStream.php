@@ -18,7 +18,10 @@ namespace Packvium\Support;
  * pretty encoding with `4 * d` spaces after every newline, and an encoded string never
  * contains a raw newline. Arrays follow `json_encode`'s rule, the one in {@see JsonValue}:
  * a list is a JSON array, any other array a JSON object whose names are its keys as strings.
- * An empty array, and anything that is not an array, is encoded whole.
+ * An empty array, and anything that is not an array, is encoded whole. A `\Traversable` is
+ * written as the JSON list of its values, one at a time, so a caller can hand over values it
+ * has not built yet (`ArrayCodec::packStreamed`'s placements); an array holding one is never
+ * encoded whole.
  *
  * One difference, on a path no answer takes: a value `json_encode` cannot encode throws
  * `JsonException` after the members before it were written, where the one-shot encoding
@@ -63,7 +66,11 @@ final class PrettyJsonStream
     /** @param mixed $value */
     private function value($value, int $depth): void
     {
-        if (!\is_array($value) || \count($value, \COUNT_RECURSIVE) <= self::WHOLE_ELEMENTS) {
+        if ($value instanceof \Traversable) {
+            $this->traversed($value, $depth);
+            return;
+        }
+        if (!\is_array($value) || (\count($value, \COUNT_RECURSIVE) <= self::WHOLE_ELEMENTS && !self::holdsTraversable($value))) {
             $this->append(self::encoded($value, $depth));
             return;
         }
@@ -80,6 +87,41 @@ final class PrettyJsonStream
             $this->value($member, $depth + 1);
         }
         $this->append("\n" . \str_repeat(self::INDENT, $depth) . ($list ? ']' : '}'));
+    }
+
+    /**
+     * A one-pass sequence, written as the JSON list of its values: `[]` when it yields none,
+     * as `json_encode` writes an empty list.
+     *
+     * @param \Traversable<mixed,mixed> $values
+     */
+    private function traversed(\Traversable $values, int $depth): void
+    {
+        $separator = "\n" . \str_repeat(self::INDENT, $depth + 1);
+        $first = true;
+        foreach ($values as $member) {
+            $this->append(($first ? '[' : ',') . $separator);
+            $first = false;
+            $this->value($member, $depth + 1);
+        }
+        $this->append($first ? '[]' : "\n" . \str_repeat(self::INDENT, $depth) . ']');
+    }
+
+    /**
+     * Whether a sequence sits anywhere inside a small array, which then cannot be encoded
+     * whole: `json_encode` writes an object it cannot see into as `{}`. Asked only of an
+     * array of at most {@see self::WHOLE_ELEMENTS} elements, so O(1).
+     *
+     * @param array<array-key,mixed> $value
+     */
+    private static function holdsTraversable(array $value): bool
+    {
+        foreach ($value as $member) {
+            if ($member instanceof \Traversable || (\is_array($member) && self::holdsTraversable($member))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** @param mixed $value */

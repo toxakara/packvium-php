@@ -1,9 +1,10 @@
 <?php
 declare(strict_types=1);
 namespace Packvium\Validation;
-use Packvium\Constraint\{AxleLoad,CompatibilityConstraint,ConstraintContext,LoadCalculator,SupportConstraint,TagCountConstraint};
+use Packvium\Constraint\{AxleLoad,CompatibilityConstraint,ConstraintContext,LoadCalculator,SupportConstraint,TagCountConstraint,VolumeReserve};
 use Packvium\Constraint\Internal\LoadSupportGraph;
-use Packvium\Domain\{AxisAlignedBox,FlatBag,Nesting,PackedContainer,PackingRequest,Placement,Point,UnpackedItem};
+use Packvium\Domain\{AxisAlignedBox,Container,Dimensions,FlatBag,Nesting,PackedContainer,PackingRequest,Placement,Point,UnpackedItem};
+use Packvium\Support\BigInt;
 use Packvium\Sequence\{RouteSequenceError,UnloadingDependencyGraph};
 use Packvium\Unit\Length;
 /**
@@ -30,11 +31,13 @@ final class IndependentSolutionValidator
                 $item=$placement->instance->item;
                 if($item->tags!==[]||$item->incompatibleTags!==[])$compatibilitySensitive=true;
                 if($item->minimumSupportRatio>0||($item->groundContactRule!==null&&$item->groundContactRule!=='free'))$supportSensitive=true;
-                // A stacking-group list refuses load on the same edges `stackable` does.
-                if(!$item->stackable||$item->acceptsStackingGroups!==[])$stackSensitive=true;
+                // A stacking-group list or bearing limit makes the scene stack-sensitive.
+                if($item->isStackSensitive())$stackSensitive=true;
             }
             $units=LoadCalculator::units($placements);
             $stackGraph=$stackSensitive?new LoadSupportGraph($units):null;
+            $compatibilityConstraints=$compatibilitySensitive?[new CompatibilityConstraint(),new TagCountConstraint()]:[];
+            $supportConstraint=$supportSensitive?new SupportConstraint($minimumSupportRatio):null;
             foreach(self::collisionPairs($placements) as [$left,$right])
                 $issues[]=new ValidationIssue('collision',$placements[$left]->instance->id().' with '.$placements[$right]->instance->id());
             foreach($packed->placements as $index=>$p){
@@ -57,17 +60,21 @@ final class IndependentSolutionValidator
                 if($eligibleTags!==[]&&array_intersect($eligibleTags,$packed->container->tags)===[])
                     $issues[]=new ValidationIssue('container_ineligible',$id);
                 // The common lattice case has no pair-dependent rules. Avoid building
-                // an O(n) "all other placements" array for every item in that case.
-                $ctx=null;
-                if($compatibilitySensitive||$supportSensitive){
+                // an O(n) "all other placements" array unless tag rules need it;
+                // support queries only inspect z2 == origin.z or origin.z < box.origin.z,
+                // which a positive-height box never satisfies against itself, so passing
+                // `$placements` reuses `LoadSupportGraph::$cachedByTop` in O(n).
+                if($compatibilitySensitive){
                     $others=array_merge(array_slice($placements,0,$index),array_slice($placements,$index+1));
-                    $ctx=new ConstraintContext($packed->container,$others,$p->instance,$p->envelopeOrigin,$p->rotation,$p->dimensions,$p->envelopeDimensions);
+                    $compatCtx=new ConstraintContext($packed->container,$others,$p->instance,$p->envelopeOrigin,$p->rotation,$p->dimensions,$p->envelopeDimensions);
+                    foreach($compatibilityConstraints as $constraint){
+                        $r=$constraint->evaluate($compatCtx);
+                        if(!$r->allowed)$issues[]=new ValidationIssue($r->code,$id.': '.$r->detail);
+                    }
                 }
-                $constraints=[];
-                if($compatibilitySensitive){$constraints[]=new CompatibilityConstraint();$constraints[]=new TagCountConstraint();}
-                if($supportSensitive)$constraints[]=new SupportConstraint($minimumSupportRatio);
-                foreach($constraints as $constraint){
-                    $r=$constraint->evaluate($ctx);
+                if($supportConstraint!==null){
+                    $supportCtx=new ConstraintContext($packed->container,$placements,$p->instance,$p->envelopeOrigin,$p->rotation,$p->dimensions,$p->envelopeDimensions);
+                    $r=$supportConstraint->evaluate($supportCtx);
                     if(!$r->allowed)$issues[]=new ValidationIssue($r->code,$id.': '.$r->detail);
                 }
                 if($stackSensitive){
@@ -78,9 +85,11 @@ final class IndependentSolutionValidator
             // A second, whole-container bearing pass: the per-placement check above
             // reports the first offender it meets, this one is anchored on the container.
             $densityLimit=$packed->container->maxStackDensity?->ticks;
-            $analysis=new \Packvium\Constraint\Internal\LoadAnalysis($units,$stackGraph);
-            $failure=$analysis->overloaded()??$analysis->crushed()??$analysis->stackLimitExceeded()??$analysis->stackDensityExceeded($densityLimit);
-            if($failure!==null)$issues[]=new ValidationIssue($failure[0],$packed->id().': '.$failure[1]);
+            if($stackSensitive||$densityLimit!==null){
+                $analysis=new \Packvium\Constraint\Internal\LoadAnalysis($units,$stackGraph);
+                $failure=$analysis->overloaded()??$analysis->crushed()??$analysis->stackLimitExceeded()??$analysis->stackDensityExceeded($densityLimit);
+                if($failure!==null)$issues[]=new ValidationIssue($failure[0],$packed->id().': '.$failure[1]);
+            }
             if($packed->container->axles!==null){
                 $axleFailure=AxleLoad::exceeded(
                     $packed->container->axles,
@@ -91,9 +100,10 @@ final class IndependentSolutionValidator
                 if($axleFailure!==null)$issues[]=new ValidationIssue($axleFailure[0],$packed->id().': '.$axleFailure[1]);
             }
             if($packed->container->isFlatBag()){
-                // The girth rule over the envelopes alone; the frame is checked above.
+                // The girth rule over the envelopes alone, widened by a side gusset
+                // (1.10); the frame is checked above.
                 [$a,$b,$c]=FlatBag::extentOf($packed->placements);
-                if(!FlatBag::girthAdmits($packed->container->innerDimensions,$a,$b,$c))$issues[]=new ValidationIssue('bag_girth_exceeded',$packed->id());
+                if(!FlatBag::girthAdmits($packed->container->innerDimensions,$a,$b,$c,$packed->container->sideGussetTicks()))$issues[]=new ValidationIssue('bag_girth_exceeded',$packed->id());
             }
             $onRoute=false;foreach($placements as $p)if($p->instance->item->stopIndex!==null){$onRoute=true;break;}
             if($onRoute){
@@ -146,6 +156,8 @@ final class IndependentSolutionValidator
             if($machine===null||$machine->madeToMeasure===null||$packed->container->madeToMeasure===null)continue;
             $expected=$machine->fabricate(FlatBag::extentOf($packed->placements));
             $box=$packed->container;
+            if($box->innerDimensions!=$expected->innerDimensions&&self::reserveCut($packed,$expected,$machine->innerDimensions))
+                $expected=$machine->fabricate(self::sides($box->innerDimensions));
             if($box->innerDimensions!=$expected->innerDimensions)$issues[]=new ValidationIssue('fabricated_dimensions_mismatch',$packed->id());
             if($box->outerDimensions!=$expected->outerDimensions)$issues[]=new ValidationIssue('outer_dimensions_mismatch',$packed->id());
             if($box->costMinor!==$expected->costMinor)$issues[]=new ValidationIssue('made_to_measure_cost_mismatch',$packed->id());
@@ -153,6 +165,24 @@ final class IndependentSolutionValidator
         }
         return $issues;
     }
+
+    /**
+     * A box larger than the tight cut is admitted when the tight box breaks the void-fill reserve
+     * and the larger one is on the machine grid within the maximum; whether it keeps the
+     * reserve is checked with every other container's reserve. O(1).
+     */
+    private static function reserveCut(PackedContainer $packed,Container $tight,Dimensions $maximum):bool
+    {
+        $machine=$tight->madeToMeasure;
+        if($tight->voidFillReserveRatio===0.0||$machine===null)return false;
+        $cut=self::sides($packed->container->innerDimensions);$low=self::sides($tight->innerDimensions);$high=self::sides($maximum);
+        for($axis=0;$axis<3;$axis++)
+            if($cut[$axis]<$low[$axis]||$cut[$axis]>$high[$axis]||($cut[$axis]-$machine->minimum[$axis])%$machine->increment[$axis]!==0)return false;
+        return BigInt::compare($packed->usedVolumeString(),VolumeReserve::usable($tight))>0;
+    }
+
+    /** @return array{0:int,1:int,2:int} */
+    private static function sides(Dimensions $dimensions):array{return [$dimensions->length->ticks,$dimensions->width->ticks,$dimensions->height->ticks];}
 
     /**
      * @param list<Placement> $placements @return list<array{0:int,1:int}>

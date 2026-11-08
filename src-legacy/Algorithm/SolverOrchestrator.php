@@ -9,7 +9,7 @@ use Packvium\Extension\{CandidateScorer,ContainerSelector,DefaultCandidateScorer
 use Packvium\Result\StartRecord;
 use Packvium\Support\{BigInt,ExactGeometry,ExactInteger,StableSorter};
 use Packvium\Objective\{LandedCostSolutionScorer,ObjectiveRegistry};
-use Packvium\Algorithm\Internal\{ConcurrentStarts,ContainerPlanBeam,MadeToMeasureTrial,QualityStages};
+use Packvium\Algorithm\Internal\{ConcurrentStarts,ContainerPlanBeam,MadeToMeasureTrial,PalletTrial,QualityStages};
 final class SolverOrchestrator
 {
     /**
@@ -261,7 +261,7 @@ final class SolverOrchestrator
      */
     private static function fitsAlone(Container $container,Dimensions $dimensions):bool
     {
-        return $container->isFlatBag()?FlatBag::fitsAlone($container->innerDimensions,$dimensions):$dimensions->fitsInside($container->innerDimensions);
+        return $container->isFlatBag()?FlatBag::fitsAlone($container->innerDimensions,$dimensions,$container->sideGussetTicks()):$dimensions->fitsInside($container->innerDimensions);
     }
 
     /** @param list<Container> $containers */
@@ -689,21 +689,31 @@ final class SolverOrchestrator
     /**
      * One container's trial for a round, and how many single-container solves it spent. A
      * declared container is one solve; a made-to-measure one runs the rung chain and returns
-     * its trial already fabricated.
+     * its trial already fabricated; a pallet's frame without fixed items packs its
+     * deck first.
      *
      * @param list<ItemInstance> $items
      * @return array{0:SingleContainerSolution,1:int}
      */
     private function trial(SingleContainerSolver $solver,Container $container,int $sequence,array $items,PackingConfig $config,SearchStats $stats,Deadline $deadline):array
     {
-        if($container->madeToMeasure===null)return [$solver->packOne($container,$sequence,$items,$config,$stats,$deadline),1];
-        return MadeToMeasureTrial::madeToMeasureTrial($this->bridge(),$this->containerSelector,$solver,$container,$sequence,$items,$config,$stats,$deadline);
+        if($container->madeToMeasure!==null)
+            return MadeToMeasureTrial::madeToMeasureTrial($this->bridge(),$this->containerSelector,$solver,$container,$sequence,$items,$config,$stats,$deadline);
+        if($container->deck!==null&&$container->preloaded===[])
+            return PalletTrial::palletTrial($this->bridge(),$solver,$container,$sequence,$items,$config,$stats,$deadline);
+        return [$solver->packOne($container,$sequence,$items,$config,$stats,$deadline),1];
     }
 
-    /** A rung trial as the box cut for it: the achieved extent of its placements, envelope far faces with clearance, rounded up onto the machine grid (D14). O(p). */
-    private static function fabricated(Container $declared,SingleContainerSolution $one):SingleContainerSolution
+    /**
+     * A rung trial as the box cut for it: the achieved extent of its placements, envelope far faces
+     * with clearance, rounded up onto the machine grid (D14); or, given `$rung`, the rung itself,
+     * which is already on the grid. O(p).
+     *
+     * @param array{0:int,1:int,2:int}|null $rung
+     */
+    private static function fabricated(Container $declared,SingleContainerSolution $one,?array $rung=null):SingleContainerSolution
     {
-        $box=$declared->fabricate(FlatBag::extentOf($one->state->placements));
+        $box=$declared->fabricate($rung??FlatBag::extentOf($one->state->placements));
         return new SingleContainerSolution($one->state->withContainer($box),$one->unpacked,false,$one->timeLimitReached,false);
     }
 

@@ -76,7 +76,7 @@ final class ObjectiveCheck
             $achievedHeight = Exact::add($achievedHeight, $top);
             if ($billed && $billing['divisor'] !== null) {
                 $gross = Json::pyInt(Json::get(Json::get($packed, 'gross_weight', []), 'ticks', 0), 'gross_weight');
-                $size = $spec->flatBag ? ContainerCheck::achievedExtent($packed, $context->clearance) : ($spec->outer ?? $spec->inner);
+                $size = ContainerCheck::billedSize($packed, $spec, $context->clearance);
                 $dimensional = self::dimensionalWeight(
                     $size,
                     Json::int($billing['divisor'], 'dimensional_weight_divisor'),

@@ -69,11 +69,6 @@ final class MaximalSpaceSolver implements SingleContainerSolver
     /** @param list<Space> $spaces @param list<PlacementConstraint> $constraints */
     private static function choose(ContainerState $state,array $spaces,ItemInstance $item,PackingConfig $config,array $constraints,SearchStats $stats,Deadline $deadline,CandidateScorer $scorer):?Candidate
     {
-        foreach($spaces as $space){
-            $deadline->check();
-            foreach(CandidateFinder::find($state,$item,$config,$constraints,$stats,$deadline,$scorer,null,[$space->origin]) as $candidate)
-                if($candidate->envelopeDimensions->fitsInside($space->dimensions))return $candidate;
-        }
-        return null;
+        return CandidateFinder::chooseInSpaces($state,$spaces,$item,$config,$constraints,$stats,$deadline,$scorer);
     }
 }

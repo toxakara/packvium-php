@@ -8,7 +8,9 @@ use Packvium\Domain\Dimensions;
 use Packvium\Domain\FixedPlacement;
 use Packvium\Domain\Item;
 use Packvium\Domain\MadeToMeasure;
+use Packvium\Domain\OverhangLimit;
 use Packvium\Domain\RateTable;
+use Packvium\Domain\ShapeType;
 use Packvium\Serialization\InvalidRequestException;
 use Packvium\Validation\FixedPlacementException;
 
@@ -18,7 +20,7 @@ use Packvium\Validation\FixedPlacementException;
  * Held to `packvium.request_objects.check_objects`. `RequestRules::check` walks a JSON
  * request; `Packer::pack` takes objects, whose own constructors already refuse most of the
  * same values but cannot know where in a request they will sit. This walks the objects in the
- * JSON rules' order -- configuration, items, item ids, containers, container ids, fixed
+ * JSON rules' order -- currency, configuration, items, item ids, containers, container ids, fixed
  * placements -- with the same primitives, so a value the JSON path refuses is refused here with the same reason and
  * the same RFC 6901 field. Only rules `RequestRules::check` also applies are checked, so on
  * the JSON path, which runs that first, this never refuses anything.
@@ -51,23 +53,48 @@ final class RequestObjects
      * @param list<FixedPlacement> $fixedPlacements
      * @throws InvalidRequestException
      */
-    public static function check(array $items, array $containers, PackingConfig $config, array $fixedPlacements = []): void
+    public static function check(array $items, array $containers, PackingConfig $config, array $fixedPlacements = [], ?string $currency = null): void
     {
+        if ($currency !== null) {
+            RequestRules::currencyCode($currency, '/currency');
+        }
         self::configuration($config);
         foreach ($items as $index => $item) {
             self::item($item, "/items/{$index}");
         }
         RequestRules::requireUniqueIds(\array_map(static fn(Item $item): string => $item->id, $items), 'items');
         foreach ($containers as $index => $container) {
-            self::container($container, "/containers/{$index}");
+            self::container($container, "/containers/{$index}", $currency);
         }
         RequestRules::requireUniqueIds(\array_map(static fn(Container $container): string => $container->id, $containers), 'containers');
+        self::routesBesidePallets($items, $containers);
         RequestRules::totalWeight(
             \array_map(static fn(Item $item): array => [$item->weight->ticks, $item->quantity], $items),
             \array_map(static fn(Container $container): int => $container->tareWeight->ticks, $containers),
         );
+        $hullTypes = \array_values(\array_map(static fn(Item $item): string => $item->id,
+            \array_filter($items, static fn(Item $item): bool => $item->shapeType === ShapeType::CONVEX_HULL)));
         foreach ($fixedPlacements as $index => $placement) {
-            self::fixedPlacement($placement, "fixed_placements[{$index}]", "/fixed_placements/{$index}");
+            self::fixedPlacement($placement, "fixed_placements[{$index}]", "/fixed_placements/{$index}", $hullTypes);
+        }
+    }
+
+    /**
+     * A routed item beside a pallet that allows overhang: the JSON path refuses it as
+     * `container.pallet_overhang_limit+item.stop_index`, this one at the first routed item.
+     *
+     * @param list<Item> $items @param list<Container> $containers
+     */
+    private static function routesBesidePallets(array $items, array $containers): void
+    {
+        $pallets = \array_filter($containers, static fn(Container $container): bool => $container->palletOverhangLimit !== null);
+        if ($pallets === []) {
+            return;
+        }
+        foreach ($items as $index => $item) {
+            if ($item->stopIndex !== null) {
+                throw new InvalidRequestException('not_allowed', "/items/{$index}/stop_index", 'cannot be combined with pallet_overhang_limit');
+            }
         }
     }
 
@@ -75,18 +102,23 @@ final class RequestObjects
      * `FixedPlacementShape`'s rules that an object can break, in its order and with its refusal;
      * the types hold the orientation and the position, and `Point` refuses a negative
      * coordinate. Whether the set can hold is `FixedPlacementAdmission`'s to say.
+     *
+     * @param list<string> $hullTypes the item types a signed orientation may fix (1.10)
      */
-    private static function fixedPlacement(FixedPlacement $placement, string $where, string $field): void
+    private static function fixedPlacement(FixedPlacement $placement, string $where, string $field, array $hullTypes): void
     {
         foreach (['item_type' => $placement->itemId, 'container_type' => $placement->containerId] as $name => $value) {
             if ($value === '') {
                 throw new FixedPlacementException("{$where}.{$name} is a non-empty string", 'malformed', "{$field}/{$name}");
             }
         }
+        FixedPlacementShape::requireOrientation($placement->rotation->value, \in_array($placement->itemId, $hullTypes, true), $where, "{$field}/orientation");
         $instance = JsonValue::integer($placement->containerInstance);
         if ($instance === null || $instance < 1) {
             throw new FixedPlacementException("{$where}.container_instance counts from 1", 'malformed', "{$field}/container_instance");
         }
+        FixedPlacementShape::requirePlacementId($placement->placementId, $placement->packedContainerId(), $placement->position,
+            $placement->itemId, $placement->rotation->value, $where, $field);
     }
 
     /**
@@ -132,7 +164,7 @@ final class RequestObjects
         }
     }
 
-    private static function container(Container $container, string $where): void
+    private static function container(Container $container, string $where, ?string $currency): void
     {
         self::optionalInteger($container->quantity, "{$where}/quantity", 1);
         RequestRules::box(self::sides($container->innerDimensions), "{$where}/inner_dimensions");
@@ -144,7 +176,7 @@ final class RequestObjects
         RequestRules::ratio($container->voidFillReserveRatio, "{$where}/void_fill_reserve_ratio", 1);
         self::tagLimits($container->tagLimits, "{$where}/tag_limits");
         if ($container->rateTable !== null) {
-            self::rateTable($container->rateTable, "{$where}/rate_table");
+            self::rateTable($container->rateTable, "{$where}/rate_table", $currency);
         }
         if ($container->deformableBoundary !== null) {
             self::flatBag($container, $where);
@@ -152,6 +184,19 @@ final class RequestObjects
         if ($container->madeToMeasure !== null) {
             self::madeToMeasure($container, $container->madeToMeasure, $where);
         }
+        if ($container->palletOverhangLimit !== null) {
+            self::palletOverhangLimit($container, $container->palletOverhangLimit, $where);
+        }
+    }
+
+    /**: each axis, then the solving frame, against the admission ceiling. O(1). */
+    private static function palletOverhangLimit(Container $container, OverhangLimit $limit, string $where): void
+    {
+        $field = "{$where}/pallet_overhang_limit";
+        RequestRules::lengthTicks($limit->length->ticks, "{$field}/length");
+        RequestRules::lengthTicks($limit->width->ticks, "{$field}/width");
+        [$length, $width, $height] = self::sides($container->innerDimensions);
+        RequestRules::box([$length + 2 * $limit->length->ticks, $width + 2 * $limit->width->ticks, $height], $field);
     }
 
     /**
@@ -169,7 +214,7 @@ final class RequestObjects
         }
     }
 
-    private static function rateTable(RateTable $table, string $where): void
+    private static function rateTable(RateTable $table, string $where, ?string $currency): void
     {
         foreach (['weight_brackets_g' => [$table->weightBracketsG, 1], 'prices_minor' => [$table->pricesMinor, 0]] as $name => [$values, $minimum]) {
             foreach ($values as $index => $value) {
@@ -178,6 +223,9 @@ final class RequestObjects
         }
         RequestRules::integer($table->minimumChargeMinor, "{$where}/minimum_charge_minor", 0);
         RequestRules::integer($table->fuelSurchargePermille, "{$where}/fuel_surcharge_permille", 0);
+        if ($table->currency !== null) {
+            RequestRules::rateTableCurrency($table->currency, "{$where}/currency", $currency);
+        }
     }
 
     /**
@@ -192,7 +240,7 @@ final class RequestObjects
             'obstacles' => $container->obstacles, 'axles' => $container->axles,
             'access_directions' => $container->accessDirections, 'max_stack_density' => $container->maxStackDensity,
             'outer_dimensions' => $container->outerDimensions, 'void_fill_reserve_ratio' => $container->voidFillReserveRatio,
-            'made_to_measure' => $container->madeToMeasure,
+            'made_to_measure' => $container->madeToMeasure, 'pallet_overhang_limit' => $container->palletOverhangLimit,
         ];
         foreach (RequestRules::BAG_EXCLUSIONS as $name) {
             $value = $fields[$name] === [] ? null : $fields[$name];

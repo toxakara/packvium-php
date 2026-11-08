@@ -23,6 +23,16 @@ final class MeasureReadingTest extends TestCase
         self::assertSame(MeasureReading::NEGATIVE, MeasureReading::verdict('-' . self::VAST, Weight::class, 'g'));
     }
 
+    public static function testAMixedFractionWhoseWholePartIsTheSmallestIntIsNegative(): void
+    {
+        // abs(PHP_INT_MIN) is a float equal to PHP_INT_MAX: it once passed the range check and
+        // failed later as a type error, read as unreadable where Python says negative.
+        foreach (['-9223372036854775808 0/1', '-9223372036854775808 1/2'] as $text) {
+            self::assertSame(MeasureReading::NEGATIVE, MeasureReading::verdict($text, Length::class, 'ticks'), $text);
+            self::assertSame(MeasureReading::NEGATIVE, MeasureReading::verdict($text, Weight::class, 'g'), $text);
+        }
+    }
+
     public static function testEverySpellingOfAVastLengthIsReadExactly(): void
     {
         foreach (['100000000000000000000 1/2', '922337203685477.5807', self::VAST . '/3', self::VAST . ' cm', self::VAST . 'ticks'] as $text) {

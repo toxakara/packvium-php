@@ -50,6 +50,10 @@ final class GridSolver implements SingleContainerSolver
             // A lattice joins same-type items only, so two types may share one exactly when
             // they share the stacking rule as well.
             $item->stackingGroup,$acceptsStackingGroups,
+            // packOne refuses a prototype that is not a rigid box, so the shape must be in the
+            // key too: otherwise a compressible type of the same size and weight joins a rigid
+            // prototype's lattice and is stacked with no crush check at all.
+            $item->shapeType,
         ]);
     }
 
@@ -84,6 +88,10 @@ final class GridSolver implements SingleContainerSolver
         if($container->isFlatBag())
             // The lattice counts cells against the rigid frame alone; a bag's girth rule
             // couples the axes, which the per-candidate check applies exactly.
+            return (new ExtremePointSolver())->packOne($container,$sequence,$items,$config,$stats,$deadline);
+        if($container->deck!==null)
+            // The lattice rests every floor cell on the whole floor; a pallet's frame bears
+            // weight only on its deck, which the per-candidate support check reads.
             return (new ExtremePointSolver())->packOne($container,$sequence,$items,$config,$stats,$deadline);
         if($container->maxStackDensity!==null)
             // The single-layer heuristic below only ever reasons about one item
