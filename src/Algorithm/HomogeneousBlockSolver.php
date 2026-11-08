@@ -83,7 +83,7 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
         // A block set on a smaller one overhangs it, so a request that asks for support
         // is left to the per-item search.
         if($config->minimumSupportRatio>0)return false;
-        if($this->constraints!==[]||$container->obstacles!==[]||$container->preloaded!==[]||$container->axles!==null||$container->tagLimits!==[]||$container->maxStackDensity!==null||$container->voidFillReserveRatio>0||$container->isFlatBag())return false;
+        if($this->constraints!==[]||$container->obstacles!==[]||$container->preloaded!==[]||$container->axles!==null||$container->tagLimits!==[]||$container->maxStackDensity!==null||$container->voidFillReserveRatio>0||$container->isFlatBag()||$container->deck!==null)return false;
         foreach($items as $instance){
             $item=$instance->item;
             if($item->shapeType!==ShapeType::RIGID_CUBOID||$item->group!==null||$item->tags!==[]||$item->incompatibleTags!==[]||$item->eligibleContainerTags!==[]||!$item->stackable||$item->mustBeOnFloor||$item->maxTopLoad!==null||$item->maxStackedItems!==null||$item->minimumSupportRatio!=0.0||!in_array($item->groundContactRule,[null,'free'],true)||$item->nestingHeight!==null||$item->stopIndex!==null)return false;

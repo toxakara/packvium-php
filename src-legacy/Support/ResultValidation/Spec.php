@@ -10,7 +10,31 @@ final class Spec
     /** The six axis-aligned exit directions a placement could be slid out through. */
     public const EXIT_DIRECTIONS = ['+x', '-x', '+y', '-y', '+z', '-z'];
 
-    private const UPRIGHT_ROTATIONS = ['LWH', 'WLH'];
+    /**
+     * The codes an item may be placed in: its list, or the six legacy codes, narrowed to the
+     * upright ones under `keep_upright`. A signed code counts only on a hull -- the engines refuse
+     * it anywhere else -- so a box placed in one reads as a forbidden rotation (1.10).
+     *
+     * @param mixed $raw
+     * @return list<mixed>
+     */
+    private static function allowedRotations($raw, bool $keepUpright): array
+    {
+        $listed = Json::get($raw, 'allowed_rotations');
+        $rotations = $listed === null ? Geometry::BOX_ROTATIONS : \array_values(Json::items($listed, 'allowed_rotations'));
+        if (!Json::isText(Json::get($raw, 'shape_type'), 'convex_hull')) {
+            $rotations = self::within($rotations, Geometry::BOX_ROTATIONS);
+        }
+        return $keepUpright ? self::within($rotations, Geometry::UPRIGHT_ROTATIONS) : $rotations;
+    }
+
+    /** @param list<mixed> $rotations @param list<string> $codes @return list<mixed> */
+    private static function within(array $rotations, array $codes): array
+    {
+        return \array_values(\array_filter($rotations, static function ($code) use ($codes): bool {
+            return \is_string($code) && \in_array($code, $codes, true);
+        }));
+    }
 
     /** @param mixed $request @return Ordered<ItemSpec> */
     public static function items($request, string $unit): Ordered
@@ -21,11 +45,9 @@ final class Spec
             $keepUpright = Json::flag($raw, 'keep_upright', false, $where);
             $stackable = Json::flag($raw, 'stackable', true, $where);
             $mustBeOnFloor = Json::flag($raw, 'must_be_on_floor', false, $where);
-            $rotations = Json::get($raw, 'allowed_rotations');
-            if ($rotations === null) {
-                $rotations = $keepUpright ? self::UPRIGHT_ROTATIONS : \array_keys(Geometry::ROTATIONS);
-            } else {
-                $rotations = Json::items($rotations, 'allowed_rotations');
+            $rotations = self::allowedRotations($raw, $keepUpright);
+            if ($rotations === []) {
+                throw MalformedResult::contract("{$where}.allowed_rotations must allow at least one rotation after keep_upright");
             }
             $id = Json::at($raw, 'id');
             $spec = new ItemSpec();
@@ -33,7 +55,7 @@ final class Spec
             $spec->dimensions = Units::dimensions(Json::at($raw, 'dimensions'), $unit);
             $spec->weight = Units::toTicks(Json::get($raw, 'weight', 0), 'g', Units::WEIGHT);
             $spec->quantity = Json::get($raw, 'quantity', 1);
-            $spec->allowedRotations = \array_values($rotations);
+            $spec->allowedRotations = $rotations;
             $spec->stackable = $stackable;
             $spec->mustBeOnFloor = $mustBeOnFloor;
             $spec->maxTopLoad = self::measured($raw, 'max_top_load', 'g', Units::WEIGHT);
@@ -68,7 +90,7 @@ final class Spec
         foreach (Json::items(Json::at($request, 'containers'), 'request.containers') as $raw) {
             $spec = new ContainerSpec();
             $spec->id = Json::at($raw, 'id');
-            $spec->inner = Units::dimensions(Json::at($raw, 'inner_dimensions'), $unit);
+            [$spec->inner, $spec->deck] = self::frameAndDeck(Units::dimensions(Json::at($raw, 'inner_dimensions'), $unit), Json::get($raw, 'pallet_overhang_limit'), $unit);
             $spec->accessDirections = self::accessDirections($raw);
             $outer = Json::get($raw, 'outer_dimensions');
             $spec->outer = $outer === null ? null : Units::dimensions($outer, $unit);
@@ -85,12 +107,41 @@ final class Spec
             $spec->maxStackDensity = self::measured($raw, 'max_stack_density', 'g', Units::WEIGHT);
             $spec->rateTable = Json::get($raw, 'rate_table');
             $spec->flatBag = Json::get($raw, 'deformable_boundary') !== null;
-            $spec->reportsAchievedExtent = $spec->flatBag || Json::get($raw, 'made_to_measure') !== null;
+            $spec->sideGusset = self::sideGusset(Json::get($raw, 'deformable_boundary'), $unit);
+            $spec->reportsAchievedExtent = $spec->flatBag || Json::get($raw, 'made_to_measure') !== null || $spec->deck !== null;
             $machine = Json::get($raw, 'made_to_measure');
             $spec->madeToMeasure = $machine === null ? null : self::machine($machine, $unit);
             $containers->set($spec->id, $spec);
         }
         return $containers;
+    }
+
+    /**
+     * A gusseted bag's side gusset depth in ticks, else 0.
+     *
+     * @param mixed $boundary @return int|string
+     */
+    private static function sideGusset($boundary, string $unit)
+    {
+        $depth = $boundary === null ? null : Json::get($boundary, 'side_gusset_depth');
+        return $depth === null ? 0 : Units::toTicks($depth, $unit, Units::LENGTH);
+    }
+
+    /**
+     * A pallet's solving frame and the deck inside it, else the declared size.
+     *
+     * @param array{0:int|string,1:int|string,2:int|string} $declared @param mixed $limit
+     * @return array{0:array{0:int|string,1:int|string,2:int|string},1:array{0:int|string,1:int|string,2:int|string,3:int|string}|null}
+     */
+    private static function frameAndDeck(array $declared, $limit, string $unit): array
+    {
+        if ($limit === null) {
+            return [$declared, null];
+        }
+        $overhangX = Units::toTicks(Json::at($limit, 'length'), $unit, Units::LENGTH);
+        $overhangY = Units::toTicks(Json::at($limit, 'width'), $unit, Units::LENGTH);
+        $frame = [Exact::add($declared[0], Exact::mul($overhangX, 2)), Exact::add($declared[1], Exact::mul($overhangY, 2)), $declared[2]];
+        return [$frame, [$overhangX, $overhangY, $declared[0], $declared[1]]];
     }
 
     /** `None if raw.get(key) is None else to_ticks(...)`. @param mixed $raw @param array<string,int> $table @return int|string|null */

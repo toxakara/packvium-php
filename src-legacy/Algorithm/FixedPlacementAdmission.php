@@ -2,7 +2,7 @@
 declare(strict_types=1);
 namespace Packvium\Algorithm;
 use Packvium\Constraint\Internal\LoadSupportGraph;
-use Packvium\Domain\{AxisAlignedBox,Container,Dimensions,FixedPlacement,Item,ItemInstance,PackedContainer,PackingRequest,Placement,Point};
+use Packvium\Domain\{AxisAlignedBox,Container,Deck,Dimensions,FixedPlacement,Item,ItemInstance,PackedContainer,PackingRequest,PalletOverhang,Placement,Point};
 use Packvium\Support\{CanonicalJson,ExactGeometry,ExactInteger};
 use Packvium\Unit\{Length,Weight};
 use Packvium\Validation\{FixedPlacementException,IndependentSolutionValidator};
@@ -39,7 +39,7 @@ final class FixedPlacementAdmission
         self::requireContiguousInstances($grouped,$containers,$maxContainers);
         $packed=[];
         foreach($grouped as [$containerId,$sequence,$placements])
-            $packed[]=new PackedContainer($containers[$containerId],$sequence,self::withSupportAndLoads($placements));
+            $packed[]=new PackedContainer($containers[$containerId],$sequence,self::withSupportAndLoads($placements,$containers[$containerId]->deck));
         self::requireValidAlone($request,$packed,$minimumSupportRatio,$clearance);
         $taken=[];foreach($packed as $container)foreach($container->placements as $placement)$taken[$placement->instance->id()]=true;
         $free=array_values(array_filter($request->instances(),static function (ItemInstance $instance) use ($taken): bool {
@@ -148,22 +148,22 @@ final class FixedPlacementAdmission
      *
      * @param list<Placement> $placements @return list<Placement>
      */
-    private static function withSupportAndLoads(array $placements):array
+    private static function withSupportAndLoads(array $placements,?Deck $deck):array
     {
         $supported=[];
         foreach($placements as $index=>$placement){
             $others=$placements;unset($others[$index]);
             $supported[]=new Placement($placement->instance,$placement->position,$placement->rotation,$placement->dimensions,
-                $placement->envelopeOrigin,$placement->envelopeDimensions,self::supportRatio(array_values($others),$placement),new Weight(0),true);
+                $placement->envelopeOrigin,$placement->envelopeDimensions,self::supportRatio(array_values($others),$placement,$deck),new Weight(0),true);
         }
         return TopLoadAssigner::assign($supported);
     }
 
     /** @param list<Placement> $others */
-    private static function supportRatio(array $others,Placement $placement):float
+    private static function supportRatio(array $others,Placement $placement,?Deck $deck):float
     {
-        if($placement->envelopeOrigin->z===0)return 1.0;
         $box=new AxisAlignedBox($placement->envelopeOrigin,$placement->envelopeDimensions);
+        if($placement->envelopeOrigin->z===0)return PalletOverhang::floorSupportRatio($deck,$box);
         $support=LoadSupportGraph::candidateView($others,$placement->instance,$box);
         return ExactInteger::ratio($support->supportingArea,ExactGeometry::baseArea($placement->envelopeDimensions));
     }

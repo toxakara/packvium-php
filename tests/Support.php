@@ -9,6 +9,8 @@ use Packvium\Domain\Dimensions;
 use Packvium\Domain\Item;
 use Packvium\Domain\PackedContainer;
 use Packvium\Domain\PackingRequest;
+use Packvium\Domain\Placement;
+use Packvium\Domain\Point;
 use Packvium\Domain\UnpackedItem;
 use Packvium\Packer;
 use Packvium\Result\PackingResult;
@@ -98,6 +100,20 @@ final class Support
             $problems[] = 'items_lost_or_invented';
         }
         return $problems;
+    }
+
+    /**
+     * A serialized placement's `placement_id` restated for wherever a test has moved it (1.10),
+     * so a mutation is judged by the rule it targets rather than by the id it left stale.
+     *
+     * @param array<string,mixed> $placement
+     * @return array<string,mixed>
+     */
+    public static function restatedId(array $placement, string $containerId): array
+    {
+        $ticks = array_map(static fn(string $axis): int => (int)$placement['position'][$axis]['ticks'], ['x', 'y', 'z']);
+        $placement['placement_id'] = Placement::identifier($containerId, new Point(...$ticks), $placement['item_type'], $placement['orientation']);
+        return $placement;
     }
 
     /** @param list<PackedContainer> $containers @return list<string> */

@@ -3,7 +3,7 @@ declare(strict_types=1);
 namespace Packvium\Algorithm;
 use Packvium\Constraint\VolumeReserve;
 use Packvium\Config\PackingConfig;
-use Packvium\Domain\{AxisAlignedBox,Container,FlatBag,ItemInstance,LatticeSummary,Nesting,Placement,Point,ShapeType};
+use Packvium\Domain\{AxisAlignedBox,Container,FlatBag,ItemInstance,LatticeSummary,Nesting,PalletOverhang,Placement,Point,ShapeType};
 use Packvium\Support\BigInt;
 /**
  * Placed boxes plus the candidate points they expose.
@@ -203,8 +203,10 @@ final class ContainerState
      * The dimensional weight, in weight ticks, a carrier bills for this container as filled.
      *
      * A flat bag is billed on its running extents, the parcel a carrier measures; an empty bag
-     * has no parcel yet and bills nothing by volume. A rigid container is billed on its declared
-     * outer size, else its inner size. O(1).
+     * has no parcel yet and bills nothing by volume. A pallet is billed at the footprint its load
+     * reached. A rigid container is billed on its declared outer size, else its inner
+     * size. O(1) but for a pallet, O(p): the state tracks no lowest corner, and pallets are
+     * deck-first trials of few boxes each.
      */
     public function billedDimensionalWeight(PackingConfig $config):int
     {
@@ -212,6 +214,8 @@ final class ContainerState
         if($container->isFlatBag()){
             if($this->placements===[])return 0;
             $dimensions=FlatBag::asDimensions([$this->maxX,$this->maxY,$this->maxZ]);
+        }elseif($container->deck!==null){
+            $dimensions=PalletOverhang::billedDimensions($container,$container->deck,$this->placements);
         }else{
             $dimensions=$container->outerDimensions??$container->innerDimensions;
         }

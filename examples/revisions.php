@@ -95,7 +95,10 @@ section($rule, '2. What happened on the dock, recorded against that plan');
 
 $loaded = ArrayCodec::pack(plain($root->request))['containers'][0]['placements'][0];
 $events = [
+    // `placement_id` quotes the placement the operator saw on the plan. It must agree with
+    // the fields beside it, so a lock copied from the wrong line is refused, not applied.
     ['sequence' => 1, 'type' => 'placement_locked', 'placement' => [
+        'placement_id' => $loaded['placement_id'],
         'item_type' => 'cube', 'container_type' => 'tote', 'container_instance' => 1,
         'position' => [
             'x' => $loaded['position']['x']['value'],
@@ -112,6 +115,7 @@ echo '  approved artifact ' . substr($revision->approved->artifact, 0, 23)
     . "..., replay {$revision->approved->replay->level}\n";
 echo "  slabs still to pack: {$revision->request->items[1]->quantity}\n";
 echo '  fixed placements:    ' . count($revision->request->fixed_placements) . "\n";
+echo "  locked by id:        {$loaded['placement_id']}\n";
 echo <<<TEXT
 
   The events are applied to the request, not to the result: one slab fewer, and the
@@ -166,5 +170,61 @@ echo <<<TEXT
   An edited request no longer equals what its parent's request and its own events
   produce, and any later revision would stop naming it as a parent. An event that
   contradicts the request is refused by name rather than applied as a best guess.
+
+TEXT;
+
+// --------------------------------------------------------------------------------------
+section($rule, '5. A box already cut to measure is stocked, not cut again');
+
+$cut = [
+    'units' => ['length' => 'mm'],
+    'configuration' => $request['configuration'],
+    'items' => [
+        ['id' => 'cube', 'quantity' => 8, 'weight' => '100 g',
+         'dimensions' => ['length' => '100', 'width' => '100', 'height' => '100']],
+    ],
+    'containers' => [
+        ['id' => 'machine', 'cost_minor' => 40,
+         'inner_dimensions' => ['length' => '1510', 'width' => '1510', 'height' => '1510'],
+         'made_to_measure' => [
+             'minimum' => ['length' => '60', 'width' => '60', 'height' => '60'],
+             'increment' => ['length' => '25', 'width' => '25', 'height' => '25'],
+             'outer_allowance' => ['length' => '3', 'width' => '3', 'height' => '3'],
+             'cost_per_square_metre_minor' => 1000,
+             'tare_per_square_metre' => '500',
+         ]],
+    ],
+];
+$cutRoot = PlanRevision::root($cut);
+$cutArtifact = approve(plain($cutRoot->request));
+$first = ArrayCodec::pack(plain($cutRoot->request))['containers'][0]['placements'][0];
+$cutRevision = PlanRevision::derive($cutRoot, $cutArtifact, [
+    ['sequence' => 1, 'type' => 'placement_locked', 'placement' => [
+        'placement_id' => $first['placement_id'],
+        'item_type' => 'cube', 'container_type' => 'machine', 'container_instance' => 1,
+        'position' => [
+            'x' => $first['position']['x']['value'],
+            'y' => $first['position']['y']['value'],
+            'z' => $first['position']['z']['value'],
+        ],
+        'orientation' => $first['orientation'],
+    ]],
+]);
+$derived = plain($cutRevision->request);
+echo '  containers offered:  ' . implode(', ', array_column($derived['containers'], 'id')) . "\n";
+echo "  the lock now points at {$derived['fixed_placements'][0]['container_type']}\n";
+foreach (ArrayCodec::pack($derived)['containers'] as $container) {
+    echo '  replanned into:      ' . count($container['placements'])
+        . " cubes in a {$container['container_type']}, {$container['inner_dimensions']['length']['value']} mm a side\n";
+}
+echo '  audit without the artifact: ' . $codes(PlanRevision::verifyChain([$cutRoot, $cutRevision])) . "\n";
+echo '  audit with it:              '
+    . $codes(PlanRevision::verifyChain([$cutRoot, $cutRevision], [null, $cutArtifact])) . "\n";
+echo <<<TEXT
+
+  A locked cube sits in a box the machine has already cut, so the replan cannot cut
+  that box again. The derived request offers it as stock, `machine@1#1`, at the cut
+  size, price and tare, while new boxes are still cut to measure. The cut size is
+  read from the approved artifact, so checking such a revision needs that artifact.
 
 TEXT;

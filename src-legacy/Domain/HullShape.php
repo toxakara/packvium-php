@@ -93,8 +93,8 @@ final class HullShape
     /**
      * How many rotated hulls stay resident, before the memo is dropped and refilled.
      *
-     * A request is bounded by its distinct hull items times the six orientations, so this
-     * holds far more than any request the solver is sized for. Bounded rather than growing
+     * A request is bounded by its distinct hull items times the orientations they allow (at
+     * most 24), so this holds far more than any request the solver is sized for. Bounded rather than growing
      * for the life of the process: the point of the memo is to spend less, not to spend it
      * somewhere else.
      */
@@ -198,51 +198,24 @@ final class HullShape
     }
 
     /**
-     * Reorient a hull the way `Dimensions::rotated` reorients its box, never mirroring it.
+     * Reorient a hull by one of the 24 proper rotations, never mirroring it (1.10).
      *
-     * Three of the six rotations are odd permutations of the coordinate axes. On a cuboid
-     * that is invisible; on a hull a bare permutation returns the item's mirror image, a
-     * shape the caller does not own. One axis therefore changes sign when the permutation is
-     * odd, which makes all six proper rotations. Vertices come back translated so the
-     * rotated hull's bounding box starts at the origin.
+     * `v'[i] = s[i] * v[src[i]]` with the code's source axes and signs from `Orientations`. A
+     * bare permutation would hand back the item's mirror image for an odd permutation -- a
+     * shape the caller does not own -- which is why the legacy odd codes negate x and every
+     * signed code has determinant +1. Vertices come back translated so the rotated hull's
+     * bounding box starts at the origin.
      *
      * @param list<array{int,int,int}> $vertices
      * @return list<array{int,int,int}>
      */
     public static function rotate(array $vertices, string $rotation): array
     {
-        switch ($rotation) {
-            case Rotation::LWH:
-                $axes = [0, 1, 2];
-                break;
-            case Rotation::LHW:
-                $axes = [0, 2, 1];
-                break;
-            case Rotation::WLH:
-                $axes = [1, 0, 2];
-                break;
-            case Rotation::WHL:
-                $axes = [1, 2, 0];
-                break;
-            case Rotation::HLW:
-                $axes = [2, 0, 1];
-                break;
-            case Rotation::HWL:
-                $axes = [2, 1, 0];
-                break;
-        }
-        $inversions = 0;
-        for ($i = 0; $i < 3; $i++) {
-            for ($j = $i + 1; $j < 3; $j++) {
-                if ($axes[$i] > $axes[$j]) {
-                    $inversions++;
-                }
-            }
-        }
-        $sign = $inversions % 2 === 1 ? -1 : 1;
+        $axes = Orientations::sourceAxes($rotation);
+        $signs = Orientations::signs($rotation);
         $turned = [];
         foreach ($vertices as $vertex) {
-            $turned[] = [$sign * $vertex[$axes[0]], $vertex[$axes[1]], $vertex[$axes[2]]];
+            $turned[] = [$signs[0] * $vertex[$axes[0]], $signs[1] * $vertex[$axes[1]], $signs[2] * $vertex[$axes[2]]];
         }
         $low = [PHP_INT_MAX, PHP_INT_MAX, PHP_INT_MAX];
         foreach ($turned as $vertex) {

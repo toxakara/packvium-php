@@ -6,6 +6,7 @@ namespace Packvium\Tests;
 use Packvium\Artifacts\OperationalArtifact;
 use Packvium\Revisions\{PlanRevision, PlanRevisionException};
 use Packvium\Serialization\ArrayCodec;
+use Packvium\Unit\Length;
 use stdClass;
 
 /**
@@ -407,6 +408,99 @@ final class PlanRevisionTest extends TestCase
         $details = array_map(static fn(array $issue): string => $issue[1], self::issues(PlanRevision::verifyChain(array_slice($chain, 0, 2))));
         self::assertSame('parent 5, expected null', $details[0]);
         self::assertTrue(str_starts_with($details[1], 'parent forged, expected sha256:'), $details[1]);
+    }
+
+    public static function testABoxCutForTheApprovedPlanBecomesAStockContainer(): void
+    {
+        $request = self::measured();
+        $artifact = self::artifact($request);
+        $revision = PlanRevision::derive(PlanRevision::root($request), $artifact, [self::lockedIn('machine', 2)]);
+        $containers = $revision->request->containers;
+        self::assertSame(['machine', 'machine@1#2'], array_map(static fn(stdClass $c): string => $c->id, $containers));
+        self::assertSame(2, $containers[0]->quantity);
+        $stock = $containers[1];
+        self::assertFalse(property_exists($stock, 'made_to_measure'));
+        self::assertSame(1, $stock->quantity);
+        $cut = $artifact['geometry']['containers'][1]['inner_dimensions'];
+        self::assertSame(['value' => $cut['length'], 'unit' => 'ticks'], (array) $stock->inner_dimensions->length);
+        self::assertSame((string) ((int) $cut['height'] + 3 * Length::TICKS_PER_MM), $stock->outer_dimensions->height->value);
+        self::assertSame('ticks', $stock->tare_weight->unit);
+        self::assertSame(['machine@1#2', 1], [$revision->request->fixed_placements[0]->container_type, $revision->request->fixed_placements[0]->container_instance]);
+        // The derived request solves: the stock box is an ordinary container.
+        self::assertTrue(ArrayCodec::pack(json_decode((string) json_encode($revision->request), true))['complete']);
+        self::assertSame([], PlanRevision::verifyChain([PlanRevision::root($request), $revision], [null, $artifact]));
+        self::assertSame([['artifact_required', 'fixed items in a made-to-measure box are checked against the approved artifact']],
+            self::issues(PlanRevision::verifyChain([PlanRevision::root($request), $revision])));
+    }
+
+    public static function testAStockBoxTakesTheLastOfItsMachinesQuantity(): void
+    {
+        $request = self::measured();
+        $request['containers'][0]['quantity'] = 1;
+        $artifact = self::artifact($request);
+        $derived = PlanRevision::stockCutBoxes(PlanRevision::applyEvents($request, [self::lockedIn('machine', 1)]), $artifact, 4);
+        self::assertSame(['machine@4#1'], array_map(static fn(stdClass $c): string => $c->id, $derived->containers));
+        unset($request['containers'][0]['quantity']);
+        $open = PlanRevision::stockCutBoxes(PlanRevision::applyEvents($request, [self::lockedIn('machine', 1), self::lockedIn('machine', 1, 2, '300')]), $artifact, 4);
+        self::assertSame(['machine', 'machine@4#1'], array_map(static fn(stdClass $c): string => $c->id, $open->containers));
+        self::assertFalse(property_exists($open->containers[0], 'quantity'));
+        // A stock container is the machine's alone: other containers keep their place.
+        $mixed = $request;
+        array_unshift($mixed['containers'], ['id' => 'tote', 'inner_dimensions' => ['length' => '400', 'width' => '400', 'height' => '400']]);
+        $kept = PlanRevision::stockCutBoxes(PlanRevision::applyEvents($mixed, [self::lockedIn('machine', 1)]), self::artifact($mixed), 2);
+        self::assertSame(['tote', 'machine', 'machine@2#1'], array_map(static fn(stdClass $c): string => $c->id, $kept->containers));
+        self::assertSame('invalid_revision', self::code(static fn() => PlanRevision::stockCutBoxes([1, 2], $artifact, 1)));
+        // An event that fixes nothing leaves nothing for the audit to cut.
+        $missing = PlanRevision::derive(PlanRevision::root($request), self::artifact($request), [self::missing('cube', 1)]);
+        self::assertSame([], PlanRevision::verifyChain([PlanRevision::root($request), $missing]));
+        // Nothing fixed in a machine, or no lists to read: the request is returned as it was.
+        self::assertSame(PlanRevision::canonicalJson(PlanRevision::applyEvents($request, [])),
+            PlanRevision::canonicalJson(PlanRevision::stockCutBoxes($request, $artifact, 4)));
+        self::assertSame('{"containers":{}}', PlanRevision::canonicalJson(PlanRevision::stockCutBoxes(PlanRevision::parse('{"containers":{}}'), $artifact, 1)));
+    }
+
+    public static function testACutBoxTheArtifactCannotSizeIsRefused(): void
+    {
+        $request = self::measured();
+        $artifact = self::artifact($request);
+        $fixed = PlanRevision::applyEvents($request, [self::lockedIn('machine', 7)]);
+        self::assertSame(['invalid_artifact', 'the approved plan holds no machine instance 7'],
+            self::refusal(static fn() => PlanRevision::stockCutBoxes($fixed, $artifact, 1)));
+        $mangled = $artifact;
+        $mangled['geometry']['containers'][0]['inner_dimensions']['width'] = '1.5';
+        self::assertSame(['invalid_artifact', "a cut box's width is not a tick count"],
+            self::refusal(static fn() => PlanRevision::stockCutBoxes(PlanRevision::applyEvents($request, [self::lockedIn('machine', 1)]), $mangled, 1)));
+        $taken = $request;
+        $taken['containers'][] = ['id' => 'machine@1#1', 'inner_dimensions' => ['length' => '1', 'width' => '1', 'height' => '1']];
+        self::assertSame(['event_conflict', 'a container is already named "machine@1#1"'],
+            self::refusal(static fn() => PlanRevision::stockCutBoxes(PlanRevision::applyEvents($taken, [self::lockedIn('machine', 1)]), $artifact, 1)));
+        $revision = PlanRevision::derive(PlanRevision::root($request), $artifact, [self::lockedIn('machine', 1)]);
+        $issues = self::issues(PlanRevision::verifyChain([PlanRevision::root($request), $revision], [null, ['work_order' => ['containers' => []]]]));
+        self::assertSame(['request_mismatch', 'the events do not apply: the approved plan holds no machine instance 1'], $issues[0]);
+    }
+
+    /** @return array<string,mixed> */
+    private static function measured(): array
+    {
+        return [
+            'units' => ['length' => 'mm'],
+            'configuration' => ['solver_profile' => 'balanced', 'time_limit_ms' => 300000, 'effort_budget' => ['max_search_nodes' => 1000000]],
+            'items' => [['id' => 'cube', 'quantity' => 3, 'weight' => '100', 'dimensions' => ['length' => '300', 'width' => '300', 'height' => '300']]],
+            'containers' => [['id' => 'machine', 'quantity' => 3, 'cost_minor' => 40, 'tare_weight' => '50',
+                'inner_dimensions' => ['length' => '310', 'width' => '310', 'height' => '610'],
+                'made_to_measure' => ['minimum' => ['length' => '60', 'width' => '60', 'height' => '60'],
+                    'increment' => ['length' => '25', 'width' => '25', 'height' => '25'], 'cost_per_square_metre_minor' => 1000,
+                    'tare_per_square_metre' => '500', 'outer_allowance' => ['length' => '3', 'width' => '3', 'height' => '3']]]],
+        ];
+    }
+
+    /** @return array<string,mixed> */
+    private static function lockedIn(string $container, int $instance, int $sequence = 1, string $z = '0'): array
+    {
+        return ['sequence' => $sequence, 'type' => 'placement_locked', 'placement' => [
+            'item_type' => 'cube', 'container_type' => $container, 'container_instance' => $instance,
+            'position' => ['x' => '0', 'y' => '0', 'z' => $z], 'orientation' => 'LWH',
+        ]];
     }
 
     /** @return array{0:list<stdClass>,1:list<?array<string,mixed>>} */

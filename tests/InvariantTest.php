@@ -3,13 +3,18 @@ declare(strict_types=1);
 
 namespace Packvium\Tests;
 
+use Packvium\Algorithm\Deadline;
 use Packvium\Algorithm\EffortBudget;
+use Packvium\Algorithm\Internal\ConcurrentStarts;
+use Packvium\Algorithm\SolverOrchestrator;
 use Packvium\Config\PackingConfig;
 use Packvium\Config\SolverProfile;
 use Packvium\Domain\Container;
+use Packvium\Domain\Dimensions;
 use Packvium\Domain\Item;
 use Packvium\Result\PackingStatus;
 use Packvium\Unit\Length;
+use ReflectionMethod;
 
 /**
  * Randomised orders checked against the properties that must hold for all of them.
@@ -397,6 +402,48 @@ final class InvariantTest extends TestCase
         }
         self::assertSame(self::chosenAnswer($result->toArray()),
             self::chosenAnswer(Support::pack($items, $containers, $config)->toArray()));
+    }
+
+    public static function testAStartTheForkCouldNotTakeRunsInProcessToTheForkedAnswer(): void
+    {
+        // `pcntl_fork()` returning -1 sends that one start to `runOneStartInProcess`; the
+        // fork itself cannot be made to fail here, so the fallback is driven directly with
+        // the orchestrator's own starts and must reproduce every forked child's answer.
+        if (!function_exists('pcntl_fork')) {
+            self::skip('pcntl extension not available');
+        }
+        $items = [];
+        foreach ([[30, 20, 15], [25, 25, 10], [40, 10, 10]] as $index => [$length, $width, $height]) {
+            array_push($items, ...Item::create("i{$index}", Dimensions::mm($length, $width, $height), 0, 3)->instances());
+        }
+        $containers = [Container::create('c', Dimensions::mm(60, 60, 40))];
+        $config = new PackingConfig(
+            SolverProfile::Balanced, timeLimitMs: 60_000, seed: 1234, multiStartOrders: 4,
+            solvers: ['extreme_points', 'layer'], parallelStarts: 4,
+        );
+        $orchestrator = new SolverOrchestrator();
+        $bridge = (new ReflectionMethod(SolverOrchestrator::class, 'bridge'))->invoke($orchestrator);
+        $starts = (new ReflectionMethod(SolverOrchestrator::class, 'starts'))->invoke($orchestrator, $items, $config, $containers);
+        $forked = [];
+        foreach ($orchestrator->solvePortfolio($items, $containers, $config, Deadline::ofMilliseconds(60_000))->solutions as $solution) {
+            $forked[$solution->solverName] = $solution;
+        }
+
+        $compared = 0;
+        foreach (array_slice($starts, 1) as [$solver, $orderName, $order]) {
+            [$solution, $record] = ConcurrentStarts::runOneStartInProcess(
+                $bridge, $solver, $orderName, $order, $containers, $config, null, hrtime(true) + 60_000_000_000, [],
+            );
+            self::assertSame($solver->name() . ':' . $orderName, $solution->solverName);
+            self::assertTrue($record->completed && !$record->truncated, "{$solution->solverName} ran to completion");
+            if (!isset($forked[$solution->solverName])) {
+                continue;
+            }
+            self::assertSame(serialize($forked[$solution->solverName]->containers), serialize($solution->containers), $solution->solverName);
+            self::assertSame(serialize($forked[$solution->solverName]->unpacked), serialize($solution->unpacked), $solution->solverName);
+            $compared++;
+        }
+        self::assertGreaterThan(0, $compared, 'no forked start was compared');
     }
 
     public static function testParallelStartsFallsBackToSequentialWithAnInjectedClock(): void

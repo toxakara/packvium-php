@@ -28,6 +28,9 @@ final class RateTable
         public readonly array $pricesMinor,
         public readonly int $minimumChargeMinor = 0,
         public readonly int $fuelSurchargePermille = 0,
+        // The ISO 4217 code the prices are in, or null for the request's own (1.10). Checked
+        // where the table sits in a request, against the request's currency, by `Packer::pack`.
+        public readonly ?string $currency = null,
     ) {
         if ($weightBracketsG === []) {
             throw new ObjectRefusal('invalid_value', 'rate_table requires at least one weight bracket');

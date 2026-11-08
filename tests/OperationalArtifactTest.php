@@ -434,6 +434,32 @@ final class OperationalArtifactTest extends TestCase
         }
     }
 
+    /** The sheet shows the index plus one, so 2^53 - 1 is already one past the ceiling. */
+    public static function testAContainerNumberJavascriptCannotHoldIsRefusedRatherThanPrinted(): void
+    {
+        foreach ([9007199254740991, PHP_INT_MAX, 18446744073709551615] as $index) {
+            $artifact = self::artifact();
+            $artifact['work_order']['containers'][0]['container_index'] = $index;
+            self::assertSame('number_out_of_range', self::code(static function () use ($artifact): void {
+                ArtifactExports::workOrderHtml($artifact);
+            }), (string) $index);
+        }
+        $artifact = self::artifact();
+        $artifact['work_order']['containers'][0]['container_index'] = 9007199254740990;
+        self::assertTrue(str_contains(ArtifactExports::workOrderHtml($artifact), '<h2>Container 9007199254740991: '));
+    }
+
+    public static function testAnyPrintedIntegerJavascriptCannotHoldIsRefused(): void
+    {
+        foreach ([-9007199254740992, 1.8446744073709552E+19] as $sequence) {
+            $artifact = self::artifact();
+            $artifact['work_order']['containers'][0]['lines'][0]['sequence'] = $sequence;
+            self::assertSame('number_out_of_range', self::code(static function () use ($artifact): void {
+                ArtifactExports::csv($artifact);
+            }));
+        }
+    }
+
     public static function testABooleanInAnyPrintedPositionIsRefused(): void
     {
         $artifact = self::artifact();

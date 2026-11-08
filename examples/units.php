@@ -21,6 +21,8 @@ require dirname(__DIR__) . '/autoload.php';
 use Packvium\Config\PackingConfig;
 use Packvium\Domain\{Container, Dimensions, Item};
 use Packvium\Packer;
+use Packvium\Serialization\ArrayCodec;
+use Packvium\Serialization\InvalidRequestException;
 use Packvium\Unit\{Length, Weight};
 
 // -----------------------------------------------------------------------------------
@@ -80,6 +82,22 @@ printf("one tick over does not:   %s\n", $oneTickOver->fitsInside($opening) ? 't
 printf("\non the wire: %s %s\n",
     json_encode(Length::parse('12 3/8 in')->toArray()),
     json_encode(Weight::parse('2 3/4 lb')->toArray('g')));
+
+// A JSON request's `units` sets the length unit and nothing else. A weight names its own
+// unit or is grams, so `units.weight` would have to override what the weight says -- it
+// is refused instead of being read either way.
+try {
+    ArrayCodec::pack([
+        'units' => ['length' => 'mm', 'weight' => 'kg'],
+        'configuration' => ['time_limit_ms' => 60000],
+        'items' => [['id' => 'tin', 'weight' => '450',
+                     'dimensions' => ['length' => '80', 'width' => '80', 'height' => '110']]],
+        'containers' => [['id' => 'carton',
+                          'inner_dimensions' => ['length' => '200', 'width' => '200', 'height' => '200']]],
+    ]);
+} catch (InvalidRequestException $refusal) {
+    printf("\nunits.weight: %s (%s)\n", $refusal->getMessage(), $refusal->reason());
+}
 
 // An example must not change answer merely because the host was busy. This solve needs
 // a fraction of the budget below; the generous wall-clock value is only a safety fuse, so

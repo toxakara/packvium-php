@@ -1735,4 +1735,185 @@ final class ConstraintTest extends TestCase
         self::assertSame(['unloading_order_violation', 'base blocked by right'],
             LoadCalculator::routeOrderViolated($scene, [0.0, 0.0, 1.0, 2.0]));
     }
+
+    public static function testDiamondDagSingleTickRemainderShiftMatchesFullRebuildOracle(): void
+    {
+        $b0 = new Placement(
+            Item::create('b0', new Dimensions(new Length(6), new Length(10), new Length(10)), weight: new Weight(100))->instances()[0],
+            new Point(0, 0, 0), Rotation::LWH, new Dimensions(new Length(6), new Length(10), new Length(10)),
+            new Point(0, 0, 0), new Dimensions(new Length(6), new Length(10), new Length(10)),
+        );
+        $b1 = new Placement(
+            Item::create('b1', new Dimensions(new Length(14), new Length(10), new Length(10)), weight: new Weight(100))->instances()[0],
+            new Point(6, 0, 0), Rotation::LWH, new Dimensions(new Length(14), new Length(10), new Length(10)),
+            new Point(6, 0, 0), new Dimensions(new Length(14), new Length(10), new Length(10)),
+        );
+        $m0 = new Placement(
+            Item::create('m0', new Dimensions(new Length(10), new Length(5), new Length(10)), weight: new Weight(17))->instances()[0],
+            new Point(3, 0, 10), Rotation::LWH, new Dimensions(new Length(10), new Length(5), new Length(10)),
+            new Point(3, 0, 10), new Dimensions(new Length(10), new Length(5), new Length(10)),
+        );
+        $m1 = new Placement(
+            Item::create('m1', new Dimensions(new Length(11), new Length(5), new Length(10)), weight: new Weight(23))->instances()[0],
+            new Point(3, 5, 10), Rotation::LWH, new Dimensions(new Length(11), new Length(5), new Length(10)),
+            new Point(3, 5, 10), new Dimensions(new Length(11), new Length(5), new Length(10)),
+        );
+        $container = Container::create('box', Dimensions::mm(100, 100, 100));
+        $apexDims = new Dimensions(new Length(8), new Length(10), new Length(10));
+        $apexOrigin = new Point(4, 0, 20);
+
+        foreach ([0, 1, 2, 3, 7, 13, 97] as $apexWeight) {
+            [$apex] = Item::create('apex', $apexDims, weight: new Weight($apexWeight))->instances();
+            $apexUnit = new LoadUnit(new AxisAlignedBox($apexOrigin, $apexDims), $apexWeight, null, null, $apex->id());
+            $exactLoads = LoadCalculator::topLoads([...LoadCalculator::units([$b0, $b1, $m0, $m1]), $apexUnit]);
+            for ($targetIdx = 0; $targetIdx < 4; $targetIdx++) {
+                $exact = $exactLoads[$targetIdx];
+                foreach ([-1, 0, 1] as $delta) {
+                    $limit = $exact + $delta;
+                    if ($limit < 0) {
+                        continue;
+                    }
+                    $rebuilt = [];
+                    foreach ([$b0, $b1, $m0, $m1] as $idx => $p) {
+                        $lim = $idx === $targetIdx ? new Weight($limit) : null;
+                        [$inst] = Item::create($p->instance->item->id, $p->dimensions, weight: $p->instance->weight(), maxTopLoad: $lim)->instances();
+                        $rebuilt[] = new Placement($inst, $p->position, $p->rotation, $p->dimensions, $p->envelopeOrigin, $p->envelopeDimensions);
+                    }
+                    $ctx = new ConstraintContext($container, $rebuilt, $apex, $apexOrigin, Rotation::LWH, $apexDims, $apexDims);
+                    $got = (new TopLoadConstraint())->evaluate($ctx);
+                    $units = [...LoadCalculator::units($rebuilt), $apexUnit];
+                    $oracleFailure = (new \Packvium\Constraint\Internal\LoadAnalysis($units))->overloaded();
+                    $expected = $oracleFailure === null
+                        ? \Packvium\Constraint\ConstraintResult::allow()
+                        : \Packvium\Constraint\ConstraintResult::reject($oracleFailure[0], $oracleFailure[1]);
+                    self::assertSame($expected->allowed, $got->allowed);
+                    self::assertSame($expected->code, $got->code);
+                    self::assertSame($expected->detail, $got->detail);
+                }
+            }
+        }
+    }
+
+    public static function testDiamondDagStackedItemCountDeduplicatesSharedCandidate(): void
+    {
+        foreach ([[3, true], [2, false]] as [$maxStacked, $shouldAllow]) {
+            $base = self::placed(self::instance('base', 200, 100, 100, ['maxStackedItems' => $maxStacked]), x: 0, y: 0, z: 0);
+            $left = self::placed(self::instance('left', 100, 100, 100), x: 0, y: 0, z: 1_600_000);
+            $right = self::placed(self::instance('right', 100, 100, 100), x: 1_600_000, y: 0, z: 1_600_000);
+            $apex = self::instance('apex', 200, 100, 100);
+            $ctx = self::context($apex, 3_200_000, [$base, $left, $right]);
+            $got = (new TopLoadConstraint())->evaluate($ctx);
+            self::assertSame($shouldAllow, $got->allowed);
+            if (!$shouldAllow) {
+                self::assertSame('stacked_item_limit_exceeded', $got->code);
+            }
+        }
+    }
+
+    public static function testCandidateSlidUnderneathExistingUpperBoxChecksBearingStackingAndRoute(): void
+    {
+        $upperHeavy = self::placed(
+            self::instance('upper', 100, 100, 100, ['weight' => '10 kg', 'stackingGroup' => 'B', 'stopIndex' => 2]),
+            z: 1_600_000,
+        );
+        // 1. Candidate is non-stackable -> rejected
+        $cNs = self::instance('c-ns', 100, 100, 100, ['stackable' => false]);
+        $rNs = (new TopLoadConstraint())->evaluate(self::context($cNs, 0, [$upperHeavy]));
+        self::assertFalse($rNs->allowed);
+        self::assertSame('non_stackable', $rNs->code);
+
+        // 2. Candidate only accepts group A, upper is group B -> rejected
+        $cGrp = self::instance('c-grp', 100, 100, 100, ['acceptsStackingGroups' => ['A']]);
+        $rGrp = (new TopLoadConstraint())->evaluate(self::context($cGrp, 0, [$upperHeavy]));
+        self::assertFalse($rGrp->allowed);
+        self::assertSame('stacking_group_incompatible', $rGrp->code);
+
+        // 3. Candidate has maxTopLoad="5 kg" under 10 kg upper -> rejected
+        $cWeak = self::instance('c-weak', 100, 100, 100, ['maxTopLoad' => '5 kg']);
+        $rWeak = (new TopLoadConstraint())->evaluate(self::context($cWeak, 0, [$upperHeavy]));
+        self::assertFalse($rWeak->allowed);
+        self::assertSame('top_load_exceeded', $rWeak->code);
+
+        // 4. Candidate has stopIndex=1 under stopIndex=2 upper -> rejected by RouteOrderConstraint
+        $cEarly = self::instance('c-early', 100, 100, 100, ['stopIndex' => 1]);
+        $rRoute = (new RouteOrderConstraint())->evaluate(self::context($cEarly, 0, [$upperHeavy]));
+        self::assertFalse($rRoute->allowed);
+        self::assertSame('unloading_order_violation', $rRoute->code);
+    }
+
+    public static function testContactGraphPlaneBucketThreshold32Vs33AndKnifeEdgeContacts(): void
+    {
+        foreach ([0, 1, 31, 32, 33, 34, 65] as $count) {
+            $boxes = [];
+            $units = [];
+            for ($i = 0; $i < $count; $i++) {
+                $box = new AxisAlignedBox(new Point($i * 10, 0, 0), new Dimensions(new Length(10), new Length(10), new Length(10)));
+                $boxes[] = $box;
+                $units[] = new LoadUnit($box, 10, null, null, "b{$i}");
+            }
+            $hint = max(10, $count * 10);
+            $query = new AxisAlignedBox(new Point(0, 9, 10), new Dimensions(new Length($hint), new Length(2), new Length(10)));
+            $supportGraph = new \Packvium\Constraint\Internal\LoadSupportGraph($units, $hint);
+            $below = $supportGraph->contactsBelow($query);
+            self::assertCount($count, $below);
+            foreach ($below as $idx => $edge) {
+                self::assertSame($idx, $edge->index);
+                self::assertSame(10, $edge->area);
+            }
+            $graph = new ContactGraph($boxes, $hint);
+            $appended = $graph->withBox($query, $hint);
+            $rebuilt = new ContactGraph([...$boxes, $query], $hint);
+            for ($i = 0; $i <= $count; $i++) {
+                self::assertEquals($rebuilt->supporters($i), $appended->supporters($i));
+                self::assertSame($rebuilt->children($i), $appended->children($i));
+            }
+        }
+    }
+
+    /**
+     * The rejections and the allowance the randomized scenes cannot reach on their own: a floor
+     * supporter that already carries a box, a candidate whose own footprint breaks the density on
+     * a tier, and a nesting candidate that every route shortcut hands to the full rebuild.
+     */
+    public static function testEachShortcutRejectionAndTheNestingRouteAllowanceAreExact(): void
+    {
+        $mm = Length::mm(1)->ticks;
+        $dense = static fn(string $limit): Container => Container::create('c', Dimensions::mm(100, 100, 100),
+            maxStackDensity: Weight::of($limit, 'kg'));
+        $wideFloor = static fn(array $options): array => [
+            self::placed(self::instance('floor', 40, 20, 10, ['weight' => Weight::of(10, 'kg'), ...$options])),
+            self::placed(self::instance('upper', 20, 20, 10, ['weight' => Weight::of(10, 'kg')]), z: 10 * $mm),
+        ];
+
+        $stacked = (new TopLoadConstraint())->evaluate(self::context(
+            self::instance('cand', 20, 20, 10, ['weight' => Weight::of(1, 'kg')]), 10 * $mm,
+            $wideFloor(['maxStackedItems' => 1]), x: 20 * $mm,
+        ));
+        self::assertSame(['stacked_item_limit_exceeded', 'floor#1'], [$stacked->code, $stacked->detail]);
+
+        $tier = [
+            self::placed(self::instance('floor', 40, 20, 10, ['weight' => Weight::of(1, 'kg')])),
+            self::placed(self::instance('middle', 40, 20, 10, ['weight' => Weight::of(1, 'kg')]), z: 10 * $mm),
+        ];
+        $onTier = (new TopLoadConstraint())->evaluate(self::context(
+            self::instance('cand', 10, 10, 10, ['weight' => Weight::of(5, 'kg')]), 20 * $mm, $tier,
+            container: $dense('20000'),
+        ));
+        self::assertSame(['stack_density_exceeded', 'cand#1'], [$onTier->code, $onTier->detail]);
+
+        $heavyTier = [
+            self::placed(self::instance('floor', 20, 20, 10, ['weight' => Weight::of(1, 'kg')])),
+            self::placed(self::instance('middle', 20, 20, 10, ['weight' => Weight::of(1, 'kg')]), z: 10 * $mm),
+        ];
+        $atSupporter = (new TopLoadConstraint())->evaluate(self::context(
+            self::instance('cand', 20, 20, 10, ['weight' => Weight::of(5, 'kg')]), 20 * $mm, $heavyTier,
+            container: $dense('15000'),
+        ));
+        self::assertSame(['stack_density_exceeded', 'floor#1'], [$atSupporter->code, $atSupporter->detail]);
+
+        $cup = self::instance('cup', 20, 20, 10, ['weight' => Weight::of(1, 'kg'), 'stopIndex' => 0,
+            'nestingHeight' => Length::mm(4)]);
+        $base = [self::placed(self::instance('first', 20, 20, 10, ['weight' => Weight::of(1, 'kg'), 'stopIndex' => 1]))];
+        self::assertTrue((new RouteOrderConstraint())->evaluate(self::context($cup, 10 * $mm, $base))->allowed);
+    }
 }

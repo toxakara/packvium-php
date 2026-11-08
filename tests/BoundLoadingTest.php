@@ -17,7 +17,9 @@ if ($case === 'machine') {
     $container = new Packvium\Domain\Container('m', Packvium\Domain\Dimensions::mm(100, 100, 100),
         madeToMeasure: new Packvium\Domain\MadeToMeasure([800000, 800000, 800000], [400000, 400000, 400000]));
 }
-$config = new Packvium\Config\PackingConfig(objective: $case === 'unsupported' ? 'maximum_volume' : 'default');
+$config = $case === 'unsupported'
+    ? new Packvium\Config\PackingConfig(objective: 'shipping_cost', dimensionalWeightDivisor: 5000)
+    : new Packvium\Config\PackingConfig(objective: 'default');
 $scorer = $case === 'custom' ? new Packvium\Objective\DefaultSolutionScorer() : null;
 $result = (new Packvium\Packer($config, solutionScorer: $scorer))->pack([$item], [$container])->toArray();
 $loaded = false;

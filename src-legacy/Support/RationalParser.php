@@ -23,7 +23,9 @@ final class RationalParser
         $negative = strncmp($text, '-', strlen('-')) === 0;
         if (preg_match('/^([+-]?\d+)\s+(\d+)\s*\/\s*(\d+)$/', $text, $m)) {
             $whole = self::parseWhole($m[1]); $n = self::parseWhole($m[2]); $d = self::parseWhole($m[3]); self::assertDenominator($d);
-            if ($whole !== 0 && abs($whole) > intdiv(PHP_INT_MAX - $n, $d)) {
+            // `abs(PHP_INT_MIN)` is a float that compares equal to PHP_INT_MAX, so it would slip
+            // past the range check and fail later as a type error rather than an overflow.
+            if ($whole === PHP_INT_MIN || ($whole !== 0 && abs($whole) > intdiv(PHP_INT_MAX - $n, $d))) {
                 throw new InvalidArgumentException('Scaled unit value exceeds integer range');
             }
             $magnitude = abs($whole) * $d + $n;

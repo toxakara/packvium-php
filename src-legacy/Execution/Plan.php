@@ -80,6 +80,30 @@ final class Plan
     }
 
     /**
+     * `placementReference` plus the result placement's `placement_id` (1.10), copied rather
+     * than derived, when the result carries one. A canonical projection (a golden) has no ids,
+     * so its plan keeps the bytes it always had. Locks read the id from here.
+     *
+     * @param array<string,mixed>|\stdClass|mixed $placement
+     * @return array<string,mixed>
+     */
+    private static function stepReference(int $containerIndex, $placement): array
+    {
+        $reference = self::placementReference($containerIndex, $placement);
+        if (!JsonValue::has($placement, 'placement_id')) {
+            return $reference;
+        }
+        $identifier = JsonValue::get($placement, 'placement_id');
+        if (!\is_string($identifier) || $identifier === '') {
+            throw new ExecutionPlanException(
+                'placement_id ' . CanonicalJson::spelling($identifier) . ' is not a non-empty string'
+            );
+        }
+        $reference['placement_id'] = $identifier;
+        return $reference;
+    }
+
+    /**
      * The operator sequence for one container, or an honest absence of one.
      *
      * The engines compute a loading order from domain objects this adapter never sees, so
@@ -97,7 +121,7 @@ final class Plan
         if ($loadingOrder === null) {
             $steps = [];
             foreach ($placements as $placement) {
-                $steps[] = ['placement' => self::placementReference($containerIndex, $placement)];
+                $steps[] = ['placement' => self::stepReference($containerIndex, $placement)];
             }
             return ['order' => 'unavailable', 'steps' => $steps];
         }
@@ -115,7 +139,7 @@ final class Plan
         foreach ($loadingOrder as $step => $index) {
             $steps[] = [
                 'sequence' => $step + 1,
-                'placement' => self::placementReference($containerIndex, $placements[$index]),
+                'placement' => self::stepReference($containerIndex, $placements[$index]),
             ];
         }
         return ['order' => 'loading', 'steps' => $steps];

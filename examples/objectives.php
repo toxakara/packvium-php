@@ -25,6 +25,7 @@ use Packvium\Config\PackingConfig;
 use Packvium\Domain\{Container, Dimensions, Item, RateTable};
 use Packvium\Domain\UnratedWeightException;
 use Packvium\Packer;
+use Packvium\Result\PackingResult;
 
 // An example must not change answer merely because the host was busy. These solves need
 // a fraction of the budget; the generous wall-clock value is only a safety fuse, so a
@@ -139,3 +140,23 @@ $left = array_map(static fn ($u) => $u->instance->item->id, $result->unpacked);
 sort($kept);
 sort($left);
 printf("%-18s packed=%s left behind=%s\n", 'maximum_value', json_encode($kept), json_encode($left));
+
+// -----------------------------------------------------------------------------------
+// Most objectives' results also say how far they can be from the best possible answer
+// (`shipping_cost` and `lowest_landed_cost` do not yet): `optimality.lower_bound` is a
+// score no packing that obeys the request can beat, computed from the request alone. A
+// complete result that attains it reports `proven_optimal`; any other carries the gap,
+// and one that leaves items behind says `best_found` even at a gap of 0.
+// The bound is cheap and so it can be loose -- the shortest stack is bounded by the
+// load's volume spread over the largest floor -- but no packing ever beats it.
+// -----------------------------------------------------------------------------------
+$bound = static function (PackingResult $result): string {
+    $optimality = $result->toArray()['optimality'];
+    return sprintf('%s score=%s bound=%s gap=%s', $optimality['code'], json_encode($result->score),
+        json_encode($optimality['lower_bound']), json_encode($optimality['absolute_gap'] ?? 0));
+};
+echo "\n";
+printf("%-18s %s\n", 'open_dimension_height', $bound((new Packer(
+    new PackingConfig(objective: 'open_dimension_height', timeLimitMs: SAFETY_FUSE_MS)
+))->pack($widgets, [$snug, $roomy])));
+printf("%-18s %s\n", 'maximum_value', $bound($result));

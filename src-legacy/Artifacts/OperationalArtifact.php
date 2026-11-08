@@ -36,7 +36,7 @@ final class OperationalArtifact
      * The engine's own name is deliberately not recorded: four correct builders naming
      * themselves would emit four different documents.
      */
-    public const SUITE_VERSION = '1.9.0';
+    public const SUITE_VERSION = '1.10.0';
 
     /** The deterministic part of `result.algorithm`; `duration_ms` is wall-clock time. */
     private const SOLVER_FIELDS = ['profile', 'solver', 'seed', 'time_limit_reached', 'effort_limit_reached'];
@@ -168,10 +168,42 @@ final class OperationalArtifact
     private static function plan($request, $result, array $loadingOrders): array
     {
         try {
-            return Plan::build($request, $result, $loadingOrders);
+            return Plan::build($request, self::withoutPlacementIds($result), $loadingOrders);
         } catch (ExecutionPlanException $error) {
             throw new OperationalArtifactException('invalid_plan_input', $error->getMessage(), $error);
         }
+    }
+
+    /**
+     * The result as the v1 artifact reads it: every placement without its 1.10 `placement_id`.
+     *
+     * v1 is closed, and its embedded plan and placement references predate the id, so a plan
+     * built from a 1.10 result would otherwise gain a field inside a closed document. The id is
+     * recoverable from what v1 does carry: the canonical JSON of the result's
+     * `containers[container_index].id` and the reference's `position_ticks`, `item_type` and
+     * `orientation` (docs/OPERATIONAL-ARTIFACTS.md). Read after `requireObjects`, so every
+     * entry is an object; copies only what it changes, O(P).
+     *
+     * @param array<string,mixed>|\stdClass $result
+     * @return array<string,mixed>
+     */
+    private static function withoutPlacementIds($result): array
+    {
+        $containers = [];
+        foreach (self::listOf(JsonValue::get($result, 'containers'), 'result.containers') as $index => $container) {
+            $placements = [];
+            foreach (self::placements($index, $container) as $placement) {
+                $placement = (array) $placement;
+                unset($placement['placement_id']);
+                $placements[] = $placement;
+            }
+            $container = (array) $container;
+            $container['placements'] = $placements;
+            $containers[] = $container;
+        }
+        $stripped = (array) $result;
+        $stripped['containers'] = $containers;
+        return $stripped;
     }
 
     // -------------------------------------------------------------------------- provenance

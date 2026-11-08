@@ -5,7 +5,9 @@ namespace Packvium\Algorithm\Internal;
 use Packvium\Config\PackingConfig;
 use Packvium\Domain\{Container,ItemInstance,MadeToMeasure};
 use Packvium\Extension\{ContainerSelector,DefaultContainerSelector};
-use Packvium\Algorithm\{Deadline,SearchStats,SingleContainerSolution,SingleContainerSolver,TimeLimitReached};
+use Packvium\Algorithm\{ContainerState,Deadline,SearchStats,SingleContainerSolution,SingleContainerSolver,TimeLimitReached};
+use Packvium\Constraint\VolumeReserve;
+use Packvium\Support\BigInt;
 
 /**
  * Trials of made-to-measure boxes, loaded only for a made-to-measure container. A part of `SolverOrchestrator` kept in its own file so PHP compiles it only when a
@@ -43,6 +45,7 @@ final class MadeToMeasureTrial
             $last=$one;
             if($one->state->placementCount()>0){
                 $trial=$call('fabricated',$container,$one);
+                if(!self::keepsReserve($trial->state))$trial=$call('fabricated',$container,$one,$rung);
                 if($one->state->placementCount()===count($items))return [$trial,$trials];
                 $key=$call('roundScore',$trial,$items,$config,$selector);
                 if($best===null||($key<=>$bestKey)<0){$best=$trial;$bestKey=$key;}
@@ -51,5 +54,16 @@ final class MadeToMeasureTrial
         }
         $chosen=$best??$last;
         return [new SingleContainerSolution($chosen->state,$chosen->unpacked,$chosen->exhaustive,$chosen->timeLimitReached||$stopped,$chosen->dominantLattice),$trials];
+    }
+
+    /**
+     * Whether a fabricated box keeps its void-fill reserve. The reserve is a share of the
+     * box that ships, so a box cut tight to its load can break a reserve the rung kept: the trial
+     * then cuts the rung itself, on the grid by construction and solved under its reserve.
+     */
+    private static function keepsReserve(ContainerState $state):bool
+    {
+        $container=$state->container;
+        return $container->voidFillReserveRatio===0.0||BigInt::compare($state->usedVolume,VolumeReserve::usable($container))<=0;
     }
 }

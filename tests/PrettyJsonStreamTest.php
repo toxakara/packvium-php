@@ -50,6 +50,40 @@ final class PrettyJsonStreamTest extends TestCase
         }
     }
 
+    /**
+     * `bin/packvium`'s path: placements generated as they are written give the bytes the whole
+     * array encodes to. Two solves, so only their wall-clock fields may differ.
+     */
+    public static function testAStreamedResultWritesWhatItsArrayEncodes(): void
+    {
+        $masked = static fn(string $json): string => (string) \preg_replace('/("[a-z_]*duration_ms": )[0-9.]+/', '$1<masked>', $json);
+        foreach (self::RESULT_SHAPE_REQUESTS as $name => $json) {
+            $request = \json_decode($json, true, 512, \JSON_THROW_ON_ERROR);
+            self::assertSame(
+                $masked((string) \json_encode(ArrayCodec::pack($request), self::FLAGS)),
+                $masked(self::streamed(ArrayCodec::packStreamed($request))),
+                $name,
+            );
+        }
+    }
+
+    public static function testASequenceIsWrittenAsTheListOfItsValues(): void
+    {
+        $sequence = static function (array $values): \Generator {
+            yield from $values;
+        };
+        $leaf = ['k' => 'v', 'n' => [1, 2]];
+        $values = [$leaf, [], 'text', \array_fill(0, 70, 1)];
+        self::assertSame(\json_encode($values, self::FLAGS), self::streamed($sequence($values)));
+        self::assertSame(\json_encode([], self::FLAGS), self::streamed($sequence([])));
+        // Inside an array small enough to be encoded whole, which would write the generator as `{}`.
+        self::assertSame(
+            \json_encode(['a' => [$leaf], 'b' => []], self::FLAGS),
+            self::streamed(['a' => $sequence([$leaf]), 'b' => $sequence([])]),
+        );
+        self::assertSame(\json_encode([[[[$leaf]]]], self::FLAGS), self::streamed([[$sequence([$sequence([$leaf])])]]));
+    }
+
     public static function testEveryShapeJsonEncodeDistinguishesIsKept(): void
     {
         $leaf = ['path' => 'a/b', 'text' => "line\nbreak \u{2028} \u{e9}", 'float' => 0.1, 'whole' => 1.0, 'none' => null, 'yes' => true];

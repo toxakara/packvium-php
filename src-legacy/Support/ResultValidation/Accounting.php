@@ -150,7 +150,7 @@ final class Accounting
         }
         return !$container->flatBag
             || (Exact::compare(Exact::add($size[0], $size[2]), $container->inner[0]) <= 0
-                && Exact::compare(Exact::add($size[1], $size[2]), $container->inner[1]) <= 0);
+                && Exact::compare(Exact::add($size[1], $size[2]), Exact::add($container->inner[1], $container->sideGusset)) <= 0);
     }
 
     /**
@@ -218,7 +218,7 @@ final class Accounting
     /** @param mixed $unpacked @param mixed $reason @param list<ResultIssue> $issues */
     private static function checkProvenReason($unpacked, $reason, ItemSpec $spec, Context $context, string $itemId, array &$issues): void
     {
-        $every = \array_keys(Geometry::ROTATIONS);
+        $every = Geometry::BOX_ROTATIONS;
         if (Json::isText($reason, 'no_compatible_container_dimensions')) {
             if (self::fitsSome($spec, $context, $spec->allowedRotations)) {
                 $issues[] = new ResultIssue('invalid_proven_reason', "{$itemId}: at least one allowed orientation fits a container");

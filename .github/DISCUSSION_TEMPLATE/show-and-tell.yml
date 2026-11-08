@@ -16,7 +16,7 @@ body:
     id: package-version
     attributes:
       label: Package and version
-      placeholder: "packvium/packvium 1.9.0 (PHP)"
+      placeholder: "packvium/packvium 1.10.0 (PHP)"
     validations:
       required: false
   - type: textarea

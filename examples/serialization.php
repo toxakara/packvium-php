@@ -30,9 +30,13 @@ use Packvium\Serialization\UnsupportedFeatureException;
 // -----------------------------------------------------------------------------------
 // A request is a plain array. This one is the whole vocabulary in miniature: units,
 // solver configuration, items with rules, and a container with a carrier rate card.
+// `currency` names the money every `*_minor` amount is counted in. The engine never
+// converts or compares it -- it echoes it on the result, and refuses a rate card that
+// says otherwise.
 // -----------------------------------------------------------------------------------
 $request = [
     'units' => ['length' => 'mm'],
+    'currency' => 'EUR',
     'configuration' => [
         'objective' => 'lowest_landed_cost',
         'dimensional_weight_divisor' => 5000,
@@ -75,6 +79,7 @@ $request = [
                 'prices_minor' => [890, 1240, 2050],
                 'minimum_charge_minor' => 650,
                 'fuel_surcharge_permille' => 78,
+                'currency' => 'EUR',
             ],
         ],
     ],
@@ -97,7 +102,11 @@ printf("solver      %s\n", $result['algorithm']['solver']);
 printf("containers  %s\n", json_encode(array_column($result['containers'], 'container_type')));
 printf("placed      %d\n", $placed);
 printf("unplaced    %s\n", json_encode($result['unpacked_items'] ?? []));
+printf("currency    %s  <- the request's own, echoed; it never changes the score\n", $result['currency']);
 
+// `placement_id` is the placement's own identity: the canonical JSON of its container,
+// position in ticks, item type and orientation. It is the same in every engine, so a
+// fixed placement or a lock can quote it instead of matching coordinates by hand.
 echo "\none placement, in full:\n";
 echo substr(json_encode($result['containers'][0]['placements'][0], JSON_PRETTY_PRINT), 0, 320), " ...\n";
 
@@ -144,15 +153,59 @@ try {
     printf("unknown objective: %s\n", substr($refusal->getMessage(), 0, 100));
 }
 
+// A rate card priced in another currency than the request is refused, at its own
+// pointer, rather than added to a total in the wrong money.
+$dollars = $request;
+$dollars['containers'][0]['rate_table']['currency'] = 'USD';
+try {
+    ArrayCodec::pack($dollars);
+} catch (Throwable $refusal) {
+    printf("rate card in USD: %s\n", $refusal->getMessage());
+}
+
+// The rotation vocabulary has 24 codes. The six letter codes turn a box; the 18 signed
+// ones, such as `-L-W+H`, are the extra turns only a non-box shape can tell apart, so
+// they are accepted on a `convex_hull` item and refused on anything else.
+$signed = $request;
+$signed['items'][0]['allowed_rotations'] = ['LWH', '-L-W+H'];
+try {
+    ArrayCodec::pack($signed);
+} catch (Throwable $refusal) {
+    printf("signed rotation on a box: %s\n", $refusal->getMessage());
+}
+$wedges = [
+    'units' => ['length' => 'mm'],
+    'configuration' => ['effort_budget' => ['max_search_nodes' => 20000], 'time_limit_ms' => 60000],
+    'items' => [[
+        'id' => 'wedge', 'quantity' => 2, 'weight' => '1 kg', 'shape_type' => 'convex_hull',
+        'dimensions' => ['length' => '100', 'width' => '100', 'height' => '100'],
+        // Half of the cube, cut along a vertical diagonal. Its partner is the same wedge
+        // turned half a turn about the vertical, `-L-W+H`, which no letter code names.
+        'hull_vertices' => [
+            ['x' => '0', 'y' => '0', 'z' => '0'], ['x' => '100', 'y' => '0', 'z' => '0'],
+            ['x' => '0', 'y' => '100', 'z' => '0'], ['x' => '0', 'y' => '0', 'z' => '100'],
+            ['x' => '100', 'y' => '0', 'z' => '100'], ['x' => '0', 'y' => '100', 'z' => '100'],
+        ],
+        'allowed_rotations' => ['LWH', '-L-W+H'],
+    ]],
+    'containers' => [['id' => 'crate', 'quantity' => 1,
+                      'inner_dimensions' => ['length' => '100', 'width' => '100', 'height' => '100']]],
+];
+$pair = ArrayCodec::pack($wedges);
+printf("two wedges in one crate: %s, orientations %s\n", $pair['status'],
+    json_encode(array_column($pair['containers'][0]['placements'], 'orientation')));
+
 // And a field the schema reserves but this engine has not implemented yet is refused by
 // name, so a request written for a newer engine fails loudly instead of being
-// half-honoured. The list is the engine's own constant.
+// half-honoured. The list is the engine's own constant, empty while it is caught up; a
+// combination of implemented fields that has no defined meaning is refused the same way.
 $refused = array_filter(ArrayCodec::UNSUPPORTED_FIELDS);
 printf("fields this engine refuses by name: %s\n",
     $refused === [] ? 'none' : json_encode($refused));
 
 $ahead = $request;
 $ahead['containers'][0]['pallet_overhang_limit'] = ['length' => '50', 'width' => '50'];
+$ahead['containers'][0]['axles'] = [['position' => '0'], ['position' => '100']];
 try {
     ArrayCodec::pack($ahead);
 } catch (UnsupportedFeatureException $refusal) {

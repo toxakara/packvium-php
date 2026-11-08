@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 namespace Packvium\Domain;
+use Packvium\Support\CanonicalJson;
 use Packvium\Unit\Weight;
 final class Placement
 {
@@ -64,6 +65,24 @@ final class Placement
         $this->fixed = $fixed;
     }
     public function box():AxisAlignedBox{return new AxisAlignedBox($this->position,$this->dimensions);}public function envelopeBox():AxisAlignedBox{return new AxisAlignedBox($this->envelopeOrigin,$this->envelopeDimensions);}
+
+    /** This placement's cross-language id inside the container with id `$containerId` (1.10). */
+    public function idIn(string $containerId):string{return self::identifier($containerId,$this->position,$this->instance->item->id,$this->rotation);}
+
+    /**
+     * A placement's cross-language id (1.10): the RFC 8785 canonical JSON text of
+     * `[container id, x, y, z, item type, orientation]`, with the physical position in ticks as
+     * integers. Two valid placements never share that tuple -- the same solid in the same place
+     * would coincide -- and canonical JSON spells any id with no grammar of its own to escape.
+     * A position is below its container's side, itself at most 2^53 - 1 ticks, so every integer
+     * has a canonical spelling; a PHP string holds no lone UTF-16 surrogate, so the reference's
+     * surrogate escape never arises here. A pure function of the placement, so a validator
+     * recomputes it. O(length of the ids).
+     */
+    public static function identifier(string $containerId,Point $position,string $itemType,string $orientation):string
+    {
+        return CanonicalJson::encode([$containerId,$position->x,$position->y,$position->z,$itemType,$orientation]);
+    }
 
     /**
      * This placement's rotated hull, or null when its box is the honest answer.

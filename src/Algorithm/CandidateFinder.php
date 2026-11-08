@@ -18,9 +18,59 @@ final class CandidateFinder
      */
     public static function find(ContainerState $state,ItemInstance $item,PackingConfig $config,array $constraints,SearchStats $stats,Deadline $deadline,CandidateScorer $scorer,?int $max=null,?array $points=null):array
     {
+        $prepared=self::prepare($state,$item,$config,$constraints,$scorer);
+        if($prepared===null)return [];
+        $forms=$prepared[3];
+        $limitX=$prepared[19];
         $container=$state->container;
-        if($container->maxItems!==null&&count($state->placements)>=$container->maxItems)return [];
-        if($container->maxPayload!==null&&$state->payloadTicks+$item->weight()->ticks>$container->maxPayload->ticks)return [];
+        if($points===null){
+            if($item->item->nestingHeight===null)$scan=array_slice($state->orderedPoints,0,$config->maxCandidatePoints);
+            else{
+                $merged=[];
+                foreach([...$state->orderedPoints,...self::nestingPoints($state,$item)] as $candidatePoint)
+                    $merged["{$candidatePoint->x}:{$candidatePoint->y}:{$candidatePoint->z}"]=$candidatePoint;
+                $scan=array_values($merged);
+                usort($scan,static fn(Point $a,Point $b):int=>[$a->z,$a->y,$a->x]<=>[$b->z,$b->y,$b->x]);
+                $scan=array_slice($scan,0,$config->maxCandidatePoints);
+            }
+            if($container->axles!==null)$scan=self::appendUnseen($scan,self::axleBalancedPoints($state,$item,$forms,$limitX));
+        }else{
+            $scan=$points;
+            if(count($scan)>1)usort($scan,static fn(Point $a,Point $b):int=>[$a->z,$a->y,$a->x]<=>[$b->z,$b->y,$b->x]);
+        }
+        $fixedVerdicts=[];
+        return self::scanPoints($prepared,$scan,$max,$stats,$deadline,$fixedVerdicts);
+    }
+
+    /**
+     * Evaluate `$spaces` in order, preparing item-invariant forms and constraints once.
+     *
+     * @param list<Space> $spaces
+     * @param list<PlacementConstraint> $constraints
+     */
+    public static function chooseInSpaces(ContainerState $state,array $spaces,ItemInstance $item,PackingConfig $config,array $constraints,SearchStats $stats,Deadline $deadline,CandidateScorer $scorer):?Candidate
+    {
+        if($spaces===[])return null;
+        $prepared=self::prepare($state,$item,$config,$constraints,$scorer);
+        if($prepared===null){
+            foreach($spaces as $_)$deadline->check();
+            return null;
+        }
+        $fixedVerdicts=[];
+        foreach($spaces as $space){
+            $deadline->check();
+            foreach(self::scanPoints($prepared,[$space->origin],null,$stats,$deadline,$fixedVerdicts) as $candidate)
+                if($candidate->envelopeDimensions->fitsInside($space->dimensions))return $candidate;
+        }
+        return null;
+    }
+
+    /** @param list<PlacementConstraint> $constraints */
+    private static function prepare(ContainerState $state,ItemInstance $item,PackingConfig $config,array $constraints,CandidateScorer $scorer):?array
+    {
+        $container=$state->container;
+        if($container->maxItems!==null&&count($state->placements)>=$container->maxItems)return null;
+        if($container->maxPayload!==null&&$state->payloadTicks+$item->weight()->ticks>$container->maxPayload->ticks)return null;
         $compressionSensitive=$state->compressionSensitive
             ||$item->item->shapeType===ShapeType::COMPRESSIBLE;
         $reserveNeedsCandidate=$item->item->nestingHeight!==null
@@ -28,14 +78,16 @@ final class CandidateFinder
             ||$compressionSensitive;
         if($container->voidFillReserveRatio>0&&!$reserveNeedsCandidate){
             $projected=BigInt::add($state->usedVolume,$item->dimensions()->volumeString());
-            if(BigInt::compare($projected,$state->usableVolume())>0)return [];
+            if(BigInt::compare($projected,$state->usableVolume())>0)return null;
         }
         $inner=$container->innerDimensions;
         $limitX=$inner->length->ticks;$limitY=$inner->width->ticks;$limitZ=$inner->height->ticks;
-        // A flat bag also needs a + c <= L and b + c <= W over the running extents grown by
-        // the candidate: O(1), and the extents only grow, so no verdict flips.
+        // A bag also needs a + c <= L and b + c <= W + G over the running extents grown by
+        // the candidate (G is a gusseted bag's side gusset, 0 for a flat one): O(1),
+        // and the extents only grow, so no verdict flips. W + G is summed once per call.
         $bag=$container->isFlatBag();
         $bagX=$state->maxX;$bagY=$state->maxY;$bagZ=$state->maxZ;
+        $girthY=$limitY+$container->sideGussetTicks();
         $clearance=$config->clearance->ticks;
         // Envelope and extents depend only on the rotation, so they are built once
         // instead of once per (point, rotation) pair.
@@ -76,25 +128,27 @@ final class CandidateFinder
         }
         $inertSupportChecks=count($active);
         $defaultScorer=get_class($scorer)===\Packvium\Extension\DefaultCandidateScorer::class;
-        // A rule that reads no position answers the same at every (point, rotation) of this
-        // search, so it is asked once, by the first position that reaches it.
-        // Keyed by chain position; the stored value is the verdict's `allowed`.
-        $fixedVerdicts=[];
-        if($points===null){
-            if($item->item->nestingHeight===null)$scan=array_slice($state->orderedPoints,0,$config->maxCandidatePoints);
-            else{
-                $merged=[];
-                foreach([...$state->orderedPoints,...self::nestingPoints($state,$item)] as $candidatePoint)
-                    $merged["{$candidatePoint->x}:{$candidatePoint->y}:{$candidatePoint->z}"]=$candidatePoint;
-                $scan=array_values($merged);
-                usort($scan,static fn(Point $a,Point $b):int=>[$a->z,$a->y,$a->x]<=>[$b->z,$b->y,$b->x]);
-                $scan=array_slice($scan,0,$config->maxCandidatePoints);
-            }
-            if($container->axles!==null)$scan=self::appendUnseen($scan,self::axleBalancedPoints($state,$item,$forms,$limitX));
-        }else{
-            $scan=$points;
-            if(count($scan)>1)usort($scan,static fn(Point $a,Point $b):int=>[$a->z,$a->y,$a->x]<=>[$b->z,$b->y,$b->x]);
-        }
+        return [
+            $state,$container,$item,$forms,$placed,$stackSensitive,$routeSensitive,
+            $bounds,$hullShapes,$index,$nesting,$reserveCheck,$usable,$compressionSensitive,
+            $active,$inertChain,$inertSupportChecks,$defaultScorer,$scorer,
+            $limitX,$limitY,$limitZ,$bag,$bagX,$bagY,$bagZ,$girthY,$clearance,
+        ];
+    }
+
+    /**
+     * @param list<Point> $scan
+     * @param array<int,bool> $fixedVerdicts
+     * @return list<Candidate>
+     */
+    private static function scanPoints(array $prepared,array $scan,?int $max,SearchStats $stats,Deadline $deadline,array &$fixedVerdicts):array
+    {
+        [
+            $state,$container,$item,$forms,$placed,$stackSensitive,$routeSensitive,
+            $bounds,$hullShapes,$index,$nesting,$reserveCheck,$usable,$compressionSensitive,
+            $active,$inertChain,$inertSupportChecks,$defaultScorer,$scorer,
+            $limitX,$limitY,$limitZ,$bag,$bagX,$bagY,$bagZ,$girthY,$clearance,
+        ]=$prepared;
         $out=[];$best=null;
         $retained=$max!==null&&$max>1?new \SplPriorityQueue():null;
         $placementOffset=count($bounds)-count($placed);
@@ -114,7 +168,7 @@ final class CandidateFinder
                 if($bag){
                     // Ternaries rather than max(): the call made this test dearer (44 ns against 74 ns).
                     $thickness=$z2>$bagZ?$z2:$bagZ;
-                    if(($x2>$bagX?$x2:$bagX)+$thickness>$limitX||($y2>$bagY?$y2:$bagY)+$thickness>$limitY)continue;
+                    if(($x2>$bagX?$x2:$bagX)+$thickness>$limitX||($y2>$bagY?$y2:$bagY)+$thickness>$girthY)continue;
                 }
                 $tentative=null;
                 if($nesting){

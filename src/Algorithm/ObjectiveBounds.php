@@ -70,10 +70,11 @@ final class ObjectiveBounds
     public const MAX_BOUND_VALUE = '9007199254740991';
 
     /**
-     * The objectives a bound is stated for, and where each reads the five bounds: the
-     * position in `compute`'s default-order vector of each of the objective's score keys.
-     * `lowest_cost` scores cost ahead of the container count, and the document shows the
-     * permuted vector is still a bound. Every other objective gets none.
+     * The objectives a bound is stated for, and where each reads its bounds: the position in
+     * `compute`'s default-order vector of each of the objective's score keys, or the name of
+     * the one key only that objective ranks by. `lowest_cost` scores cost ahead of
+     * the container count, and the document shows the permuted vector is still a bound.
+     * `shipping_cost` and `lowest_landed_cost` get none.
      */
     public const OBJECTIVE_ORDERS = ObjectiveBoundScope::OBJECTIVE_ORDERS;
 
@@ -84,7 +85,8 @@ final class ObjectiveBounds
      * (D13: the unused-volume key would read the machine maximum while the score
      * reads the fabricated box), and for a request past a declared ceiling. The last
      * withholds the bound and nothing else -- the pack is answered as it was before any
-     * bound existed, rather than failing with `BoundOverflowException` (finding F5).
+     * bound existed, rather than failing with `BoundOverflowException` (finding F5). An
+     * objective's own key past the portable ceiling withholds that objective's bound alone.
      *
      * @param list<ItemInstance> $instances every instance of the request, fixed ones included
      * @param list<Container> $containers
@@ -97,11 +99,158 @@ final class ObjectiveBounds
             return null;
         }
         try {
-            $vector = self::compute($instances, $containers);
+            [$normalisedInstances, $normalisedContainers] = self::normalise($instances, $containers);
+            return self::objectiveVector($normalisedInstances, $normalisedContainers, $order);
         } catch (BoundOverflowException $refused) {
             return null;
         }
-        return array_map(static fn(int $position): int => $vector[$position], $order);
+    }
+
+    /**
+     * The bound in one objective's score order, from the normalised numbers `fromNormalised`
+     * reads plus each instance's `value`, throwing `BoundOverflowException` where a ceiling
+     * withholds it -- the one predicate's, or the objective's own key's.
+     *
+     * @param list<array{volume:string,weight:int,shrinks:bool,value:int}> $instances
+     * @param list<array{usable:string,inner:string,base_area:int|string,height:int,payload:?int,max_items:?int,quantity:?int,cost_minor:int}> $containers
+     * @param list<int|string> $order an `OBJECTIVE_ORDERS` entry
+     * @return list<int>
+     */
+    public static function objectiveVector(array $instances, array $containers, array $order): array
+    {
+        $evaluated = self::evaluate($instances, $containers);
+        $vector = $evaluated['vector'];
+        return array_map(static fn(int|string $position): int => is_int($position)
+            ? $vector[$position]
+            : self::objectiveTerm($position, $instances, $evaluated), $order);
+    }
+
+    /**
+     * The bound on the one key an objective ranks by and the default does not.
+     *
+     * Each is conditional on the keys before it, as `fromNormalised`'s are: the value and
+     * height terms hold for every packing that leaves exactly `L0` instances behind, and the
+     * volume term leads its objective and holds for every packing.
+     *
+     * No term sorts: `evaluate` already paid for the only volume sort (finding F6 doubled that
+     * cost once) and hands its ascending volumes and capacity total over, and the value term
+     * selects the `L0` smallest values with a bounded heap in `O(n log L0)`. With `O(c)` over
+     * the container types the request bound stays `O(n log n + c log c)`.
+     *
+     * @param list<array{volume:string,weight:int,shrinks:bool,value:int}> $instances
+     * @param array{vector:array{int,int,int,int,int},volumes:list<string>,shrinks:bool,areas:list<int|string>,capacity:?string} $evaluated
+     */
+    private static function objectiveTerm(string $name, array $instances, array $evaluated): int
+    {
+        $unpacked = $evaluated['vector'][0];
+        if ($name === 'value_forgone') {
+            return self::valueForgoneBound(array_column($instances, 'value'), $unpacked);
+        }
+        if ($name === 'achieved_height') {
+            return self::achievedHeightBound($evaluated['volumes'], $evaluated['shrinks'],
+                count($instances) - $unpacked, $evaluated['areas']);
+        }
+        return self::unpackedVolumeBound($evaluated['volumes'], $evaluated['shrinks'],
+            $evaluated['capacity']);
+    }
+
+    /**
+     * `maximum_value`'s second key: whichever `$unpacked` instances are left behind, their
+     * value is at least that of the `$unpacked` least valuable. Values are non-negative, so
+     * the sum passes the portable ceiling exactly when some running sum does.
+     *
+     * @param list<int> $values
+     */
+    private static function valueForgoneBound(array $values, int $unpacked): int
+    {
+        return self::guardOutput(self::sumBig(array_map(strval(...), self::smallestValues($values, $unpacked))),
+            'value forgone');
+    }
+
+    /**
+     * The `$count` smallest of `$values`, in no particular order, without sorting them all: a
+     * max-heap holding the smallest seen so far evicts its largest whenever it overfills.
+     * `O(n log count)` time, `O(count)` space.
+     *
+     * @param list<int> $values
+     * @return list<int>
+     */
+    private static function smallestValues(array $values, int $count): array
+    {
+        if ($count <= 0) {
+            return [];
+        }
+        if ($count >= count($values)) {
+            return $values;
+        }
+        $kept = new \SplMaxHeap();
+        foreach ($values as $value) {
+            $kept->insert($value);
+            if ($kept->count() > $count) {
+                $kept->extract();
+            }
+        }
+        return iterator_to_array($kept, false);
+    }
+
+    /**
+     * `open_dimension_height`'s second key, the summed tops in ticks.
+     *
+     * A container holding volume `v` on floor `A` stands at least `v / A` tall, because its
+     * placements are disjoint boxes inside `A x top`. Summed over the opened containers that
+     * is at least the placed volume over the widest floor, and the score is an integer. The
+     * placed volume is at least the `$placed` smallest. An instance that occupies less than
+     * its box breaks the disjoint-boxes step, so the term is dropped.
+     *
+     * @param list<string> $volumes ascending
+     * @param list<int|string> $areas square ticks, exact past a native int
+     */
+    private static function achievedHeightBound(array $volumes, bool $shrinks, int $placed,
+        array $areas): int
+    {
+        $widest = array_reduce($areas, ExactInteger::max(...), 0);
+        if ($shrinks || $placed <= 0 || ExactInteger::sign($widest) <= 0) {
+            return 0;
+        }
+        return self::guardOutput(
+            self::ceilDivide(self::sumBig(array_slice($volumes, 0, $placed)), (string)$widest),
+            'achieved height',
+        );
+    }
+
+    /**
+     * `maximum_volume`'s first key: the volume no inventory can hold, as the score's own
+     * rounded-up share of the requested volume.
+     *
+     * The packed volume is at most the summed usable capacity, so at least the rest is left
+     * behind whatever the geometry does. Unlimited inventory (a null capacity) holds
+     * everything, and an instance that occupies less than its box stops nominal volumes
+     * summing, so both give 0. The share is at most `PPM`, so it needs no output guard.
+     *
+     * @param list<string> $volumes
+     */
+    private static function unpackedVolumeBound(array $volumes, bool $shrinks, ?string $capacity): int
+    {
+        if ($shrinks || $capacity === null) {
+            return 0;
+        }
+        $requested = self::sumBig($volumes);
+        if (BigInt::compare($requested, $capacity) <= 0) {
+            return 0;
+        }
+        return (int)self::ceilDivide(
+            BigInt::multiply(BigInt::subtract($requested, $capacity), (string)self::PPM),
+            $requested,
+        );
+    }
+
+    /** `ceil(numerator / denominator)` for a non-negative numerator and positive denominator. */
+    private static function ceilDivide(string $numerator, string $denominator): string
+    {
+        if (BigInt::compare($numerator, '0') === 0) {
+            return '0';
+        }
+        return BigInt::divide(BigInt::add(BigInt::subtract($numerator, '1'), $denominator), $denominator);
     }
 
     /**
@@ -192,12 +341,25 @@ final class ObjectiveBounds
      */
     public static function compute(array $instances, array $containers): array
     {
+        return self::fromNormalised(...self::normalise($instances, $containers));
+    }
+
+    /**
+     * The numbers the formulas consume, read once from the engine objects.
+     *
+     * @param list<ItemInstance> $instances
+     * @param list<Container> $containers
+     * @return array{0:list<array{volume:string,weight:int,shrinks:bool,value:int}>,1:list<array{usable:string,inner:string,base_area:int|string,height:int,payload:?int,max_items:?int,quantity:?int,cost_minor:int}>}
+     */
+    private static function normalise(array $instances, array $containers): array
+    {
         $normalisedInstances = [];
         foreach ($instances as $instance) {
             $normalisedInstances[] = [
                 'volume' => $instance->item->dimensions->volumeString(),
                 'weight' => $instance->item->weight->ticks,
                 'shrinks' => self::occupiesLessThanItsBox($instance->item),
+                'value' => $instance->item->value ?? 0,
             ];
         }
         $normalisedContainers = [];
@@ -213,7 +375,7 @@ final class ObjectiveBounds
                 'cost_minor' => $container->costMinor,
             ];
         }
-        return self::fromNormalised($normalisedInstances, $normalisedContainers);
+        return [$normalisedInstances, $normalisedContainers];
     }
 
     /**
@@ -225,11 +387,28 @@ final class ObjectiveBounds
      * flag correctly for a `convex_hull` is asserted separately, in this engine's own tests,
      * so a port cannot pass the arithmetic check by copying a flag it never computes.
      *
-     * @param list<array{volume:string,weight:int,shrinks:bool}> $instances
+     * Each instance's `value` is not read here: only `objectiveVector`'s `maximum_value` key
+     * consumes it.
+     *
+     * @param list<array{volume:string,weight:int,shrinks:bool,value?:int}> $instances
      * @param list<array{usable:string,inner:string,base_area:int|string,height:int,payload:?int,max_items:?int,quantity:?int,cost_minor:int}> $containers
      * @return array{int,int,int,int,int}
      */
     public static function fromNormalised(array $instances, array $containers): array
+    {
+        return self::evaluate($instances, $containers)['vector'];
+    }
+
+    /**
+     * `fromNormalised`'s vector, with the intermediates the objective-only keys reuse rather
+     * than recompute: the ascending volumes, the shrink flag, the floors and the volume
+     * capacity total (null when unbounded).
+     *
+     * @param list<array{volume:string,weight:int,shrinks:bool,value?:int}> $instances
+     * @param list<array{usable:string,inner:string,base_area:int|string,height:int,payload:?int,max_items:?int,quantity:?int,cost_minor:int}> $containers
+     * @return array{vector:array{int,int,int,int,int},volumes:list<string>,shrinks:bool,areas:list<int|string>,capacity:?string}
+     */
+    private static function evaluate(array $instances, array $containers): array
     {
         $volumes = [];
         $weights = [];
@@ -273,13 +452,15 @@ final class ObjectiveBounds
         $cost = self::costBound($costs, $quantities, $opened);
         $unused = self::unusedVolumeBound($volumes, $shrinks, $placed, $inner, $opened);
         $height = self::stackHeightBound($volumes, $shrinks, $placed, $areas, $heights, $opened);
-        return [
+        $vector = [
             self::guardOutput((string)$unpacked, 'unpacked count'),
             self::guardOutput((string)$opened, 'container count'),
             self::guardOutput((string)$cost, 'opening cost'),
             self::guardOutput((string)$unused, 'unused volume'),
             self::guardOutput((string)$height, 'stack height'),
         ];
+        return ['vector' => $vector, 'volumes' => $volumes, 'shrinks' => $shrinks,
+            'areas' => $areas, 'capacity' => $capacities['volume']];
     }
 
     /**

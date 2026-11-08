@@ -14,8 +14,9 @@
  *
  * The levels stay independent on purpose. Level two does not reach back and repack level
  * one to get a better pallet, because that would make the carton contents depend on the
- * pallet, and a carton you already taped shut cannot be repacked. If you want that
- * trade-off explored, run the packer yourself with different carton sets and compare.
+ * pallet, and a carton you already taped shut cannot be repacked. To explore that
+ * trade-off, `new NestedPacker(3)` carries the three best carton sets
+ * up a level and keeps the one whose pallet scores best.
  */
 declare(strict_types=1);
 

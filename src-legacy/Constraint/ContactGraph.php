@@ -285,7 +285,18 @@ final class ContactGraph
         if (!isset($buckets[$plane])) {
             return [];
         }
-        $level = ($cache[$plane] = $cache[$plane] ?? new ContactLevelIndex($this->cell, $buckets[$plane]));
+        $entries = $buckets[$plane];
+        if (count($entries) <= 32) {
+            $matches = [];
+            foreach ($entries as [$otherIndex, $other]) {
+                $area = ExactGeometry::overlapAreaXY($other, $box);
+                if ($area > 0) {
+                    $matches[] = [$otherIndex, $area];
+                }
+            }
+            return $matches;
+        }
+        $level = ($cache[$plane] = $cache[$plane] ?? new ContactLevelIndex($this->cell, $entries));
         $matches = [];
         foreach ($level->near($box) as [$otherIndex, $other]) {
             $area = ExactGeometry::overlapAreaXY($other, $box);

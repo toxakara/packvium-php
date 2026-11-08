@@ -62,7 +62,10 @@ final class Dimensions
             return new self($this->height,$this->length,$this->width);
         case Rotation::HWL:
             return new self($this->height,$this->width,$this->length);
+        default:
+            return $this->signedRotated($r);
     }}
+    /** A signed code's box: its permutation, the signs being invisible on a cuboid (1.10). */ private function signedRotated(string $r):self{$sides=[$this->length,$this->width,$this->height];[$x,$y,$z]=Orientations::sourceAxes($r);return new self($sides[$x],$sides[$y],$sides[$z]);}
     /** @param list<Rotation> $allowed @return list<array{0:Rotation,1:self}> */ public function uniqueRotations(array $allowed):array{$seen=[];$out=[];foreach($allowed as $r){$d=$this->rotated($r);$k=$d->length->ticks.':'.$d->width->ticks.':'.$d->height->ticks;if(!isset($seen[$k])){$seen[$k]=true;$out[]=[$r,$d];}}return $out;}
     public function fitsInside(self $o):bool{return $this->length->ticks<=$o->length->ticks&&$this->width->ticks<=$o->width->ticks&&$this->height->ticks<=$o->height->ticks;}
     public function expand(Length $c):self{$x=$c->ticks*2;return new self(new Length($this->length->ticks+$x),new Length($this->width->ticks+$x),new Length($this->height->ticks+$x));}

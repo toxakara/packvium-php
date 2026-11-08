@@ -4,6 +4,67 @@ What changed in `packvium/packvium` on Packagist, release by release. The format
 [Keep a Changelog](https://keepachangelog.com/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0]
+
+Overhanging pallets, gusseted bags, 24 rotations for a hull, a declared currency, an id on every
+placement, a nested packer that compares carton sets, and bounds under three more objectives.
+One stricter refusal: a `units` key other than `length` (see *Changed*).
+
+### Added
+
+- **`container.pallet_overhang_limit`** (`Packvium\Domain\OverhangLimit`): a load may pass the
+  deck by the stated length at each end and width at each side. Positions are measured from the
+  corner of the overhang zone, only the deck bears weight, and the packed pallet reports
+  `achieved_dimensions`, at which it is billed and handed up. Refused beside `access_directions`,
+  `axles`, `made_to_measure`, `obstacles`, a non-zero `void_fill_reserve_ratio` or a
+  `stop_index`.
+- **Gusseted bags:** `deformable_boundary.kind: "gusseted_bag"` with `side_gusset_depth`;
+  `Container::create()` and the constructor take a trailing `?Length $sideGussetDepth`.
+- **18 signed rotations for a `convex_hull` item** (`Rotation::NL_NW_PH` is `-L-W+H`), 24 in all,
+  in `allowedRotations`, a placement's orientation, `fixed_placements` and revision events;
+  `Rotation::every()`, `isSigned()`, `isUpright()`. `Rotation::all()` is unchanged, and a signed
+  code on any other item is `invalid_request` / `invalid_value`.
+- **`placement_id` on every placement**, the canonical JSON of `[container id, x, y, z,
+  item_type, orientation]` in ticks. A fixed placement or a locked revision event may quote it,
+  the execution plan copies it, and `validate` reports `placement_id_mismatch` and
+  `duplicate_placement_id`.
+- **`currency`** on the request and each `rate_table`, echoed as the result's `currency`; it
+  never changes the packing. `PackingRequest`, `Packer::pack()` and `RateTable` take a trailing
+  `?string $currency`, and `validate` reports `currency_mismatch`.
+- **`optimality.lower_bound` and the gap under `maximum_value`, `open_dimension_height` and
+  `maximum_volume`**, besides `default` and `lowest_cost`; `validate` checks them.
+- **`new NestedPacker(int $levelBeamWidth = 1)`** carries the K best carton sets up a level and
+  lets the outermost level's score choose; 1 is the greedy chain, answer for answer.
+- **A made-to-measure box may keep a `void_fill_reserve_ratio`**: when the box cut tight to the
+  load would break the reserve, a larger one is cut.
+- **`PlanRevision::stockCutBoxes()`**, and the revision issue `artifact_required`.
+- **`examples/packaging.php`**: an overhanging pallet, a gusseted mailer, a cut box with a
+  reserve and a nested beam.
+
+### Changed
+
+- **`units` refuses every key but `length`**: `invalid_request` / `not_allowed` at
+  `/units/<key>`. 1.9 read a bare weight as grams whatever `units.weight` said; write the unit
+  on each weight instead.
+- **`PlanRevision::derive()` stocks a box already cut to measure** that holds a locked or
+  verified placement, as `<type>@<revision>#<instance>` at its cut size, price and tare, where
+  1.9 derived a request every engine refused. `verifyChain()` checks that revision only when
+  given its approved artifact.
+- **`keep_upright` narrows an explicit `allowed_rotations` list** in `validate`, not only the
+  default list.
+
+### Fixed
+
+- **An explicit rotation list emptied by `keep_upright` is refused at `allowed_rotations`**,
+  with the same named request error the independent validator checks.
+- **Stocking cut boxes indexes artifact lookups once** and reports malformed consumed
+  machine fields as structured `invalid_revision` errors.
+- **An artifact export refuses an integer past `2^53 - 1`** with `number_out_of_range`, where it
+  printed one up to `PHP_INT_MAX` that other engines read differently.
+- **A compressible item no longer joins a rigid item's grid lattice.**
+- **A mixed fraction whose whole part is `PHP_INT_MIN`** is refused as a negative measure,
+  where it failed later as a type error.
+
 ## [1.9.0]
 
 No API change, but admission is stricter: some requests 1.8 accepted are now refused (see the

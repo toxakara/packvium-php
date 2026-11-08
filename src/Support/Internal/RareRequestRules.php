@@ -19,6 +19,8 @@ use Packvium\Support\{BigInt,CanonicalJson,JsonValue,MeasureReading,RequestRules
  */
 final class RareRequestRules
 {
+    /** The two axes `pallet_overhang_limit` requires, in the order they are checked. */
+    private const PALLET_OVERHANG_FIELDS = ['length', 'width'];
     /** Every key the request schema's `made_to_measure` declares; it sets `additionalProperties: false`. */
     private const MADE_TO_MEASURE_FIELDS = ['cost_per_square_metre_minor', 'increment', 'minimum', 'outer_allowance',
         'tare_per_square_metre'];
@@ -75,20 +77,48 @@ final class RareRequestRules
     }
 
     /**
-     * The bag's own shape, then every container field a flat bag refuses, in the
-     * order of `BAG_EXCLUSIONS`.
+     * Both axes, each a non-negative length, and a solving frame `(L + 2l, W + 2w, H)`
+     * inside the admission ceiling every box is held to. Run after every other container field.
+     * O(1).
      *
      * @param stdClass|array<array-key,mixed> $container
      * @param mixed $raw
      */
-    public static function deformableBoundary(\Closure $call, $container, $raw, string $where): void
+    public static function palletOverhangLimit(\Closure $call, $container, $raw, string $where, string $unit): void
+    {
+        $field = "{$where}/pallet_overhang_limit";
+        $limit = $call('objectAt', $raw, $field);
+        $call('knownFields', $limit, $field, self::PALLET_OVERHANG_FIELDS);
+        foreach (self::PALLET_OVERHANG_FIELDS as $axis) {
+            $call('measure', $call('required', $limit, $axis, $field), "{$field}/{$axis}", Length::class, $unit);
+        }
+        [$length, $width, $height] = $call('sideTicks', JsonValue::get($container, 'inner_dimensions'), $unit);
+        $overhangX = MeasureReading::ticks(JsonValue::get($limit, 'length'), Length::class, $unit);
+        $overhangY = MeasureReading::ticks(JsonValue::get($limit, 'width'), Length::class, $unit);
+        RequestRules::box([$length + 2 * $overhangX, $width + 2 * $overhangY, $height], $field);
+    }
+
+    /**
+     * The bag's own shape top to bottom -- kind, unknown keys, a gusseted bag's side
+     * gusset (1.10) -- then every container field a bag refuses, in the order of
+     * `BAG_EXCLUSIONS`. O(1).
+     *
+     * @param stdClass|array<array-key,mixed> $container
+     * @param mixed $raw
+     */
+    public static function deformableBoundary(\Closure $call, $container, $raw, string $where, string $unit): void
     {
         $field = "{$where}/deformable_boundary";
         $boundary = $call('objectAt', $raw, $field);
-        if (!\in_array($call('required', $boundary, 'kind', $field), FlatBag::KINDS, true)) {
+        $kind = $call('required', $boundary, 'kind', $field);
+        if (!\in_array($kind, FlatBag::KINDS, true)) {
             throw $call('refuse', 'not_allowed', "{$field}/kind", 'must be one of ' . CanonicalJson::spelling(FlatBag::KINDS));
         }
-        $call('knownFields', $boundary, $field, ['kind']);
+        $gusseted = $kind === FlatBag::GUSSETED_BAG;
+        $call('knownFields', $boundary, $field, $gusseted ? ['kind', 'side_gusset_depth'] : ['kind']);
+        if ($gusseted) {
+            self::sideGussetDepth($call, $container, $call('required', $boundary, 'side_gusset_depth', $field), "{$field}/side_gusset_depth", $unit);
+        }
         foreach (RequestRules::BAG_EXCLUSIONS as $name) {
             if ($call('setBesideABag', $name, JsonValue::get($container, $name))) {
                 throw $call('refuse', 'not_allowed', "{$where}/{$name}", 'cannot be combined with deformable_boundary');
@@ -96,8 +126,30 @@ final class RareRequestRules
         }
     }
 
-    /** @param mixed $raw */
-    public static function rateTable(\Closure $call, $raw, string $where): void
+    /**
+     * A length, positive once read in ticks, and no deeper than the bag's inner width.
+     *
+     * @param stdClass|array<array-key,mixed> $container
+     * @param mixed $value
+     */
+    private static function sideGussetDepth(\Closure $call, $container, $value, string $field, string $unit): void
+    {
+        $call('measure', $value, $field, Length::class, $unit);
+        $depth = MeasureReading::ticks($value, Length::class, $unit);
+        if ($depth === 0) {
+            throw $call('refuse', 'invalid_value', $field, 'must be positive');
+        }
+        if ($depth > $call('sideTicks', JsonValue::get($container, 'inner_dimensions'), $unit)[1]) {
+            throw $call('refuse', 'invalid_value', $field, 'exceeds inner_dimensions width');
+        }
+    }
+
+    /**
+     * The table's integers, then its currency against the request's (1.10).
+     *
+     * @param mixed $raw
+     */
+    public static function rateTable(\Closure $call, $raw, string $where, ?string $currency): void
     {
         $table = $call('objectAt', $raw, $where);
         foreach (['weight_brackets_g' => 1, 'prices_minor' => 0] as $name => $minimum) {
@@ -111,6 +163,10 @@ final class RareRequestRules
         }
         $call('optionalInteger', $table, 'minimum_charge_minor', $where, 0);
         $call('optionalInteger', $table, 'fuel_surcharge_permille', $where, 0);
+        $code = JsonValue::get($table, 'currency');
+        if ($code !== null) {
+            RequestRules::rateTableCurrency($code, "{$where}/currency", $currency);
+        }
     }
 
     /** @param mixed $raw @param array{0:int,1:int,2:int} $inner */

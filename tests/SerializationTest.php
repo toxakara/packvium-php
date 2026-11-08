@@ -233,7 +233,8 @@ final class SerializationTest extends TestCase
         $keys = array_keys($placement);
         sort($keys);
 
-        self::assertSame(['dimensions', 'item_id', 'item_type', 'orientation', 'position', 'support_ratio', 'top_load'], $keys);
+        self::assertSame(['dimensions', 'item_id', 'item_type', 'orientation', 'placement_id', 'position', 'support_ratio', 'top_load'], $keys);
+        self::assertSame('["c#1",0,0,0,"a","' . $placement['orientation'] . '"]', $placement['placement_id']);
         self::assertSame('a#1', $placement['item_id']);
         self::assertSame('a', $placement['item_type']);
         self::assertContains($placement['orientation'], ['LWH', 'LHW', 'WLH', 'WHL', 'HLW', 'HWL']);

@@ -71,6 +71,10 @@ final class RequestObjectsCorpusTest extends TestCase
         'item-side-missing' => 'Dimensions requires all three sides',
         'container-made-to-measure-minimum-missing' => 'MadeToMeasure requires a minimum',
         'container-made-to-measure-increment-missing' => 'MadeToMeasure requires an increment',
+        'container-pallet-overhang-limit-not-object' => 'a limit that is not an object is not an OverhangLimit',
+        'container-pallet-overhang-limit-length-missing' => 'OverhangLimit requires a length',
+        'container-pallet-overhang-limit-width-missing' => 'OverhangLimit requires a width',
+        'container-pallet-overhang-limit-key-unknown' => self::UNKNOWN_KEY,
         'rate-brackets-not-list' => 'RateTable holds its brackets as a list',
         'solver-profile-unknown' => 'SolverProfile has no such case',
         'configuration-key-unknown-before-bad-value' => 'SolverProfile has no such case, and ' . self::UNKNOWN_KEY,
@@ -80,6 +84,8 @@ final class RequestObjectsCorpusTest extends TestCase
         'configuration-keys-unknown-first-in-code-point-order' => self::UNKNOWN_KEY,
         'effort-key-unknown' => self::UNKNOWN_KEY,
         'container-deformable-boundary-key-unknown' => self::UNKNOWN_KEY,
+        'container-gusseted-bag-key-unknown' => self::UNKNOWN_KEY,
+        'an-unknown-boundary-key-before-a-missing-gusset' => self::UNKNOWN_KEY,
         'container-made-to-measure-key-unknown' => self::UNKNOWN_KEY,
         'unknown-configuration-key-before-its-values' => self::UNKNOWN_KEY,
         'unsupported-before-units' => 'an unsupported field has no object form',
@@ -91,9 +97,11 @@ final class RequestObjectsCorpusTest extends TestCase
         'effort-limit-text' => self::TYPED,
         'item-accepts-stacking-groups-not-list' => self::TYPED,
         'item-side-boolean' => self::TYPED,
+        'container-gusseted-bag-side-gusset-depth-boolean' => self::TYPED,
         'item-side-fraction' => self::TYPED,
         'item-stacking-group-number' => self::TYPED,
         'fixed-position-unparsable' => 'a Point holds integer ticks, not text',
+        'fixed-placement-id-not-a-string' => self::TYPED,
         // A length past a native int has no `Length` to hold it.
         'item-side-whole-beyond-exact' => self::TYPED,
         'item-side-negative-beyond-exact' => self::TYPED,
@@ -113,14 +121,28 @@ final class RequestObjectsCorpusTest extends TestCase
         'item-allowed-rotation-lowercase' => 'Rotation has no such case',
         'item-shape-type-unknown' => 'ShapeType has no such case',
         'fixed-orientation-unknown' => 'Rotation has no such case',
+        'item-allowed-rotation-reflection-on-a-hull' => 'Rotation has no such case',
+        'item-allowed-rotation-legacy-spelled-signed-on-a-hull' => 'Rotation has no such case',
+        'item-allowed-rotation-signed-beside-an-unknown-shape' => 'ShapeType has no such case',
+        'fixed-orientation-reflection-on-a-hull' => 'Rotation has no such case',
         'configuration-solvers-not-list' => self::TYPED,
         'output-not-object' => self::OUTPUT,
         'output-length-unit-unknown' => self::OUTPUT,
         'output-weight-unit-unknown' => self::OUTPUT,
         'output-before-configuration' => self::OUTPUT,
+        'output-before-currency' => self::OUTPUT,
+        // A currency is held as `?string`; a number or a list has no object form.
+        'currency-number' => self::TYPED,
+        'currency-list' => self::TYPED,
+        'rate-table-currency-number' => self::TYPED,
         // The request's length unit is an argument of each measure, not an object of its own.
         'units-not-object' => self::UNITS,
         'units-list' => self::UNITS,
+        'units-weight' => self::UNITS,
+        'units-unknown-key' => self::UNITS,
+        'units-unknown-keys-first-in-code-point-order' => self::UNITS,
+        'units-unknown-key-null' => self::UNITS,
+        'unknown-units-key-before-its-length' => self::UNITS,
         'units-length-object' => self::TYPED,
         'units-length-list' => self::TYPED,
         // A bool property cannot hold anything else; the codec casts what it reads.
@@ -157,6 +179,8 @@ final class RequestObjectsCorpusTest extends TestCase
         'an-item-id-before-its-quantity' => self::CONSTRUCTOR_FIRST,
         'item-ids-before-containers' => self::CONSTRUCTOR_FIRST,
         'container-ids-before-fixed-placements' => self::CONSTRUCTOR_FIRST,
+        'currency-before-configuration' => self::CONSTRUCTOR_FIRST,
+        'item-boolean-before-empty-rotations' => self::CONSTRUCTOR_FIRST,
         'item.nesting_height=2^53 ticks' => self::CEILING_SECOND,
         'container.made_to_measure.minimum.length=2^53 ticks' => self::CEILING_SECOND,
         'container.made_to_measure.minimum.width=2^53 ticks' => self::CEILING_SECOND,
@@ -167,6 +191,7 @@ final class RequestObjectsCorpusTest extends TestCase
         'container.obstacles.origin.y=2^53 ticks' => self::CEILING_SECOND,
         'container.obstacles.origin.z=2^53 ticks' => self::CEILING_SECOND,
         'container.obstacles.dimensions.length=2^53 ticks' => self::CEILING_SECOND,
+        'container-gusseted-bag-side-gusset-depth-past-the-ceiling' => self::CEILING_SECOND,
         'configuration-boolean-before-effort-budget' => 'two faults: the EffortBudget is built, and refuses its own '
             . 'value, before the PackingConfig that holds it',
         'item.weight=2^53 as a number' => self::JSON_NUMBER,
@@ -178,7 +203,7 @@ final class RequestObjectsCorpusTest extends TestCase
     ];
 
     /** Pinned, so the skip set cannot grow without this line changing too. */
-    private const SKIPPED = 124;
+    private const SKIPPED = 148;
 
     public static function testTheSkipSetIsPinnedAndNamesOnlyCorpusCases(): void
     {
@@ -273,7 +298,7 @@ final class RequestObjectsCorpusTest extends TestCase
             \restore_error_handler();
         }
         try {
-            (new Packer($config))->pack($items, $containers, $fixed);
+            (new Packer($config))->pack($items, $containers, $fixed, $request['currency'] ?? null);
         } catch (Throwable $error) {
             return [$json, $error, 'pack'];
         }
@@ -297,7 +322,7 @@ final class RequestObjectsCorpusTest extends TestCase
         foreach ($request['fixed_placements'] ?? [] as $raw) {
             $position = self::codec('point', $raw['position'] ?? [], $unit);
             $fixed[] = new FixedPlacement($raw['item_type'], $raw['container_type'], $position,
-                Rotation::from($raw['orientation']), $raw['container_instance'] ?? 1);
+                Rotation::from($raw['orientation']), $raw['container_instance'] ?? 1, $raw['placement_id'] ?? null);
         }
         return [$config, $items, $containers, $fixed];
     }

@@ -4,6 +4,7 @@ namespace Packvium\Support;
 
 use Packvium\Domain\FlatBag;
 use Packvium\Domain\MadeToMeasure;
+use Packvium\Domain\Orientations;
 use Packvium\Serialization\InvalidRequestException;
 use Packvium\Unit\Length;
 use Packvium\Unit\Weight;
@@ -14,7 +15,7 @@ use stdClass;
  * The request schema's rules, walked over the decoded JSON before any model is built.
  *
  * Held to `packvium.request_errors.check_request`: the first violation wins, in the order every
- * engine follows -- units, output, configuration, items, containers -- and is refused with the same
+ * engine follows -- units, output, currency, configuration, items, containers -- and is refused with the same
  * reason, JSON Pointer and message the reference raises.
  *
  * The request arrives from `json_decode(..., true)`, where `{}` and `[]` are the same empty
@@ -28,7 +29,6 @@ final class RequestRules
     public const ACCESS_DIRECTIONS = ['+x', '-x', '+y', '-y', '+z', '-z'];
     /** The schema's closed vocabularies, each refused as `not_allowed` like the two above. */
     public const SOLVERS = ['grid', 'extreme_points', 'homogeneous_blocks', 'layer', 'maximal_spaces', 'exact_small'];
-    public const ROTATIONS = ['LWH', 'LHW', 'WLH', 'WHL', 'HLW', 'HWL'];
     public const LENGTH_UNITS = ['mm', 'cm', 'm', 'in', 'ft'];
     public const WEIGHT_UNITS = ['mg', 'g', 'kg', 'oz', 'lb'];
     public const GROUND_CONTACT_RULES = ['free', 'covered', 'single', 'multiple'];
@@ -54,7 +54,7 @@ final class RequestRules
     private const ITEM_BOOLEANS = ['keep_upright', 'stackable', 'must_be_on_floor'];
     /** Container fields a flat bag refuses, in reporting order (docs/DEFORMABLE-CONTAINERS.md). */
     public const BAG_EXCLUSIONS = ['obstacles', 'axles', 'access_directions', 'max_stack_density',
-        'outer_dimensions', 'void_fill_reserve_ratio', 'made_to_measure'];
+        'outer_dimensions', 'void_fill_reserve_ratio', 'made_to_measure', 'pallet_overhang_limit'];
     public const WEIGHT_UNIT = 'g';
     /**
      * The admission ceiling every engine refuses past: a length is a tick count
@@ -80,6 +80,7 @@ final class RequestRules
         $request = self::objectAt($data, '');
         $unit = self::units(JsonValue::get($request, 'units'));
         self::output(JsonValue::get($request, 'output'));
+        $currency = self::requestCurrency(JsonValue::get($request, 'currency'));
         self::configuration(JsonValue::get($request, 'configuration'), $unit);
         $items = self::requiredList($request, 'items', '');
         foreach ($items as $index => $raw) {
@@ -88,7 +89,7 @@ final class RequestRules
         self::requireUniqueIds(self::identifiers($items), 'items');
         $containers = self::requiredList($request, 'containers', '');
         foreach ($containers as $index => $raw) {
-            self::container($raw, "/containers/{$index}", $unit);
+            self::container($raw, "/containers/{$index}", $unit, $currency);
         }
         self::requireUniqueIds(self::identifiers($containers), 'containers');
         self::totalWeight(\array_map(
@@ -136,7 +137,10 @@ final class RequestRules
         if ($raw === null) {
             return 'mm';
         }
-        $length = JsonValue::get(self::objectAt($raw, '/units'), 'length');
+        $units = self::objectAt($raw, '/units');
+        // `{"length": "cm", "weight": "kg"}` used to read every bare weight as grams.
+        self::knownFields($units, '/units', ['length']);
+        $length = JsonValue::get($units, 'length');
         if ($length === null) {
             return 'mm';
         }
@@ -232,12 +236,67 @@ final class RequestRules
                 self::stackingGroupName($name, "{$where}/accepts_stacking_groups/{$index}");
             }
         }
-        self::optionalEachOneOf($item, 'allowed_rotations', $where, self::ROTATIONS);
+        self::optionalAllowedRotations($item, $where);
         self::optionalOneOf($item, 'ground_contact_rule', $where, self::GROUND_CONTACT_RULES);
         self::optionalOneOf($item, 'shape_type', $where, self::SHAPE_TYPES);
         foreach (self::ITEM_BOOLEANS as $name) {
             self::optionalBoolean($item, $name, $where);
         }
+        $listed = JsonValue::get($item, 'allowed_rotations');
+        if ($listed !== null) {
+            $upright = JsonValue::get($item, 'keep_upright') === true;
+            foreach ($listed as $code) {
+                if (!$upright || \in_array($code, Orientations::UPRIGHT_CODES, true)) {
+                    return;
+                }
+            }
+            throw self::refuse('invalid_value', "{$where}/allowed_rotations", 'must allow at least one rotation after keep_upright');
+        }
+    }
+
+    /**
+     * Each code from the item's vocabulary (1.10): all 24 for a hull, the six legacy codes for
+     * anything else, where a signed code is a rule broken rather than an unknown word. The shape
+     * is read as written, so a shape no engine knows is not a hull. O(len(list)).
+     *
+     * @param stdClass|array<array-key,mixed> $item
+     */
+    private static function optionalAllowedRotations($item, string $where): void
+    {
+        $value = JsonValue::get($item, 'allowed_rotations');
+        if ($value === null) {
+            return;
+        }
+        $hull = JsonValue::get($item, 'shape_type') === 'convex_hull';
+        foreach (self::listAt($value, "{$where}/allowed_rotations") as $index => $code) {
+            $refusal = self::orientationRefusal($code, $hull);
+            if ($refusal !== null) {
+                throw self::refuse($refusal[0], "{$where}/allowed_rotations/{$index}", $refusal[1]);
+            }
+        }
+    }
+
+    /**
+     * Why `$value` cannot orient an item of this shape, as `[reason, detail]`, or null when it
+     * can (`Orientations::refusalReason`). `$where` names the value inside the detail, the way a
+     * fixed placement or a revision event words its own refusals. Shared by every field that
+     * names a requested item's orientation. O(1).
+     *
+     * @param mixed $value
+     * @return array{0:string,1:string}|null
+     */
+    public static function orientationRefusal($value, bool $hull, string $where = ''): ?array
+    {
+        $reason = Orientations::refusalReason($value, $hull);
+        if ($reason === null) {
+            return null;
+        }
+        if ($reason === 'invalid_value') {
+            $signed = Orientations::SIGNED_CODE_NEEDS_A_HULL;
+            return [$reason, $where === '' ? $signed : "{$where}: {$signed}"];
+        }
+        $rule = 'must be one of ' . CanonicalJson::spelling(Orientations::vocabulary($hull));
+        return [$reason, $where === '' ? $rule : "{$where} {$rule}"];
     }
 
     /** @param mixed $value */
@@ -251,8 +310,58 @@ final class RequestRules
         }
     }
 
+    /**
+     * The request's `currency`, absent when null, or refused. O(1).
+     *
+     * @param mixed $raw
+     */
+    private static function requestCurrency($raw): ?string
+    {
+        if ($raw === null) {
+            return null;
+        }
+        self::currencyCode($raw, '/currency');
+        return (string) $raw;
+    }
+
+    /**
+     * An ISO 4217 shape, `^[A-Z]{3}$`, with no code list: the engines never convert, so a code
+     * they do not know is still one they can echo (docs/SERIALIZATION.md). ASCII letters only,
+     * and `\z` rather than `$`, which would let a trailing newline through. Shared with
+     * `RequestObjects`. O(1).
+     *
+     * @param mixed $value
+     */
+    public static function currencyCode($value, string $field): void
+    {
+        if (!\is_string($value)) {
+            throw self::refuse('wrong_type', $field, 'must be a string');
+        }
+        if (\preg_match('/\A[A-Z]{3}\z/', $value) !== 1) {
+            throw self::refuse('invalid_value', $field, 'must be three capital letters (ISO 4217)');
+        }
+    }
+
+    /**
+     * A rate table prices in the request's currency or says nothing: a table in another one
+     * would be ranked as though its minor units were the request's. Shared with
+     * `RequestObjects`. O(1).
+     *
+     * @param mixed $value
+     */
+    public static function rateTableCurrency($value, string $field, ?string $currency): void
+    {
+        self::currencyCode($value, $field);
+        if ($currency === null) {
+            throw self::refuse('missing_field', '/currency', 'is required when a rate_table declares a currency');
+        }
+        if ($value !== $currency) {
+            throw self::refuse('not_allowed', $field, 'must equal the request currency ' . CanonicalJson::spelling($currency));
+        }
+    }
+
     /** @param mixed $raw */
-    private static function container($raw, string $where, string $unit): void
+    private static function container($raw, string $where, string $unit, ?string $currency): void
     {
         $container = self::objectAt($raw, $where);
         self::requiredString($container, 'id', $where);
@@ -278,7 +387,7 @@ final class RequestRules
         }
         $rateTable = JsonValue::get($container, 'rate_table');
         if ($rateTable !== null) {
-            RareRequestRules::rateTable(self::bridge(), $rateTable, "{$where}/rate_table");
+            RareRequestRules::rateTable(self::bridge(), $rateTable, "{$where}/rate_table", $currency);
         }
         $obstacles = JsonValue::get($container, 'obstacles');
         if ($obstacles !== null) {
@@ -286,11 +395,15 @@ final class RequestRules
         }
         $boundary = JsonValue::get($container, 'deformable_boundary');
         if ($boundary !== null) {
-            RareRequestRules::deformableBoundary(self::bridge(), $container, $boundary, $where);
+            RareRequestRules::deformableBoundary(self::bridge(), $container, $boundary, $where, $unit);
         }
         $machine = JsonValue::get($container, 'made_to_measure');
         if ($machine !== null) {
             RareRequestRules::madeToMeasure(self::bridge(), $container, $machine, $where, $unit);
+        }
+        $limit = JsonValue::get($container, 'pallet_overhang_limit');
+        if ($limit !== null) {
+            RareRequestRules::palletOverhangLimit(self::bridge(), $container, $limit, $where, $unit);
         }
     }
 

@@ -6,6 +6,7 @@ use Packvium\Serialization\ArrayCodec;
 use Packvium\Support\PrettyJsonStream;
 $input = stream_get_contents(STDIN);
 if ($input === false || trim($input) === '') { fwrite(STDERR, "Expected packing JSON on stdin\n"); exit(2); }
-// Streamed, not `echo json_encode(...)`: the encoded result is never held next to its array.
-try { $result=ArrayCodec::pack(json_decode($input,true,512,JSON_THROW_ON_ERROR)); PrettyJsonStream::write($result,STDOUT); fwrite(STDOUT,"\n"); }
+// Streamed, not `echo json_encode(...)`: the encoded result is never held next to its array,
+// and its placements are built as they are written, never all at once.
+try { $result=ArrayCodec::packStreamed(json_decode($input,true,512,JSON_THROW_ON_ERROR)); PrettyJsonStream::write($result,STDOUT); fwrite(STDOUT,"\n"); }
 catch(Throwable $e){ fwrite(STDERR,$e->getMessage()."\n"); exit(1); }

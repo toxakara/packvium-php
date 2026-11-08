@@ -39,10 +39,24 @@ final class ContainerSpec
     public $accessDirections;
     /** @var bool */
     public $flatBag;
+    /**
+     * 1.10: a gusseted bag's side gusset depth G in ticks, which widens the width girth to
+     * b + c <= W + G; 0 for a flat bag and every rigid container.
+     *
+     * @var int|string
+     */
+    public $sideGusset = 0;
     /** @var bool */
     public $reportsAchievedExtent;
     /** @var MachineSpec|null */
     public $madeToMeasure;
+    /**
+     * The weight-bearing deck `[x, y, length, width]` inside a pallet's solving frame,
+     * which `$inner` then is; null for every other container.
+     *
+     * @var array{0:int|string,1:int|string,2:int|string,3:int|string}|null
+     */
+    public $deck;
 
     /** @return int|string */
     public function volume()

@@ -5,7 +5,7 @@ use ArithmeticError;
 use InvalidArgumentException;
 use Packvium\Algorithm\EffortBudget;
 use Packvium\Config\{PackingConfig,SolverProfile};
-use Packvium\Domain\{Axle,AxisAlignedBox,Compression,Container,Dimensions,FixedPlacement,Item,MadeToMeasure,Obstacle,Point,RateTable,Rotation,ShapeType};
+use Packvium\Domain\{Axle,AxisAlignedBox,Compression,Container,Dimensions,FixedPlacement,Item,MadeToMeasure,Obstacle,OverhangLimit,Point,RateTable,Rotation,ShapeType};
 use Packvium\Extension\ExtensionRegistry;
 use Packvium\Packer;
 use Packvium\Policy\PolicyRuleSet;
@@ -46,12 +46,10 @@ final class ArrayCodec
         // list in, when PHP gained both the solver behaviour and the independent
         // validation the staged rollout requires. Rust and the JavaScript fallback still
         // carry them.
-        // `pallet_overhang_limit` was reserved in the schema by at the 1.1.0
-        // contract freeze and is refused everywhere until an engine implements it from a
-        // request: a field a caller can set and the solver ignores is worse than a refusal.
         // `access_directions` left this list in, which wired the reserved field
-        // through to `StopAccessibilityConstraint` in all four engines at once.
-        'item'=>[],'container'=>['pallet_overhang_limit']];
+        // through to `StopAccessibilityConstraint` in all four engines at once, and
+        // `pallet_overhang_limit` in, which did the same for the pallet deck.
+        'item'=>[],'container'=>[]];
 
     /**
      * `item.shape_type` values this engine does not implement.
@@ -105,6 +103,7 @@ final class ArrayCodec
             }
         }
         foreach(self::madeToMeasureCombinations($data) as $name)$found[$name]=true;
+        foreach(self::palletOverhangCombinations($data) as $name)$found[$name]=true;
         foreach(self::entries($data,'items') as $entry){
             if(!is_array($entry))continue;
             $shape=$entry['shape_type']??null;
@@ -137,8 +136,6 @@ final class ArrayCodec
             if(($entry['axles']??null)!==null)$found['container.made_to_measure+axles']=true;
             $obstacles=$entry['obstacles']??null;
             if(JsonValue::isList($obstacles)&&$obstacles!==[])$found['container.made_to_measure+obstacles']=true;
-            $reserve=$entry['void_fill_reserve_ratio']??null;
-            if((is_int($reserve)||is_float($reserve))&&$reserve>0)$found['container.made_to_measure+void_fill_reserve_ratio']=true;
         }
         $fixed=$data['fixed_placements']??null;
         if($measured!==[]&&is_array($fixed)){
@@ -147,6 +144,36 @@ final class ArrayCodec
                 if(is_string($type)&&isset($measured[$type])){$found['fixed_placements+container.made_to_measure']=true;break;}
             }
         }
+        return array_keys($found);
+    }
+
+    /**
+     * The combinations a pallet with an overhang limit refuses. Obstacles and axles
+     * are positioned in the declared frame the widened frame moves; doors and route corridors
+     * would need a wall the overhang crosses; a reserve is a share of a volume the limit leaves
+     * undefined; a made-to-measure box has no deck. A flat bag is refused beside it as a request
+     * error instead. Checked on the raw request. O(items + containers).
+     *
+     * @param array<string,mixed> $data
+     * @return list<string>
+     */
+    public static function palletOverhangCombinations(array $data):array
+    {
+        $found=[];$pallets=false;
+        foreach(self::entries($data,'containers') as $entry){
+            if(!is_array($entry)||($entry['pallet_overhang_limit']??null)===null)continue;
+            $pallets=true;
+            $directions=$entry['access_directions']??null;
+            $obstacles=$entry['obstacles']??null;
+            $reserve=$entry['void_fill_reserve_ratio']??null;
+            $present=['access_directions'=>JsonValue::isList($directions)&&$directions!==[],'axles'=>($entry['axles']??null)!==null,
+                'made_to_measure'=>($entry['made_to_measure']??null)!==null,'obstacles'=>JsonValue::isList($obstacles)&&$obstacles!==[],
+                'void_fill_reserve_ratio'=>(is_int($reserve)||is_float($reserve))&&$reserve>0];
+            foreach($present as $name=>$set)if($set)$found["container.pallet_overhang_limit+{$name}"]=true;
+        }
+        if($pallets)
+            foreach(self::entries($data,'items') as $item)
+                if(is_array($item)&&($item['stop_index']??null)!==null){$found['container.pallet_overhang_limit+item.stop_index']=true;break;}
         return array_keys($found);
     }
 
@@ -177,6 +204,24 @@ final class ArrayCodec
      */
     public static function pack($data):array
     {
+        return self::packed($data,false);
+    }
+
+    /**
+     * `pack`, with each container's `placements` a one-pass generator of the same arrays
+     * (`PackingResult::toStreamedArray`): what `bin/packvium` hands `PrettyJsonStream`, so
+     * the answer's placements are never all held at once.
+     *
+     * @param mixed $data
+     */
+    public static function packStreamed($data):array
+    {
+        return self::packed($data,true);
+    }
+
+    /** @param mixed $data */
+    private static function packed($data,bool $streamPlacements):array
+    {
         if(!is_array($data)||($data!==[]&&JsonValue::isList($data)))throw new InvalidRequestException('wrong_type','','must be an object');
         self::rejectUnsupported($data);
         RequestRules::check($data);
@@ -184,7 +229,10 @@ final class ArrayCodec
         catch(InvalidArgumentException|TypeError|ValueError|ArithmeticError $error){throw self::asRequestError($error);}
         $unit=(string)($data['units']['length']??'mm');
         $out=$data['output']??[];
-        $result=self::solve(new Packer($config,$extensions),$items,$containers,$fixed)->toArray($out['length_unit']??self::outputLengthCode($unit),$out['weight_unit']??'g');
+        $lengthUnit=$out['length_unit']??self::outputLengthCode($unit);
+        $weightUnit=$out['weight_unit']??'g';
+        $packed=self::solve(new Packer($config,$extensions),$items,$containers,$fixed,$data['currency']??null);
+        $result=$streamPlacements?$packed->toStreamedArray($lengthUnit,$weightUnit):$packed->toArray($lengthUnit,$weightUnit);
         $result['catalog_versions_used']=$references;
         return $result;
     }
@@ -197,10 +245,10 @@ final class ArrayCodec
      *
      * @param list<Item> $items @param list<Container> $containers @param list<FixedPlacement> $fixed
      */
-    private static function solve(Packer $packer,array $items,array $containers,array $fixed):PackingResult
+    private static function solve(Packer $packer,array $items,array $containers,array $fixed,?string $currency):PackingResult
     {
-        $solve=\Closure::bind(static function (Packer $packer) use ($items, $containers, $fixed): PackingResult {
-            return $packer->solve($items,$containers,$fixed);
+        $solve=\Closure::bind(static function (Packer $packer) use ($items, $containers, $fixed, $currency): PackingResult {
+            return $packer->solve($items,$containers,$fixed,$currency);
         },null,Packer::class);
         return $solve($packer);
     }
@@ -231,7 +279,7 @@ final class ArrayCodec
         $containers=array_map(function ($r) use ($unit) {
             return self::container($r,$unit);
         },$data['containers']);
-        $fixed=self::fixedPlacements($data['fixed_placements']??null,$unit);
+        $fixed=self::fixedPlacements($data['fixed_placements']??null,$unit,$data['items']);
         return [$config,$references,$extensions,$items,$containers,$fixed];
     }
 
@@ -322,14 +370,15 @@ final class ArrayCodec
      * compiles their shape checker. O(f) for f entries.
      *
      * @param mixed $raw
+     * @param mixed $items the request's raw `items`, read for their hull types only past the guard
      * @return list<FixedPlacement>
      */
-    private static function fixedPlacements($raw,string $unit):array
+    private static function fixedPlacements($raw,string $unit,$items):array
     {
         if($raw===null)return [];
         return array_map(function ($r) use ($unit) {
             return self::fixedPlacement($r,$unit);
-        },FixedPlacementShape::requireEntries($raw,$unit));
+        },FixedPlacementShape::requireEntries($raw,$unit,FixedPlacementShape::hullItemTypes($items)));
     }
 
     /**
@@ -338,14 +387,18 @@ final class ArrayCodec
      *
      * @param array<string,mixed> $r
      */
-    private static function fixedPlacement(array $r,string $unit):FixedPlacement{return new FixedPlacement($r['item_type'],$r['container_type'],self::point($r['position']??[],$unit),Rotation::from($r['orientation']),array_key_exists('container_instance',$r)?(int)JsonValue::integer($r['container_instance']):1);}
+    private static function fixedPlacement(array $r,string $unit):FixedPlacement{return new FixedPlacement($r['item_type'],$r['container_type'],self::point($r['position']??[],$unit),Rotation::from($r['orientation']),array_key_exists('container_instance',$r)?(int)JsonValue::integer($r['container_instance']):1,$r['placement_id']??null);}
     private static function container(array $r,string $unit):Container{$obs=[];foreach($r['obstacles']??[] as $o){$additional=array_map(function ($b) use ($unit) {
         return self::box($b,$unit);
     },$o['additional_boxes']??[]);$obs[]=new Obstacle((string)$o['id'],self::box($o,$unit),$additional);}return new Container((string)$r['id'],Dimensions::fromArray($r['inner_dimensions'],$unit),isset($r['outer_dimensions'])?Dimensions::fromArray($r['outer_dimensions'],$unit):null,Weight::parse($r['tare_weight']??0),isset($r['max_payload'])?Weight::parse($r['max_payload']):null,(int)($r['cost_minor']??0),isset($r['quantity'])?(int)$r['quantity']:null,$obs,$r['tags']??[],isset($r['max_items'])?(int)$r['max_items']:null,$r['metadata']??[],(float)($r['void_fill_reserve_ratio']??0),array_map(static function ($v) {
         return (int)$v;
     },$r['tag_limits']??[]),isset($r['max_stack_density'])?Weight::parse($r['max_stack_density']):null,self::axles($r['axles']??null,$unit),self::rateTable($r['rate_table']??null),array_map(static function ($d) {
         return (string)$d;
-    },$r['access_directions']??[]),[],isset($r['deformable_boundary'])?(string)$r['deformable_boundary']['kind']:null,self::madeToMeasure($r['made_to_measure']??null,$unit));}
+    },$r['access_directions']??[]),[],isset($r['deformable_boundary'])?(string)$r['deformable_boundary']['kind']:null,self::madeToMeasure($r['made_to_measure']??null,$unit),self::palletOverhangLimit($r['pallet_overhang_limit']??null,$unit),null,self::sideGussetDepth($r['deformable_boundary']??null,$unit));}
+    /** @param array<string,mixed>|null $r */
+    private static function sideGussetDepth(?array $r,string $unit):?Length{return ($r['side_gusset_depth']??null)===null?null:new Length(MeasureReading::ticks($r['side_gusset_depth'],Length::class,$unit));}
+    /** @param array<string,mixed>|null $r */
+    private static function palletOverhangLimit(?array $r,string $unit):?OverhangLimit{return $r===null?null:new OverhangLimit(new Length(MeasureReading::ticks($r['length'],Length::class,$unit)),new Length(MeasureReading::ticks($r['width'],Length::class,$unit)));}
     /** @param array<string,mixed>|null $r */
     private static function madeToMeasure(?array $r,string $unit):?MadeToMeasure
     {
@@ -359,5 +412,5 @@ final class ArrayCodec
         $tare=$r['tare_per_square_metre']??null;
         return new MadeToMeasure($sides($r['minimum']??null),$sides($r['increment']??null),(int)($r['cost_per_square_metre_minor']??0),$tare===null?0:MeasureReading::ticks($tare,Weight::class,'g'),$sides($r['outer_allowance']??null));
     }
-    private static function rateTable(?array $r):?RateTable{if($r===null)return null;return new RateTable(array_map('intval',$r['weight_brackets_g']),array_map('intval',$r['prices_minor']),(int)($r['minimum_charge_minor']??0),(int)($r['fuel_surcharge_permille']??0));}
+    private static function rateTable(?array $r):?RateTable{if($r===null)return null;return new RateTable(array_map('intval',$r['weight_brackets_g']),array_map('intval',$r['prices_minor']),(int)($r['minimum_charge_minor']??0),(int)($r['fuel_surcharge_permille']??0),$r['currency']??null);}
 }

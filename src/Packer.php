@@ -6,7 +6,7 @@ namespace Packvium;
 use Packvium\Algorithm\{Deadline, FixedLoad, FixedPlacementAdmission, ObjectiveBoundScope, ObjectiveBounds, SolverOrchestrator};
 use Packvium\Support\{RequestObjects, StableSorter, UnsupportedPlacements};
 use Packvium\Config\PackingConfig;
-use Packvium\Domain\{Container, FixedPlacement, Item, PackingRequest, UnratedWeightException};
+use Packvium\Domain\{Container, FixedPlacement, Item, PackingRequest, PalletOverhang, UnratedWeightException};
 use Packvium\Extension\ExtensionRegistry;
 use Packvium\Objective\{LandedCostSolutionScorer, ObjectiveRegistry, SolutionScorer, UnknownObjectiveException};
 use Packvium\Result\{
@@ -74,13 +74,16 @@ final class Packer
         return [$status, new ResultFact($code, $fields)];
     }
 
-    /** @param list<Item> $items @param list<Container> $containers @param list<FixedPlacement> $fixedPlacements */
-    public function pack(array $items, array $containers, array $fixedPlacements = []): PackingResult
+    /**
+     * @param list<Item> $items @param list<Container> $containers @param list<FixedPlacement> $fixedPlacements
+     * @param ?string $currency the ISO 4217 code the request's prices are in, echoed by the result (1.10)
+     */
+    public function pack(array $items, array $containers, array $fixedPlacements = [], ?string $currency = null): PackingResult
     {
         // The JSON path's rules, with the JSON path's reason and field: a request
         // built from objects is refused exactly where the same request as JSON would be.
-        RequestObjects::check($items, $containers, $this->config, $fixedPlacements);
-        return $this->solve($items, $containers, $fixedPlacements);
+        RequestObjects::check($items, $containers, $this->config, $fixedPlacements, $currency);
+        return $this->solve($items, $containers, $fixedPlacements, $currency);
     }
 
     /**
@@ -90,9 +93,13 @@ final class Packer
      *
      * @param list<Item> $items @param list<Container> $containers @param list<FixedPlacement> $fixedPlacements
      */
-    private function solve(array $items, array $containers, array $fixedPlacements): PackingResult
+    private function solve(array $items, array $containers, array $fixedPlacements, ?string $currency = null): PackingResult
     {
-        $request = new PackingRequest($items, $containers, $fixedPlacements);
+        // A pallet with an overhang limit is packed as its widened frame from here on, so no
+        // solver, bound or validator needs to know the limit exists.
+        // A container without a limit is its own frame; asking only for one with a limit keeps
+        // `PalletOverhang` uncompiled on every other request, whose heap pays for its code.
+        $request = new PackingRequest($items, \array_map(static fn(Container $container): Container => $container->palletOverhangLimit === null ? $container : PalletOverhang::solvingFrame($container), $containers), $fixedPlacements, $currency);
         // Both cost objectives price the same billed weight, so both need the divisor.
         // There is no library-chosen default: a wrong guess would silently misprice
         // every shipment. `ShippingCostSolutionScorer::fromConfig` still refuses too,
@@ -225,6 +232,7 @@ final class Packer
                 termination: $termination,
                 optimality: $optimality,
                 objective: $this->config->objective,
+                currency: $request->currency,
             );
         }
 
@@ -279,6 +287,7 @@ final class Packer
             $best->termination,
             $best->optimality,
             $best->objective,
+            $best->currency,
         );
     }
 }

@@ -9,6 +9,9 @@ use Packvium\Unit\Length;
 
 final readonly class PackingResult
 {
+    /** The serialization cache before any value is shared through it. */
+    private const NOTHING_SHARED = ['length' => [], 'weight' => [], 'dimensions' => []];
+
     public ResultFact $feasibility;
     public ResultFact $termination;
     public ResultFact $optimality;
@@ -32,6 +35,9 @@ final readonly class PackingResult
         ?ResultFact $termination = null,
         ?ResultFact $optimality = null,
         public string $objective = 'default',
+        // The request's ISO 4217 code, echoed only when the request declares one, by the
+        // answer and by every alternative alike (1.10).
+        public ?string $currency = null,
     ) {
         [$derivedFeasibility, $derivedTermination, $derivedOptimality] = self::deriveFacts(
             $status,
@@ -91,47 +97,48 @@ final readonly class PackingResult
     ): array {
         // Equal quantities share one array: placements repeat a type's dimensions, a lattice
         // coordinate and a zero top load, and a shared array serializes to the same bytes.
-        $shared = ['length' => [], 'weight' => [], 'dimensions' => []];
-        return $this->serialized($lengthUnit, $weightUnit, $includeAlternatives, $shared);
+        $shared = self::NOTHING_SHARED;
+        return $this->serialized($lengthUnit, $weightUnit, $includeAlternatives, false, $shared);
+    }
+
+    /**
+     * `toArray`, except that each container's `placements` (the answer's and every
+     * alternative's) is a one-pass `\Generator` of the same placement arrays, for
+     * `PrettyJsonStream` to write as it goes.
+     *
+     * The placements are most of a result's array, and holding all of them next to the result
+     * objects they come from is the peak of a `bin/packvium` run on `fast`; streamed, no more
+     * than one placement's array is alive at a time. Each generator holds its own container.
+     */
+    public function toStreamedArray(string $lengthUnit = 'mm', string $weightUnit = 'g'): array
+    {
+        $shared = self::NOTHING_SHARED;
+        return $this->serialized($lengthUnit, $weightUnit, true, true, $shared);
     }
 
     /** @param array{length:array<int,array>,weight:array<int,array>,dimensions:array<int,array<int,array<int,array>>>} $shared */
-    private function serialized(string $lengthUnit, string $weightUnit, bool $includeAlternatives, array &$shared): array
+    private function serialized(string $lengthUnit, string $weightUnit, bool $includeAlternatives, bool $streamPlacements, array &$shared): array
     {
         $containers = [];
         foreach ($this->containers as $container) {
-            $placements = [];
-            foreach ($container->placements as $placement) {
-                $placements[] = [
-                    'item_id' => $placement->instance->id(),
-                    'item_type' => $placement->instance->item->id,
-                    'position' => self::point($placement->position, $lengthUnit, $shared),
-                    'dimensions' => self::dimensions($placement->dimensions, $lengthUnit, $shared),
-                    'orientation' => $placement->rotation->value,
-                    'support_ratio' => sprintf('%.6f', $placement->supportRatio),
-                    'top_load' => $shared['weight'][$placement->topLoad->ticks] ??= $placement->topLoad->toArray($weightUnit),
-                ];
-                // Absent unless true, so a request without fixed placements keeps its bytes.
-                if ($placement->fixed) {
-                    $placements[array_key_last($placements)]['fixed'] = true;
-                }
-            }
+            $containerId = $container->id();
+            $placements = self::placements($container, $containerId, $lengthUnit, $weightUnit, $streamPlacements, $shared);
             $serialized = [
-                'id' => $container->id(),
+                'id' => $containerId,
                 'container_type' => $container->container->id,
-                'inner_dimensions' => $container->container->innerDimensions->toArray($lengthUnit),
+                'inner_dimensions' => $container->container->declaredInner()->toArray($lengthUnit),
                 'outer_dimensions' => ($container->container->outerDimensions
-                    ?? $container->container->innerDimensions)->toArray($lengthUnit),
+                    ?? $container->container->declaredInner())->toArray($lengthUnit),
                 'payload_weight' => $container->payloadWeight()->toArray($weightUnit),
                 'gross_weight' => $container->grossWeight()->toArray($weightUnit),
                 'used_volume_ticks3' => $container->usedVolumeString(),
                 'volume_utilization' => sprintf('%.6f', $container->utilization()),
                 'centre_of_mass_offset_ppm' => $container->centreOfMassOffsetPpm(),
                 'void_fill_reserve_ticks3' => VolumeReserve::reserved($container->container),
-                'placements' => $placements,
+                'placements' => $streamPlacements ? $placements : \iterator_to_array($placements, false),
             ];
-            // Present exactly when the container conforms to its contents, so a
-            // rigid container's bytes are unchanged.
+            // Present exactly when the container conforms to its contents or is a
+            // pallet with an overhang limit, so a rigid container's bytes are unchanged.
             $achieved = $container->achievedDimensions();
             if ($achieved !== null) {
                 $serialized['achieved_dimensions'] = $achieved->toArray($lengthUnit);
@@ -195,11 +202,11 @@ final readonly class PackingResult
         $alternatives = [];
         if ($includeAlternatives) {
             foreach ($this->alternatives as $alternative) {
-                $alternatives[] = $alternative->serialized($lengthUnit, $weightUnit, false, $shared);
+                $alternatives[] = $alternative->serialized($lengthUnit, $weightUnit, false, $streamPlacements, $shared);
             }
         }
 
-        return [
+        $result = [
             'status' => $this->status->value,
             'feasibility' => $this->feasibility->toArray(),
             'termination' => $this->termination->toArray(),
@@ -226,9 +233,47 @@ final readonly class PackingResult
             'containers' => $containers,
             'unpacked_items' => $unpacked,
             'catalog_versions_used' => [],
-            'warnings' => $this->warnings,
-            'alternatives' => $alternatives,
         ];
+        // Absent unless the request declared one, so every other request keeps its bytes.
+        if ($this->currency !== null) {
+            $result['currency'] = $this->currency;
+        }
+        $result['warnings'] = $this->warnings;
+        $result['alternatives'] = $alternatives;
+        return $result;
+    }
+
+    /**
+     * One container's placements, serialized in order.
+     *
+     * Streamed, each array is written and dropped before the next is built, so a cached value
+     * would only be kept alive, never shared: the cache is let go after every placement.
+     *
+     * @param array{length:array<int,array>,weight:array<int,array>,dimensions:array<int,array<int,array<int,array>>>} $shared
+     * @return \Generator<int,array<string,mixed>>
+     */
+    private static function placements(PackedContainer $container, string $containerId, string $lengthUnit, string $weightUnit, bool $streamed, array &$shared): \Generator
+    {
+        foreach ($container->placements as $placement) {
+            $serialized = [
+                'placement_id' => $placement->idIn($containerId),
+                'item_id' => $placement->instance->id(),
+                'item_type' => $placement->instance->item->id,
+                'position' => self::point($placement->position, $lengthUnit, $shared),
+                'dimensions' => self::dimensions($placement->dimensions, $lengthUnit, $shared),
+                'orientation' => $placement->rotation->value,
+                'support_ratio' => sprintf('%.6f', $placement->supportRatio),
+                'top_load' => $shared['weight'][$placement->topLoad->ticks] ??= $placement->topLoad->toArray($weightUnit),
+            ];
+            // Absent unless true, so a request without fixed placements keeps its bytes.
+            if ($placement->fixed) {
+                $serialized['fixed'] = true;
+            }
+            yield $serialized;
+            if ($streamed) {
+                $shared = self::NOTHING_SHARED;
+            }
+        }
     }
 
     /** `Point::toArray`, from shared length arrays. */

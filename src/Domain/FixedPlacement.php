@@ -14,7 +14,8 @@ final readonly class FixedPlacement
      * Every rule on these fields is checked where the placement sits in a request, by
      * `Packer::pack` (`RequestObjects::check`), with the JSON path's refusal and pointer.
      */
-    public function __construct(public string $itemId,public string $containerId,public Point $position,public Rotation $rotation,public int $containerInstance=1)
+    /** `$placementId`: the result placement's id restated (1.10), refused unless it is this placement's. */
+    public function __construct(public string $itemId,public string $containerId,public Point $position,public Rotation $rotation,public int $containerInstance=1,public ?string $placementId=null)
     {
     }
 

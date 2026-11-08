@@ -2,6 +2,7 @@
 declare(strict_types=1);
 namespace Packvium\Constraint;
 use Packvium\Constraint\Internal\LoadSupportGraph;
+use Packvium\Domain\{AxisAlignedBox,PalletOverhang};
 use Packvium\Support\{ExactGeometry,ExactInteger};
 /**
  * Support ratios arrive as floats from the public API but must never decide feasibility
@@ -42,7 +43,7 @@ final class SupportConstraint implements PlacementConstraint
 
     public function evaluate(ConstraintContext $c):ConstraintResult
     {
-        if($c->point->z===0)return ConstraintResult::allow();
+        if($c->point->z===0)return $this->onFloor($c);
         if(!$this->canReject($c->item))return ConstraintResult::allow();
         $box=$c->envelopeBox();
         $support=LoadSupportGraph::candidateView($c->placements,$c->item,$box);
@@ -57,9 +58,28 @@ final class SupportConstraint implements PlacementConstraint
             if($rule==='multiple'&&$count<2)
                 return ConstraintResult::reject('ground_contact_violation',"multiple: rests on {$count} item(s)");
         }
+        return $this->ratioAndCentroid($c,$box,$supporters,$support->supportingArea);
+    }
+
+    /**
+     * A floor is whole support unless it is a pallet deck: then the deck is the one
+     * supporter, judged by the same ratio and centre-of-gravity rule. The ground contact rules
+     * name supporting items, and the floor is none, so they do not apply.
+     */
+    private function onFloor(ConstraintContext $c):ConstraintResult
+    {
+        $deck=$c->container->deck;
+        if($deck===null)return ConstraintResult::allow();
+        $box=$c->envelopeBox();
+        return $this->ratioAndCentroid($c,$box,[$deck->asBox()],PalletOverhang::deckContactArea($deck,$box));
+    }
+
+    /** @param list<AxisAlignedBox> $supporters
+     * @param int|string $area */
+    private function ratioAndCentroid(ConstraintContext $c,AxisAlignedBox $box,array $supporters,$area):ConstraintResult
+    {
         $required=max($this->globalMinimum,$c->item->item->minimumSupportRatio);
         if($required<=0)return ConstraintResult::allow();
-        $area=$support->supportingArea;
         $baseArea=ExactGeometry::baseArea($c->envelopeDimensions);
         if(ExactInteger::compare($area,self::exactRequiredArea($baseArea,self::scaled($required)))<0)
             return ConstraintResult::reject('insufficient_support',sprintf('%s/%s < %.6f',$area,$baseArea,$required));
